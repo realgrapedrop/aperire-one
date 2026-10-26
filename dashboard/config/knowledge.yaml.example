@@ -1,0 +1,33 @@
+# Public knowledge sources this aggregator may pull into the fleet corpus.
+# ADR 0017 decision 5. Copy to knowledge.yaml on the AGGREGATOR only.
+#
+# There is no default. With this file absent, the Advisor tab's "Pull the
+# field guide" refuses and says so: a public repository that lands in every
+# Advisor's prompt is a supply-chain and prompt-injection surface, and which
+# repository that is has to be a decision somebody made and can point at.
+#
+# The pull is two clicks. The first fetches the repository at `ref` and shows
+# what changed since the commit last applied; the second copies that exact
+# commit into advisor/knowledge-fleet/base/, lints it, and pushes the signed
+# bundle to every node. Nothing here runs on a timer.
+#
+# Pulled documents are split into single-topic files at their H2 headings —
+# a 138 KB guide copied whole is refused by knowledge-lint and useless to the
+# ranker, which sends a file whole or not at all.
+
+field_guide:
+  # Must be an http(s) URL. git's other URL schemes can execute commands, and
+  # a knowledge source is a document, not a program.
+  repo: https://github.com/realgrapedrop/rippled-field-guide.git
+
+  # The branch, tag or commit to fetch. The commit it resolves to is what
+  # gets pinned, so a moving branch is safe: what is applied is the tree the
+  # operator saw in the summary.
+  ref: main
+
+  # Repository sub-paths to pull. Leave empty for the whole tree.
+  paths:
+    - docs
+
+  # The directory the files land in, under knowledge-fleet/base/.
+  corpus_dir: field-guide

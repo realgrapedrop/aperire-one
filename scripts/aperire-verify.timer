@@ -1,0 +1,53 @@
+[Unit]
+Description=Aperire: verify this host after boot, and once a day after that
+Documentation=file:@REPO@/scripts/verify-after-restart.sh
+
+[Timer]
+# Half an hour after this timer starts, and daily after that.
+#
+# Measured from the timer's own start, not from boot, and that is the whole
+# point. At boot, timers.target starts it and the first run is 30 minutes
+# later. At install, `systemctl enable --now` starts it and the first run is
+# 30 minutes later, on a box that has been up for months. There is no
+# OnBootSec= here for exactly that reason: a monotonic timer whose moment has
+# already passed elapses the instant the unit starts, so OnBootSec=15min on a
+# host booted this morning would fire the verifier in the middle of the
+# install, against a dashboard two seconds old. Measured, not assumed: on a
+# box up 8 hours, OnBootSec=15min beside OnActiveSec=30min ran the service
+# immediately; OnActiveSec alone showed 29 minutes left and had not run.
+#
+# Why 30 minutes rather than 5. The verifier asks whether the node is
+# proposing or full, and a restarted node was measured sitting at
+# connected/empty for 11 to 12 minutes on VPS-class hardware before it reached
+# full, re-acquiring its ledger range from the tip (#82, stock-node1,
+# 2026-08-26). Run any earlier and the first report after every reboot is a
+# failure the host fixes by itself a few minutes later. 30 covers that with
+# room, and it is the same wait a fresh install gets, where the dashboard,
+# the relay and the node are all still finding each other.
+OnActiveSec=30min
+
+# Then once a day, measured from the end of the last run. Daily is the
+# heartbeat: without it a host that broke six months after its last reboot
+# would have no run to break, and no run means no report, which means the
+# green nobody looked at stays green.
+#
+# Paired with OnActiveSec= above deliberately. OnUnitActiveSec= has no base
+# until the service has run once, so it stays silent on a fresh install and
+# the first run is the one above; from then on it is the cadence.
+#
+# Two things are keyed to this cadence and both are commented where they
+# live: the verify_report_age_s rule in dashboard/config/rules.yaml allows
+# 26 hours before calling the timer stopped, which is this interval plus
+# room for the drift AccuracySec permits. Changing the interval here means
+# changing that threshold there.
+OnUnitActiveSec=1d
+AccuracySec=1min
+
+# No Persistent=. It only applies to OnCalendar= timers, and catching up after
+# downtime is precisely what the post-start run above is for: a host that was
+# off has just booted, and booting starts this timer.
+
+Unit=aperire-verify.service
+
+[Install]
+WantedBy=timers.target

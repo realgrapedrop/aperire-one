@@ -1,0 +1,97 @@
+[Unit]
+# One unattended run of the post-restart verifier, issue #128 rung 1.
+#
+# The same script an operator runs by hand after a reboot. Running it on a
+# timer is the whole point: a host that came back wrong used to stay wrong
+# until somebody thought to check, and a host that quietly broke months after
+# its last reboot was never checked at all. Every run leaves
+# data/verify-report.json behind, which is what the dashboard turns into the
+# verify_failed_checks and verify_report_age_s metrics.
+Description=Aperire: verify this host is running correctly
+Documentation=file:@REPO@/scripts/verify-after-restart.sh
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=@RUN_USER@
+Group=@RUN_USER@
+WorkingDirectory=@REPO@
+ExecStart=/bin/bash @REPO@/scripts/verify-after-restart.sh
+
+# Unprivileged, and the same account an operator would run it as. The script
+# reads only: systemctl state, a container's status, file modes, two loopback
+# endpoints. Nothing it does needs root, and what it cannot see it says it
+# cannot see rather than assuming.
+#
+# NoNewPrivileges is deliberately NOT set, and it is the one relaxation here.
+# The verifier establishes that the Advisor's account cannot read the
+# validator token by asking, through `sudo -n -u`, and under NoNewPrivileges
+# sudo cannot elevate at all, so that check would report "skipped" on every
+# timer run, forever. A check that always skips is the quiet version of a
+# check that always passes, which is exactly the class of defect this
+# whole item exists to remove. Everything below is unchanged from the
+# dashboard's own unit.
+#
+# What that buys is only the CHANCE to run the check: it still needs a
+# passwordless sudo rule on the host, and without one the verifier says so and
+# skips, here as it does in a shell. What has not been observed yet is that
+# check running green under this sandbox on a host that does have the rule.
+# The one thing in the way would be sudo's timestamp directory, which
+# ProtectSystem=strict makes read-only along with everything else outside
+# ReadWritePaths, so it is named below.
+PrivateTmp=true
+UMask=0022
+ProtectSystem=strict
+ProtectHome=read-only
+# The report is the one thing this run writes. Same pattern the dashboard
+# unit uses: ProtectHome keeps the rest of the home directory read-only and
+# this one directory is opened back up.
+ReadWritePaths=@REPO@/data
+# The Advisor's three state directories, opened back up for the same reason
+# as data/ above (#589): ProtectHome=read-only makes /home unwritable for
+# every account this unit's process tree runs as, including the account
+# `sudo -n -u` switches to for the advisor-state-writable check below, so
+# `test -w` against these three read as "not writable" regardless of what
+# their real owner and mode say. This does NOT grant this unit's own account
+# (@RUN_USER@) anything it did not already have: @RUN_USER@ still has no
+# Unix permission to write here, that is unchanged, a mount option is not a
+# permission. What it does is let the KERNEL answer the write-access question
+# truthfully for whichever account is actually asked, instead of the
+# namespace itself refusing to answer at all. The leading dash tolerates a
+# host with no Advisor installed, where none of these three exist yet.
+ReadWritePaths=-@REPO@/advisor/state
+ReadWritePaths=-@REPO@/advisor/evidence
+ReadWritePaths=-@REPO@/advisor/knowledge-fleet
+# sudo's timestamp directory, so `sudo -n -u` can record a use rather than
+# meet a read-only /run. The leading dash tolerates a host that has no
+# /run/sudo yet (it is created on first use), because a ReadWritePaths entry
+# that does not exist fails the unit, and a verifier that will not start is a
+# worse outcome than one check it cannot make.
+ReadWritePaths=-/run/sudo
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+ProtectClock=true
+ProtectKernelLogs=true
+
+# A run is a few seconds of stat and curl, plus one `docker exec`. If it has
+# not finished in two minutes something it talks to is hung, and a verifier
+# that hangs is worse than one that fails: the report keeps its old
+# timestamp, the age climbs, and the alert says so.
+TimeoutStartSec=120
+
+# The journal is the record of every run this host has made:
+#   journalctl -u aperire-verify.service
+StandardOutput=journal
+StandardError=journal
+
+Environment=PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+[Install]
+WantedBy=multi-user.target

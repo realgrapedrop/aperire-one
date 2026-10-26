@@ -1,0 +1,115 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="780" viewBox="0 0 1400 780" font-family="-apple-system, 'Segoe UI', 'Inter', sans-serif">
+  <defs>
+    <marker id="ah" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 1 L 9 5 L 0 9 z" fill="#333333"/>
+    </marker>
+  </defs>
+  <rect width="1400" height="780" fill="#ffffff"/>
+
+  <!-- ═══ zone: operator ═══ -->
+  <rect x="40" y="40" width="340" height="170" fill="none" stroke="#999999" stroke-width="1.2" stroke-dasharray="6 4"/>
+  <text x="52" y="62" font-size="12" fill="#666666">operator</text>
+  <!-- stick figure -->
+  <circle cx="85" cy="98" r="10" fill="none" stroke="#333333" stroke-width="1.6"/>
+  <line x1="85" y1="108" x2="85" y2="138" stroke="#333333" stroke-width="1.6"/>
+  <line x1="68" y1="118" x2="102" y2="118" stroke="#333333" stroke-width="1.6"/>
+  <line x1="85" y1="138" x2="72" y2="158" stroke="#333333" stroke-width="1.6"/>
+  <line x1="85" y1="138" x2="98" y2="158" stroke="#333333" stroke-width="1.6"/>
+  <text x="85" y="176" text-anchor="middle" font-size="11" fill="#333333">Operator</text>
+  <line x1="106" y1="120" x2="146" y2="120" stroke="#333333" stroke-width="1.4" marker-end="url(#ah)"/>
+  <text x="126" y="112" text-anchor="middle" font-size="10.5" fill="#57606a">passkey</text>
+  <!-- browser -->
+  <rect x="150" y="82" width="205" height="86" rx="8" fill="#f7ecf9" stroke="#9748a8" stroke-width="2"/>
+  <text x="252" y="118" text-anchor="middle" font-size="15" font-weight="600" fill="#1f2328">Browser</text>
+  <text x="252" y="140" text-anchor="middle" font-size="11" fill="#57606a">phone · tablet · desktop</text>
+
+  <!-- ═══ zone: dashboard host ═══ -->
+  <rect x="520" y="40" width="340" height="170" fill="none" stroke="#999999" stroke-width="1.2" stroke-dasharray="6 4"/>
+  <text x="532" y="62" font-size="12" fill="#666666">dashboard host</text>
+  <rect x="555" y="82" width="270" height="96" rx="8" fill="#e8f8fb" stroke="#00acc1" stroke-width="2"/>
+  <text x="690" y="114" text-anchor="middle" font-size="15" font-weight="600" fill="#1f2328">aperire-dashboard</text>
+  <text x="690" y="136" text-anchor="middle" font-size="11" fill="#57606a">:7800 · session gate · approval ceremony</text>
+  <text x="690" y="154" text-anchor="middle" font-size="11" fill="#57606a">verifies passkey · proxies to the advisor</text>
+
+  <!-- ═══ zone: external services ═══ -->
+  <rect x="40" y="260" width="340" height="260" fill="none" stroke="#999999" stroke-width="1.2" stroke-dasharray="6 4"/>
+  <text x="52" y="282" font-size="12" fill="#666666">external · outbound https only</text>
+  <rect x="80" y="305" width="260" height="84" rx="8" fill="#fff4e0" stroke="#f08c00" stroke-width="2"/>
+  <text x="210" y="337" text-anchor="middle" font-size="15" font-weight="600" fill="#1f2328">Language model API</text>
+  <text x="210" y="359" text-anchor="middle" font-size="11" fill="#57606a">key sealed · systemd-creds</text>
+  <rect x="80" y="415" width="260" height="84" rx="8" fill="#fff4e0" stroke="#f08c00" stroke-width="2"/>
+  <text x="210" y="447" text-anchor="middle" font-size="15" font-weight="600" fill="#1f2328">Public XRPL endpoints</text>
+  <text x="210" y="469" text-anchor="middle" font-size="11" fill="#57606a">operator-named allowlist</text>
+
+  <!-- ═══ zone: advisor ═══ -->
+  <rect x="430" y="260" width="930" height="270" fill="none" stroke="#999999" stroke-width="1.2" stroke-dasharray="6 4"/>
+  <text x="442" y="282" font-size="12" fill="#666666">advisor · one host, two identities</text>
+
+  <rect x="470" y="305" width="255" height="100" rx="8" fill="#e8f8fb" stroke="#00acc1" stroke-width="2"/>
+  <text x="597" y="335" text-anchor="middle" font-size="15" font-weight="600" fill="#1f2328">aperire-advisord</text>
+  <text x="597" y="357" text-anchor="middle" font-size="11" fill="#57606a">:7810 loopback · read-only</text>
+  <text x="597" y="375" text-anchor="middle" font-size="11" font-weight="600" fill="#57606a">the agent · proposes, never acts</text>
+
+  <rect x="795" y="305" width="255" height="100" rx="8" fill="#e8f8fb" stroke="#00acc1" stroke-width="2"/>
+  <text x="922" y="335" text-anchor="middle" font-size="15" font-weight="600" fill="#1f2328">aperire-executor</text>
+  <text x="922" y="357" text-anchor="middle" font-size="11" fill="#57606a">per-run · named operations only</text>
+  <text x="922" y="375" text-anchor="middle" font-size="11" font-weight="600" fill="#57606a">the actor · verifies every step</text>
+
+  <line x1="772" y1="298" x2="772" y2="412" stroke="#999999" stroke-width="1.2" stroke-dasharray="4 4"/>
+
+  <rect x="620" y="440" width="250" height="66" rx="8" fill="#f4f4f4" stroke="#8c959f" stroke-width="1.8"/>
+  <text x="745" y="466" text-anchor="middle" font-size="13.5" font-weight="600" fill="#1f2328">knowledge/ + memory</text>
+  <text x="745" y="486" text-anchor="middle" font-size="11" fill="#57606a">operator-curated · cited as Documented</text>
+
+  <rect x="1105" y="305" width="240" height="100" rx="8" fill="#eaf7ee" stroke="#1a7f37" stroke-width="2"/>
+  <text x="1225" y="335" text-anchor="middle" font-size="15" font-weight="600" fill="#1f2328">Action ledger</text>
+  <text x="1225" y="357" text-anchor="middle" font-size="11" fill="#57606a">hash-chained · append-only</text>
+  <text x="1225" y="375" text-anchor="middle" font-size="11" fill="#57606a">every action and refusal</text>
+
+  <text x="1345" y="448" text-anchor="end" font-size="11.5" font-style="italic" fill="#57606a">the model can reach nothing below this line —</text>
+  <text x="1345" y="466" text-anchor="end" font-size="11.5" font-style="italic" fill="#57606a">words cannot become actions</text>
+
+  <!-- ═══ zone: validator host ═══ -->
+  <rect x="430" y="570" width="930" height="170" fill="none" stroke="#999999" stroke-width="1.2" stroke-dasharray="6 4"/>
+  <text x="442" y="592" font-size="12" fill="#666666">validator host</text>
+  <rect x="700" y="612" width="300" height="90" rx="8" fill="#e8f0fe" stroke="#1a5fd0" stroke-width="2"/>
+  <text x="850" y="646" text-anchor="middle" font-size="15" font-weight="600" fill="#1f2328">xrpld validator</text>
+  <text x="850" y="668" text-anchor="middle" font-size="11" fill="#57606a">:5005 admin RPC · container or native package</text>
+
+  <!-- ═══ arrows ═══ -->
+  <!-- browser → dashboard -->
+  <line x1="355" y1="122" x2="552" y2="122" stroke="#333333" stroke-width="1.4" marker-end="url(#ah)"/>
+  <text x="453" y="110" text-anchor="middle" font-size="11" fill="#57606a">:443 via Cloudflare tunnel</text>
+  <text x="453" y="140" text-anchor="middle" font-size="11" fill="#57606a">questions · code + passkey approvals</text>
+
+  <!-- dashboard → advisord -->
+  <path d="M 690 178 L 690 238 L 597 238 L 597 302" fill="none" stroke="#333333" stroke-width="1.4" marker-end="url(#ah)"/>
+  <text x="700" y="232" font-size="11" fill="#57606a">:7810 loopback proxy</text>
+
+  <!-- advisord → model API -->
+  <line x1="470" y1="342" x2="345" y2="342" stroke="#333333" stroke-width="1.4" marker-end="url(#ah)"/>
+  <text x="408" y="332" text-anchor="middle" font-size="11" fill="#57606a">prompts · cited context</text>
+
+  <!-- advisord → public endpoints -->
+  <path d="M 470 380 L 408 380 L 408 455 L 345 455" fill="none" stroke="#333333" stroke-width="1.4" marker-end="url(#ah)"/>
+  <text x="415" y="420" font-size="11" fill="#57606a">ledger + validator lookups</text>
+
+  <!-- advisord → executor: THE crossing -->
+  <line x1="725" y1="345" x2="791" y2="345" stroke="#333333" stroke-width="1.4" marker-end="url(#ah)"/>
+  <text x="758" y="331" text-anchor="middle" font-size="10.5" fill="#57606a">approved run only</text>
+
+  <!-- knowledge → advisord -->
+  <line x1="700" y1="440" x2="640" y2="409" stroke="#333333" stroke-width="1.4" marker-end="url(#ah)"/>
+
+  <!-- executor → ledger -->
+  <line x1="1050" y1="345" x2="1101" y2="345" stroke="#333333" stroke-width="1.4" marker-end="url(#ah)"/>
+  <text x="1076" y="333" text-anchor="middle" font-size="10.5" fill="#57606a">append</text>
+
+  <!-- advisord → xrpld (read) -->
+  <path d="M 520 405 L 520 585 L 745 585 L 745 608" fill="none" stroke="#333333" stroke-width="1.4" marker-end="url(#ah)"/>
+  <text x="530" y="568" font-size="11" fill="#57606a">:5005 admin RPC · read-only</text>
+
+  <!-- executor → xrpld (act) -->
+  <line x1="922" y1="405" x2="922" y2="608" stroke="#333333" stroke-width="1.4" marker-end="url(#ah)"/>
+  <text x="930" y="500" font-size="11" fill="#57606a">named operations · privilege wrapper</text>
+</svg>

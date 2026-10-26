@@ -1,0 +1,37 @@
+# Aperire digest schedule + content
+#
+# Controls the scheduled summary email. Default cadence is daily at
+# 13:00 UTC, configurable below. Reload after edits:
+#     systemctl reload aperire-dashboard
+
+enabled: true
+
+# Cadence — daily | weekly | hourly
+cadence: daily
+
+# Local-time-of-day on the dashboard host. Use UTC unless you have a
+# specific reason; mixed-timezone teams find UTC less confusing.
+time_utc: "13:00"
+
+# Days of week, when cadence is "weekly". Ignored otherwise.
+# Format: 0=Sun .. 6=Sat
+weekly_days: [1]
+
+# Sections to include in the rendered digest.
+include:
+  agreement_summary:   true   # 24h agreement % + missed count
+  top_alerts:          true   # most-severe alerts in the window
+  digest_window_hours: 24
+  network_health:      true   # peer count, bandwidth headline
+  upcoming_amendments: true   # any amendments approaching activation
+
+# Subject line template. Available placeholders:
+#   {host}             dashboard host name
+#   {pubkey_short}     first 8 chars of the validator's public key
+#   {agreement_pct}    24h agreement %
+#   {alert_count}      number of alerts in the window
+subject: "Aperire daily report · {host} · {agreement_pct}% agreement"
+
+# Optional: footer text appended to every digest. Plain markdown.
+footer: |
+  Reply to this email or reach out via the Aperire repo for issues.

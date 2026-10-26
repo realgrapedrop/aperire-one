@@ -1,0 +1,145 @@
+# Aperire fleet registry — TEMPLATE
+#
+# This is the dashboard's OWN small fleet registry. It is separate from the
+# Advisor's `advisor/state/fleet.json` on purpose: the dashboard must not
+# depend on the optional add-on (decisions.md D5), so it keeps its own list
+# of where each node's dashboard lives and how to poll a health dot for it.
+#
+# No file here at all is a fully supported state: the header shows this
+# node alone, with no fleet dropdown, and nothing else about the dashboard
+# changes. Only copy this file into place once a second node exists.
+#
+#     cp fleet.yaml.example fleet.yaml
+#     # edit — one entry per node in your fleet, INCLUDING this one
+#     sudo systemctl reload aperire-server     # SIGHUP, re-read in place
+#
+# A restart works too, and costs a few seconds of dashboard downtime that a
+# reload does not. scripts/aperire-fleet-add.sh, which writes this file for
+# you, reloads.
+#
+# Parsing is fail-closed: any ONE invalid entry — a bad label, an unknown
+# key, a duplicate label, a read_origin that isn't a bare loopback origin —
+# drops the WHOLE file to empty. The dashboard falls back to single-node
+# behaviour and logs one clear line naming the reason; it does not guess
+# at a partial list.
+#
+# Three required fields per entry, plus five optional ones:
+#
+#   label          a-z, 0-9, and -, 1 to 32 characters, unique across the
+#                  file. Chosen so it's unmistakable at a glance — two
+#                  labels differing by one character invite misreading in
+#                  the header dropdown.
+#   dashboard_url  (OPTIONAL)  Where that node's dashboard answers. The
+#                  LITERAL address, never appended to, so get any subpath or
+#                  trailing slash right here.
+#                  Leave it out when nobody knows the answer yet: a node that
+#                  joins by pairing sends this from its own public_url, and a
+#                  box whose public_url is still the shipped default sends
+#                  none, so its row arrives without the line. To fill one in,
+#                  set public_url on that node and write the line here by
+#                  hand. Pairing again will not do it: an approval appends a
+#                  row and never edits one, so a rejoin leaves this file
+#                  untouched.
+#                  A value naming only that node itself (localhost, any
+#                  .localhost name, a loopback address) is read as no value:
+#                  it is an address no other machine can open, and a link
+#                  that cannot be followed is worse than none. So is anything
+#                  that is not an absolute http(s) URL.
+#                  This is the one field that does NOT fail the whole file
+#                  when it is wrong: it is dropped from its row, the row and
+#                  the rest of the fleet are kept, and the journal gets one
+#                  line naming the row and what was wrong with the shape. A
+#                  typo in an address nothing dials must not cost you the
+#                  fleet. Every field below still fails the WHOLE file, because
+#                  each one decides what this dashboard READS.
+#   read_origin    A BARE loopback origin this dashboard's own server polls
+#                  for a health dot — http://127.0.0.1:<port> or
+#                  http://localhost:<port>, no path, no query string. This
+#                  node's own row uses its own port (e.g. 7800); every other
+#                  row is a port your host tunnels to that peer, exactly as
+#                  described in docs/FLEET-GUIDE.md's tunnel section
+#                  (the guide's tunnel model is written for the Advisor's
+#                  registry but applies unchanged here — same loopback
+#                  requirement, same reason). The token here is read by THIS
+#                  SERVER, never sent to a browser.
+#   token_path     Path to that peer's own read.token (see
+#                  advisor/state/read.token on the peer, or
+#                  /etc/aperire/fleet-tokens/<label>.token if the fleet
+#                  broker paired this row for you — that is its own
+#                  convention path, and it never sits under advisor/state).
+#                  This node's own row can point at its own read.token, or
+#                  at anything readable — it is never polled through here
+#                  (see below).
+#   role           (OPTIONAL)  What this node IS: aggregator, node,
+#                  validator, or relay. The dashboard does not act on it —
+#                  it is here because this file is the one place the whole
+#                  fleet is described, and the Advisor's own registry is
+#                  GENERATED from it rather than maintained a second time by
+#                  hand (scripts/aperire-advisor-fleet-sync.sh). Telling the
+#                  Advisor what each host is stops it offering a node's
+#                  remedy on an aggregator that has no node, and lets it
+#                  name the right host in the sentence carrying a command.
+#                  Leave it out and the row is UNSPECIFIED — nothing is
+#                  guessed from it, deliberately: a dashboard with no node
+#                  looks exactly as much like an aggregator as it does like
+#                  a broken node. A value outside those four fails the WHOLE
+#                  file closed, same as any other malformed field.
+#   expected_pubkey_node (OPTIONAL)  Pins this row to a specific node public
+#                  key — base58, starting with "n", same shape as the pubkey
+#                  a running node reports. Leave the key out entirely for an
+#                  unpinned row (the default, and today's exact behaviour).
+#                  Present but not shaped like a real node key fails the
+#                  WHOLE file closed, same as any other malformed field.
+#                  Every poll of a pinned row also checks the peer's
+#                  identity; a mismatch renders that row as a red integrity
+#                  failure instead of a healthy-looking wrong node — see
+#                  docs/FLEET-GUIDE.md, "Pinning a peer's identity".
+#   transport      (OPTIONAL)  How this dashboard reaches that node:
+#                  `loopback` or `link`. Absent means loopback, which is what
+#                  every row written before the fleet link said, so leaving
+#                  it out changes nothing at all. It changes nothing about
+#                  HOW a peer is read either: read_origin is still a bare
+#                  loopback origin and every fleet surface still dials it.
+#                  Say `link` on a row whose node opens its own outbound
+#                  connection (ADR 0019) and the Settings row will say which
+#                  kind of outage it is having, and when it last held one.
+#                  A value that is neither word fails the WHOLE file closed.
+#   advisor_origin       (OPTIONAL, with advisor_token_path)  A BARE loopback
+#   advisor_token_path   origin for that node's OWN aperire-advisord, plus
+#                  the path on THIS host to that node's advisord token.
+#                  Normally a second tunnel port beside the read one (791x
+#                  beside 790x). With both set, selecting that node on the
+#                  Advisor tab reads its own run history, audit trail, plan,
+#                  checks and service status from ITS advisord, live and held
+#                  nowhere in between — a fixed allow-list of read endpoints,
+#                  with the row's identity pin re-verified before that
+#                  advisord is contacted at all. BOTH or NEITHER: either half
+#                  alone fails the WHOLE file closed, because an origin with
+#                  no token can only produce auth failures that read as a
+#                  broken Advisor, and a token path with no origin is a
+#                  secret nothing will ever read. No script writes this pair;
+#                  it is added by hand. Absent = that node's Advisor cards
+#                  say so plainly and name the host to install it on.
+#
+# This node's own row is never polled through this file — the page already
+# knows its own health. Only OTHER rows are actually fetched; this row
+# exists here so the dropdown can list every fleet member from one file
+# copied across the fleet, and the current row is recognised by matching
+# read_origin's port against this process's own.
+
+fleet:
+  - label: stock-one
+    role: node
+    dashboard_url: https://stock-one.example.internal/overview.html
+    read_origin: http://127.0.0.1:7800
+    token_path: /home/CHANGE_ME/aperire-one/advisor/state/read.token
+
+  - label: core-two
+    role: validator
+    dashboard_url: https://core-two.example.internal/overview.html
+    read_origin: http://127.0.0.1:7901
+    token_path: /etc/aperire/fleet-tokens/core-two.token
+    # expected_pubkey_node: nHUeq2wYUj1JLTnSpiF9RxAF9mJqNn1oyXaLxL8CFmACpJvKuf9E
+    # transport: link
+    # advisor_origin: http://127.0.0.1:7911
+    # advisor_token_path: /etc/aperire/fleet-tokens/core-two.approve.token

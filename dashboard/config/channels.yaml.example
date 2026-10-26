@@ -1,0 +1,155 @@
+# Aperire delivery channels — TEMPLATE
+#
+# This is the operator-install template. Copy to channels.yaml in this
+# same directory and edit the values for your deployment, then reload:
+#
+#     cp channels.yaml.example channels.yaml
+#     # edit channels.yaml — fill in real values everywhere a placeholder
+#     # appears (search for CHANGE_ME)
+#     sudo systemctl reload aperire-server
+#     # or, on a non-systemd setup:  kill -HUP $(pgrep -f 'tsx server.ts')
+#
+# Secrets live in /etc/aperire/aperire.env (systemd EnvironmentFile,
+# mode 0640) and are referenced here by env-var name only. Do not put
+# API keys or auth tokens directly in this file.
+#
+# Channel ids referenced from an alert rule must exist here (rules.yaml,
+# and your own rules.local.yaml over it). Removing a channel without
+# removing its references will surface a validation alert on the Insights
+# tab.
+
+channels:
+
+  # ── Email via Resend ──────────────────────────────────────────────
+  #
+  # Setup, in order:
+  #   1. Create a Resend account at https://resend.com.
+  #   2. Verify your sender domain (DNS records take ~10 min).
+  #   3. Generate an API key with "Sending access" scope only.
+  #   4. Put the key in /etc/aperire/aperire.env as:
+  #        RESEND_API_KEY=re_...
+  #   5. Edit `sender` and `recipients` below to your real values.
+  #
+  # Free tier covers 3,000 emails/month — easily enough for one
+  # validator's alert volume. If you don't want email at all, delete
+  # this whole `email:` block.
+  email:
+    provider: resend
+    api_key_env: RESEND_API_KEY
+    sender: "Aperire <CHANGE_ME@your-domain.example>"
+    recipients:
+      - CHANGE_ME@your-domain.example
+      # add more recipients on additional lines as needed
+
+  # ── ntfy push ─────────────────────────────────────────────────────
+  #
+  # ntfy delivers push notifications to phones, desktops, and any
+  # subscribed client. Two deployment paths:
+  #
+  # OPTION A — Public ntfy.sh (zero infrastructure)
+  # ----------------------------------------------
+  #   base_url: https://ntfy.sh
+  #   topic:    aperire-<random-string-here>
+  #
+  # ntfy.sh topics are public-readable by anyone who knows the topic
+  # name, so use a topic name that is hard to guess (e.g. include
+  # 16+ random characters). Treat the topic name itself as a low-grade
+  # secret. Generate one with:
+  #     openssl rand -hex 16   # produces a 32-char hex string
+  # Then prefix it: aperire-<that-hex-string>
+  #
+  # OPTION B — Self-hosted ntfy (full control, recommended for prod)
+  # ----------------------------------------------------------------
+  # Run your own ntfy server in docker. Quick setup:
+  #
+  #     docker run -d --name ntfy -p 80:80 \
+  #       -v ~/ntfy/cache:/var/cache/ntfy \
+  #       -v ~/ntfy/etc:/etc/ntfy \
+  #       --restart unless-stopped \
+  #       binwiederhier/ntfy serve \
+  #         --base-url=https://ntfy.your-domain.example
+  #
+  # Front it with a TLS terminator (Cloudflare Tunnel, nginx, Caddy)
+  # so it has a real cert. Optionally enable auth — see
+  # https://docs.ntfy.sh/config/#access-control — and put the bearer
+  # token in /etc/aperire/aperire.env as NTFY_TOKEN.
+  #
+  # Subscribing a phone:
+  #   1. Install the ntfy app from your platform's app store.
+  #   2. Add subscription with the same base_url + topic as below.
+  #   3. Grant notification permission to the app at the OS level.
+  #
+  # If you don't want push notifications at all, delete this whole
+  # `ntfy:` block.
+  ntfy:
+    provider: ntfy
+    base_url: https://CHANGE_ME-ntfy-server.example
+    topic:    CHANGE_ME-aperire-alerts
+    token_env: NTFY_TOKEN          # optional; empty = public topic
+    severity_priority:             # severity → ntfy priority
+      warn:     default
+      critical: high
+      page:     urgent
+
+  # ── Webhooks ──────────────────────────────────────────────────────
+  #
+  # One YAML entry per target. Three formats supported:
+  #
+  #   discord  — Discord channel webhook (embeds with severity colour).
+  #              Get the URL from a Discord channel's Edit Channel →
+  #              Integrations → Webhooks → New Webhook → Copy URL.
+  #
+  #   slack    — Slack incoming webhook (attachments with colour bar).
+  #              Get the URL from https://api.slack.com/apps → your app
+  #              → Incoming Webhooks → Add New Webhook to Workspace.
+  #
+  #   generic  — Plain JSON POST to any HTTP receiver. Stable schema
+  #              (`schema: aperire.alert.v1`) with all alert fields
+  #              flat — pipe into Zapier, n8n, a custom listener, etc.
+  #
+  # Each entry takes:
+  #
+  #   id              required, unique label used in dashboard logs
+  #                   and the delivery summary on each alert row.
+  #   format          required, one of: discord | slack | generic.
+  #   url             required, the POST target.
+  #   auth_header_env optional, env-var name whose value is sent as
+  #                   the Authorization header. Use for generic
+  #                   receivers that need a bearer / API key. Discord
+  #                   and Slack URLs are themselves the credential, so
+  #                   leave this unset for them.
+  #   severity_filter optional, list of severities this target accepts
+  #                   (warn | critical | page). Omit or leave empty to
+  #                   accept all. Useful for routing only Page-tier
+  #                   alerts to a paging channel like PagerDuty.
+  #
+  # Rules.yaml refers to webhooks via the singular id `webhook`; the
+  # server fans out to every entry below whose severity_filter admits
+  # the alert. To disable webhooks entirely set this to an empty list.
+  #
+  # Empty list = no webhook delivery; the Channels strip pill on the
+  # Insights tab shows "0 webhooks" which is the correct neutral state.
+  webhooks: []
+  # Example entries — copy and uncomment to enable. Leave the secrets
+  # in /etc/aperire/aperire.env where appropriate.
+  #
+  # webhooks:
+  #   - id: discord-ops
+  #     format: discord
+  #     url: https://discord.com/api/webhooks/CHANGE_ME/CHANGE_ME
+  #
+  #   - id: slack-validators
+  #     format: slack
+  #     url: https://hooks.slack.com/services/CHANGE_ME/CHANGE_ME/CHANGE_ME
+  #     severity_filter: [critical, page]   # skip warn-tier on Slack
+  #
+  #   - id: generic-zapier
+  #     format: generic
+  #     url: https://hooks.zapier.com/hooks/catch/CHANGE_ME/CHANGE_ME/
+  #     auth_header_env: ZAPIER_BEARER_TOKEN   # optional
+
+# ── Digest delivery ──────────────────────────────────────────────────
+#
+# Not configured here. The scheduled digest is its own file, config/digest.yaml:
+# cadence, send time, and an optional override_recipients list. Left empty there,
+# the digest goes to the email recipients above.

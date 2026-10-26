@@ -1,0 +1,3155 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Aperire One · Network</title>
+<!-- Embedded-in-shell detection, landing before <header> ever paints — the
+     shell's iframe src carries ?embed=1, read here synchronously before
+     <body> exists. See overview.html's own <head> for the full
+     explanation; identical here. -->
+<script>if(/[?&]embed=1(&|$)/.test(location.search))document.documentElement.setAttribute('data-embedded','');</script>
+<!-- Peer-read fetch helper — D8 slice 3 backend retrofit (see peer-fetch.js's own
+     doc comment). Loaded eagerly, no defer: this page's own top-level boot code
+     calls into it synchronously, before a deferred script would have run. -->
+<script src="/peer-fetch.js"></script>
+<!-- The theme, decided before anything paints.
+     This has to be inline, blocking, and above the stylesheet link below.
+     A deferred file would run after the first frame and the operator would
+     see a flash of the wrong theme on every single load; a file loaded in
+     parallel would race the paint. Six lines in <head> is the price of that
+     never happening. Reading localStorage can throw (private mode, an embed
+     a browser treats as third-party storage), so a failure silently leaves
+     the default, which is dark. Identical on all nine pages; see
+     public/theme-toggle.js for the half that writes the value. -->
+<script>(function(){var t='dark';try{if(localStorage.getItem('aperire-theme')==='light')t='light';}catch(e){}document.documentElement.setAttribute('data-theme',t);})();</script>
+<!-- The palette, both themes, shared by every page. Linked BEFORE this
+     page's own <style> so a page can still override a token, and
+     render-blocking so the first frame is never unstyled. -->
+<link rel="stylesheet" href="/theme.css">
+<style>
+  /* Scrollbars, product-wide. The browser default is a bright white bar
+     that punches through the dark palette — reported from the upgrade
+     transcript pane, where it sat a foot from an amber status line.
+     color-scheme lets the engine render native bars dark; the explicit
+     rules tune the thumb to platinum: visible when sought, quiet when
+     not. Hover brightens so grabbing it stays obvious. */
+  *::-webkit-scrollbar-thumb:hover { background: rgba(178, 190, 204, 0.55); background-clip: padding-box; }
+  *::-webkit-scrollbar-corner { background: transparent; }
+html[data-embedded] header{display:none}
+  /* ── #129. The header cannot overlap itself ──────────────────────────
+   *
+   * Reported on a 390px iPhone: the theme toggle sat on top of the final E
+   * of APERIRE ONE. Measured rather than guessed, on the shell at 390: the
+   * wordmark ran to x=156 and the toggle started at x=152. Four pixels.
+   *
+   * The cause is that .brand sits in an `auto` grid track and carries
+   * white-space: nowrap, so it takes its min-content width and cannot give
+   * any of it back. Add one more control to the right cluster and the two
+   * simply pass through each other: nothing in the layout says they may
+   * not. The shell is where it showed first because only the shell carries
+   * the account pill, 134px of the 374 available.
+   *
+   * Two changes, in this order.
+   *
+   * 1. The wordmark is CLIPPED to its own box. That is the structural half:
+   *    whatever the width, whatever gets added to the right cluster, the
+   *    text can no longer paint outside the space it was given, so an
+   *    overlap is not a thing that can happen. min-width: 0 is what lets
+   *    the track shrink at all (a grid item's automatic minimum size is
+   *    min-content, which for nowrap text is the whole word). The clip
+   *    belongs on .brand-text, which is where the two words are. It was
+   *    on .brand as well until #238, and .brand is what positions the
+   *    hover explainer: a box that hangs entirely BELOW .brand's own
+   *    27px, so clipping there deleted the tip on every page at every
+   *    width and no operator ever saw it. .brand keeps min-width: 0,
+   *    which is the part that was doing the work.
+   *
+   * 2. Below 420px the word ONE steps out, leaving the mark and APERIRE.
+   *    Clipping alone would be honest but ugly, rendering "APERIRE O…".
+   *    Dropping ONE frees 37px where 4 were needed, so the wordmark is
+   *    whole rather than truncated on exactly the phones that were short.
+   *    430px and up keeps the full lockup.
+   *
+   * `header nav.tabs` rather than `nav.tabs` so this outranks each page's
+   * own header rules without depending on where it lands in the file, and
+   * so the seven tab pages and the shell get identical treatment.
+   * theme-walk.mjs asserts no two header boxes intersect, on every page, at
+   * every width, in both themes. */
+  header nav.tabs .brand { min-width: 0; }
+  header nav.tabs .brand-text {
+    min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  }
+  /* ONE steps out only when the row genuinely has no space for it. The
+     420px breakpoint this replaces was a guess calibrated to the longest
+     username, so every operator with a shorter one lost the brand's name
+     for nothing (reported: a wide empty gap between APERIRE and the
+     toggle). theme-toggle.js measures and sets data-fit; this rule is
+     what it toggles. Default is the full lockup, so a browser with no
+     JavaScript keeps the whole wordmark and the clip above stops it
+     overlapping anything. */
+  header nav.tabs .brand[data-fit="short"] .brand-one { display: none; }
+</style>
+<style>
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg); color: var(--text);
+    font-family: var(--sans);
+    font-size: 15px; line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ── Header + tabs (identical pattern to Overview / Consensus) ──── */
+  /* ══════════════════════════════════════════════════════════════════
+     Header — promoted to every width (decisions.md D5, accepted
+     2026-08-10). See public/index.html's identical header block for the
+     full reasoning; this file carries the same structure so the shell and
+     every standalone page render one consistent chrome.
+     ══════════════════════════════════════════════════════════════════ */
+  header { position: sticky; top: 0; z-index: 50; background: var(--bg); }
+  nav.tabs {
+    display: grid; grid-template-columns: auto 1fr auto;
+    align-items: center; gap: 6px;
+    padding: 8px 4px 8px 8px; border-bottom: 1px solid var(--border);
+    position: relative;
+  }
+  .brand {
+    grid-column: 1; display: flex; align-items: center; gap: 8px;
+    padding: 2px 0; white-space: nowrap; min-width: 0;
+    position: relative; cursor: default;
+    /* No underline and no visited purple on the name: it is a link home,
+       and a browser dresses one by default. The href and the hover tooltip
+       are untouched. See public/overview.html for the full comment; the
+       same two declarations sit on .brand in every tab. */
+    text-decoration: none; color: inherit;
+  }
+  .brand-tip {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 4px;
+    width: 340px;
+    /* #133. Bounded by the screen, not just by 340px. The box is laid out
+       whether or not it is shown, so a tip wider than the viewport is a page
+       wider than the viewport — 32px of it at 320px. Nothing clips it any
+       more: the clip on `.brand` was what took this tip off every page, and
+       #238 lifted it. So this cap is the whole of what keeps the page
+       fitting, and it is also what lets the tip be read on a narrow screen.
+       32px, not 16: `100vw` counts the scrollbar the client width does not,
+       and the box starts 12px in. */
+    max-width: calc(100vw - 32px);
+    white-space: normal;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--text-dim);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+    opacity: 0;
+    pointer-events: none;
+    transform: translateY(-4px);
+    transition: opacity 180ms ease 120ms, transform 180ms ease 120ms;
+    z-index: 100;
+  }
+  .brand:hover .brand-tip,
+  .brand:focus-within .brand-tip { opacity: 1; transform: translateY(0); }
+  .brand-tip strong { color: var(--text); font-weight: 700; letter-spacing: 0.01em; }
+  .brand-mark { width: 23px; height: 23px; flex-shrink: 0; object-fit: contain; display: block; }
+  .brand-text {
+    /* The login card's brand treatment, adopted for consistency (operator:
+       "I like the style of the login page"): uppercase, wide tracking,
+       strong white APERIRE, light dim ONE — no gradient fill. */
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text);
+  }
+  .brand-one { color: var(--text); font-weight: 300; opacity: 0.7; }
+  nav.tabs > .tab { display: none; }
+  .tabs-spacer { display: none; }
+  .tab-pubkey { display: none; }
+
+  /* ── Node chip — grid column 2, true center. See public/index.html /
+     public/fleet-chip.js for the full comment; identical here. ───────── */
+  .node-chip-wrap { grid-column: 2; justify-self: center; position: relative; }
+  .node-chip {
+    display: flex; align-items: center; gap: 5px;
+    padding: 4px 8px; border: 1px solid var(--border); border-radius: 999px;
+    background: var(--surface); color: var(--text); font-family: var(--mono);
+    font-size: 11px; cursor: pointer; max-width: 46vw;
+    transition: border-color 140ms ease, background 140ms ease;
+  }
+  .node-chip:hover { border-color: var(--border-hi); background: var(--surface-hi); }
+  .node-chip:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 1px rgba(var(--blue-rgb), 0.4); }
+  .node-chip[aria-expanded="true"] { border-color: var(--accent); background: var(--surface-hi); }
+  .chip-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: var(--text-muted); border: 1px solid rgba(0,0,0,0.3); }
+  .chip-dot.ok   { background: var(--green); box-shadow: 0 0 4px rgba(var(--green-rgb), 0.55); }
+  .chip-dot.warn { background: var(--amber); box-shadow: 0 0 4px rgba(var(--amber-rgb), 0.55); }
+  .chip-name { font-weight: 700; max-width: 128px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chip-sep { color: var(--border-hi); }
+  .chip-roll { display: flex; align-items: center; gap: 4px; color: var(--text-dim); font-weight: 600; }
+  .chip-roll .hs-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-muted); border: 1px solid rgba(0,0,0,0.3); }
+  .chip-roll .hs-dot:not(:first-child) { margin-left: 3px; }
+  .chip-roll .hs-dot.ok   { background: var(--green); box-shadow: 0 0 4px rgba(var(--green-rgb), 0.55); }
+  .chip-roll .hs-dot.warn { background: var(--amber); box-shadow: 0 0 4px rgba(var(--amber-rgb), 0.55); }
+  .chip-roll .hs-dot.crit { background: var(--red);   box-shadow: 0 0 4px rgba(var(--red-rgb), 0.55); }
+  .chip-caret { color: var(--text-muted); font-size: 9px; }
+
+  .node-dd {
+    position: absolute; top: calc(100% + 8px); left: 50%; transform: translateX(-50%);
+    width: 320px; max-width: calc(100vw - 24px);
+    background: var(--surface-hi); border: 1px solid var(--border-hi); border-radius: var(--radius);
+    box-shadow: 0 20px 48px rgba(0,0,0,0.6); z-index: 60; overflow: hidden;
+  }
+  .node-dd[hidden] { display: none; }
+  /* Below 720px the chip has a row of its own and the panel anchors to it
+     (#236, theme.css). The pin that used to live here fixed the panel at
+     top: 54px, which assumed a one-row header and would now land on the
+     chip. */
+  .ndd-head { padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  .ndd-head .title { font-size: 11px; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-dim); font-family: var(--mono); }
+  .node-health-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+  .node-health-summary .total { font-size: 11px; font-weight: 700; color: var(--text-muted); font-family: var(--mono); }
+  .node-health-summary .hs-div { color: var(--border-hi); }
+  .node-health-summary .hs-stat { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 700; color: var(--text-dim); font-family: var(--mono); }
+  .node-health-summary .hs-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); border: 1px solid rgba(0,0,0,0.3); }
+  .node-health-summary .hs-dot.ok   { background: var(--green); box-shadow: 0 0 4px rgba(var(--green-rgb), 0.55); }
+  .node-health-summary .hs-dot.warn { background: var(--amber); box-shadow: 0 0 4px rgba(var(--amber-rgb), 0.55); }
+  .node-health-summary .hs-dot.crit { background: var(--red);   box-shadow: 0 0 4px rgba(var(--red-rgb), 0.55); }
+
+  .ndd-list { list-style: none; margin: 0; padding: 6px; display: flex; flex-direction: column; gap: 4px; }
+  .ndd-row { position: relative; display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); }
+  .ndd-row.warn { border-color: rgba(var(--amber-rgb), 0.4); }
+  .ndd-row.crit { border-color: rgba(var(--red-rgb), 0.5); }
+  .ndd-row.unreach { border-color: var(--border-hi); }
+  .ndd-link {
+    display: grid; grid-template-columns: auto auto 1fr; align-items: center; gap: 9px;
+    padding: 7px 10px; text-decoration: none; color: inherit; min-height: 44px;
+    border-radius: var(--radius-sm);
+  }
+  .ndd-link:hover, .ndd-link:focus-visible { background: var(--surface); outline: none; }
+  button.ndd-link { appearance: none; background: none; border: none; font: inherit; width: 100%; text-align: left; cursor: pointer; color: inherit; }
+  .ndd-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; background: var(--text-muted); border: 1px solid rgba(0,0,0,0.3); }
+  .ndd-dot.ok   { background: var(--green); box-shadow: 0 0 5px rgba(var(--green-rgb), 0.6); }
+  .ndd-dot.warn { background: var(--amber); box-shadow: 0 0 5px rgba(var(--amber-rgb), 0.6); }
+  .ndd-dot.crit { background: var(--red); box-shadow: 0 0 5px rgba(var(--red-rgb), 0.6); }
+  /* The node's role, the same letter and colours as the FLEET panel's .node-role (#1256). */
+  .ndd-role { font-family: var(--mono); font-size: 9px; font-weight: 700; line-height: 1; width: 14px; height: 14px; display: inline-flex; align-items: center; justify-content: center; border-radius: 3px; color: var(--text-muted); background: rgba(139,148,158,0.12); border: 1px solid var(--border-hi); }
+  .ndd-role.validator { color: var(--accent); background: rgba(var(--blue-rgb), 0.14); border-color: rgba(var(--blue-rgb), 0.42); }
+  .ndd-role.node { color: var(--text-dim); }
+  .ndd-role:empty { visibility: hidden; }
+  .ndd-link.ndd-self { grid-template-columns: auto 1fr; }
+  .ndd-body { min-width: 0; }
+  .ndd-name { display: block; font-family: var(--mono); font-size: 12.5px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ndd-state { display: block; font-family: var(--mono); font-size: 11px; color: var(--text-dim); }
+  .ndd-state.warn { color: var(--amber); }
+  .ndd-state.crit { color: var(--red); }
+  .ndd-state.unreach { color: var(--text-muted); }
+  .ndd-cur-tag { font-size: 9px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--accent); background: rgba(var(--blue-rgb), 0.12); border: 1px solid rgba(var(--blue-rgb), 0.4); border-radius: 999px; padding: 1px 6px; margin-left: 6px; }
+  span.ndd-link { cursor: default; }
+  span.ndd-link:hover { background: none; }
+  .ndd-ask {
+    justify-self: end; align-self: center; margin-left: 10px; margin-right: 10px; position: relative;
+    padding: 2px 8px; text-decoration: none; white-space: nowrap;
+    font-size: 10px; font-weight: 700; color: var(--amber);
+    background: var(--amber-soft); border: 1px solid rgba(var(--amber-rgb), 0.45);
+    border-radius: 20px;
+  }
+  /* No leftward bleed: the pseudo-element's own left inset moves INWARD
+     (4px) rather than extending past the ask link's true edge, and the
+     link itself now carries a real margin-left — together these leave a
+     genuine dead zone between the node button and this hit area, instead
+     of the two abutting with zero gap. */
+  .ndd-ask::before { content: ''; position: absolute; inset: -12px -6px -12px 4px; }
+  .ndd-ask:hover, .ndd-ask:focus-visible { background: rgba(var(--amber-rgb), 0.3); outline: none; }
+  .ndd-foot { padding: 8px 14px 10px; border-top: 1px solid var(--border); font-size: 10.5px; color: var(--text-muted); line-height: 1.5; }
+
+  /* ── Right-hand cluster — grid column 3. ─────────────────────────── */
+  .right-group { grid-column: 3; justify-self: end; display: flex; align-items: center; gap: 6px; }
+  .navbg { order: 1; }
+  .audio-toggle { order: 2; width: 26px; height: 26px; flex: 0 0 auto; position: relative; margin: 0; }
+  .audio-toggle::before { content: ''; position: absolute; inset: -9px; }
+  .audio-toggle svg { width: 13px; height: 13px; }
+  .navcur { order: 3; }
+  .hamburger { order: 4; }
+
+  .navbg {
+    display: flex; align-items: center; gap: 4px; flex: 0 0 auto;
+    padding: 4px 6px; border: 1px solid var(--amber); border-radius: 999px;
+    background: var(--amber-soft); font-family: var(--mono); font-size: 10.5px;
+    color: var(--amber); cursor: pointer;
+  }
+  .navbg[hidden] { display: none; }
+  .navbg-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--amber); flex: 0 0 auto; }
+  .navbg.warn { background: rgba(var(--amber-rgb), 0.16); }
+  .navbg.warn .navbg-dot { animation: navbgpulse 2.4s ease-in-out infinite; }
+  .navbg.stale { border-color: var(--text-muted); color: var(--text-muted); background: var(--surface-hi); }
+  .navbg.stale .navbg-dot { background: var(--text-muted); animation: none; }
+  @keyframes navbgpulse {
+    0%, 100% { box-shadow: 0 0 0 0 var(--red-soft); }
+    50%      { box-shadow: 0 0 0 5px rgba(var(--red-rgb), 0); }
+  }
+
+  .navcur {
+    display: inline-block; flex: 0 1 auto; align-self: center;
+    font-size: 13px; font-weight: 600; letter-spacing: 0.04em; color: var(--accent);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    max-width: 140px; line-height: 1; text-align: right;
+  }
+  @media (max-width: 720px) {
+    .navcur { display: none; }
+  }
+
+  .hamburger {
+    display: flex; align-items: center; justify-content: center; flex: 0 0 auto;
+    width: 26px; height: 26px; position: relative;
+    padding: 0; margin: 0; border: none; border-radius: 50%;
+    background: transparent; cursor: pointer; transition: background 0.16s ease;
+  }
+  .hamburger::before { content: ''; position: absolute; top: -9px; bottom: -9px; left: -9px; right: -4px; }
+  .hamburger:active { opacity: 0.6; }
+  .hamburger[aria-expanded="true"] { background: rgba(var(--blue-rgb), 0.14); }
+  .hamburger .bars { position: relative; width: 16px; height: 11px; }
+  .hamburger .bars i {
+    position: absolute; left: 0; right: 0; height: 1.5px; border-radius: 2px;
+    background: var(--text-muted);
+    transition: transform 0.2s ease, opacity 0.2s ease, top 0.2s ease, background 0.2s ease;
+  }
+  .hamburger .bars i:nth-child(1) { top: 0; }
+  .hamburger .bars i:nth-child(2) { top: 4.75px; }
+  .hamburger .bars i:nth-child(3) { top: 9.5px; }
+  .hamburger[aria-expanded="true"] .bars i { background: var(--accent); }
+  .hamburger[aria-expanded="true"] .bars i:nth-child(1) { top: 4.75px; transform: rotate(45deg); }
+  .hamburger[aria-expanded="true"] .bars i:nth-child(2) { opacity: 0; }
+  .hamburger[aria-expanded="true"] .bars i:nth-child(3) { top: 4.75px; transform: rotate(-45deg); }
+
+  .scrim {
+    display: block; position: fixed; inset: 0; background: rgba(var(--bg-rgb), 0.6); z-index: 48;
+    opacity: 0; pointer-events: none; transition: opacity 0.18s ease;
+  }
+  .scrim.on { opacity: 1; pointer-events: auto; }
+
+  .mobmenu {
+    display: block; position: absolute; top: 100%; left: auto; right: 8px; z-index: 49;
+    /* A content-appropriate card on every width, not a full-bleed sheet —
+       the labels are short and edge-to-edge buried the page (operator
+       feedback, 2026-08-12). Fixed width rather than max-content because
+       the foot hint is one long line that would otherwise drag the card
+       back to full width; 280px fits the widest row (title + sub + check)
+       with air, and the hint wraps. Desktop (>=721px) keeps its own
+       fixed-position max-content card via the media block below. */
+    width: min(280px, 100vw - 16px);
+    background: var(--bg-soft); border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+    transform: translateY(-6px); opacity: 0; pointer-events: none;
+    transition: transform 0.2s ease-out, opacity 0.2s ease-out;
+    max-height: calc(100dvh - 120px); overflow-y: auto;
+  }
+  /* Desktop: the menu is a wider card under the hamburger. Full-bleed at
+     1600px curtained the entire dashboard behind a nav list — the operator's
+     first report on the promoted header. The phone's full-width sheet went
+     the same way on 2026-08-12: the labels are short, so .mobmenu above is a
+     280px card at every width, and this block only widens it past 720px and
+     lightens the scrim so the page stays readable while the menu is up. */
+  @media (min-width: 721px) {
+    .mobmenu {
+      position: fixed; left: auto; right: 10px; top: 52px;
+      width: min(340px, calc(100vw - 20px));
+      border: 1px solid var(--border); border-radius: 10px;
+      box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
+    }
+    .scrim { background: rgba(var(--bg-rgb), 0.22); }
+  }
+  .mobmenu.on {
+    transform: translateY(0); opacity: 1; pointer-events: auto;
+    transition: transform 0.14s ease-in, opacity 0.14s ease-in;
+  }
+  .mobmenu ul { list-style: none; margin: 0; padding: 6px; }
+  .mobmenu li + li { border-top: 1px solid var(--border); }
+  .mtab {
+    display: flex; align-items: center; gap: 10px; padding: 11px 16px 11px 14px;
+    text-decoration: none; color: var(--text-dim); min-height: 44px; position: relative;
+  }
+  .mtab:hover, .mtab:focus-visible { background: var(--surface); color: var(--text); }
+  .mtab-body { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+  .mtab-title { font-size: 14.5px; font-weight: 600; color: var(--text); }
+  .mtab-sub { font-size: 11.5px; color: var(--text-muted); }
+  .mtab-check { margin-left: auto; flex: 0 0 auto; width: 16px; height: 16px; color: var(--accent); visibility: hidden; }
+  .mtab.active { background: rgba(var(--blue-rgb), 0.08); }
+  .mtab.active::before {
+    content: ''; position: absolute; left: 0; top: 6px; bottom: 6px; width: 3px;
+    border-radius: 0 3px 3px 0; background: var(--accent);
+  }
+  .mtab.active .mtab-title { color: var(--text); }
+  .mtab.active .mtab-check { visibility: visible; }
+  .mobmenu-foot { padding: 9px 14px; border-top: 1px solid var(--border); font-size: 11px; color: var(--text-muted); }
+  /* ADR 0016. The Advisor nav entry and the pointer row that replaces it are
+     BOTH default-hidden in the markup and revealed when the published fact
+     says so, mirroring #fleetChipWrap. Gating them by hiding after the fetch
+     lands would give a declined-Advisor install a flash of an Advisor tab on
+     every page load, which is the nag the record forbids.
+
+     The !important is load-bearing, not decoration: .mtab sets display:flex,
+     and a class rule beats the user-agent's [hidden] { display: none }. A
+     bare hidden attribute on one of these does nothing at all. */
+  [data-advisor-nav][hidden], [data-advisor-pointer][hidden] { display: none !important; }
+  /* .madd, the menu's secondary rows: styled by mobile-nav.js, which owns them. */
+
+  html.menu-open, body.menu-open { overflow: hidden; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .hamburger .bars i, .scrim, .mobmenu, .node-dd, .node-chip { transition: none; }
+    .navbg.warn .navbg-dot { animation: none; }
+  }
+
+  /* ── Main layout ─────────────────────────────────────────────────── */
+  main {
+    width: 100%;
+    padding: clamp(4px, 0.5vw, 8px) clamp(14px, 1.6vw, 28px) clamp(10px, 1vw, 16px);
+    display: flex; flex-direction: column;
+    gap: clamp(6px, 0.7vw, 10px);
+  }
+
+  /* ── P0 card grid ────────────────────────────────────────────────── */
+  .card-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px;
+  }
+  /* 1100, not 1200 — iPad Pro 11" landscape is 1194px wide and a 1200 cutoff
+     caught it, stacking these four cards into two rows. Measured there: the
+     strip went from 170px to 354px and shoved four of the eight history
+     charts past the fold. RESPONSIVE-STANDARDS lists 1194 with the
+     four-column card grid; this makes that true. Same change on Consensus,
+     System and Insights. */
+  @media (max-width: 1100px) { .card-grid { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width:  720px) { .card-grid { grid-template-columns: 1fr; } }
+
+  .metric-card {
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--surface);
+    padding: 7px 16px 5px;
+  }
+  .metric-card .card-title {
+    text-align: center;
+    font-size: 13px; font-weight: 700; letter-spacing: 0.18em;
+    color: var(--text-dim); text-transform: uppercase;
+    margin-bottom: 3px; padding-bottom: 4px;
+    border-bottom: 1px solid var(--border);
+  }
+  .metric-card .card-sub {
+    text-align: center;
+    font-size: 10.5px; font-style: italic;
+    color: var(--text-muted);
+    margin: -2px 0 4px;
+  }
+  .metric-card .card-row {
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-family: var(--mono); padding: 2px 0; line-height: 1.3;
+  }
+  .metric-card .card-row .lbl {
+    font-size: 11.5px; color: var(--text-muted); text-transform: uppercase;
+    letter-spacing: 0.08em; font-weight: 500;
+  }
+  .metric-card .card-row .val {
+    font-size: 13px; color: var(--text); font-weight: 600;
+  }
+  .metric-card .card-row .val.ok    { color: var(--green); }
+  .metric-card .card-row .val.warn  { color: var(--amber); }
+  .metric-card .card-row .val.alert { color: var(--red); }
+  .metric-card .card-row .val.dim   { color: var(--text-muted); }
+
+  /* Upgrade-status pill — same colors as band thresholds */
+  .status-pill {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 11.5px; font-weight: 700;
+    letter-spacing: 0.06em;
+    padding: 2px 9px;
+    border-radius: 999px;
+    background: rgba(var(--green-rgb), 0.12);
+    color: var(--green);
+    border: 1px solid rgba(var(--green-rgb), 0.35);
+  }
+  .status-pill.behind  { background: rgba(var(--amber-rgb), 0.14); color: var(--amber); border-color: rgba(var(--amber-rgb), 0.38); }
+  .status-pill.ahead   { background: rgba(var(--blue-rgb), 0.14); color: var(--accent); border-color: rgba(var(--blue-rgb), 0.38); }
+  .status-pill.blocked { background: rgba(var(--red-rgb), 0.16);  color: var(--red);    border-color: rgba(var(--red-rgb), 0.42); }
+
+  /* Tooltip attached to a card-row — hover/focus reveals a breakdown. */
+  .card-row.has-tip { position: relative; cursor: help; }
+  .row-tip {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: -6px; right: -6px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-family: var(--mono); font-size: 11px; line-height: 1.55;
+    color: var(--text-dim);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+    opacity: 0; pointer-events: none;
+    transform: translateY(-3px);
+    transition: opacity 160ms ease 80ms, transform 160ms ease 80ms;
+    z-index: 40;
+    max-height: 220px; overflow: auto;
+    white-space: pre;
+    text-align: left;
+  }
+  .card-row.has-tip:hover .row-tip,
+  .card-row.has-tip:focus-within .row-tip { opacity: 1; transform: translateY(0); pointer-events: auto; }
+
+  /* Per-metric info icon placed right after each label. Small "i" in a
+     circle, matches the industry convention (Grafana/Material) so the
+     affordance is recognizable without training. Click/hover/focus
+     reveals a title + body + (optional) threshold bullet list. */
+  .info-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 13px; height: 13px;
+    margin-left: 6px;
+    border-radius: 50%;
+    border: 1px solid var(--text-muted);
+    color: var(--text-muted);
+    font-family: Georgia, 'Times New Roman', serif;
+    font-style: italic;
+    font-weight: 700;
+    font-size: 9px;
+    line-height: 1;
+    cursor: help;
+    position: relative;
+    vertical-align: middle;
+    text-transform: none;
+    letter-spacing: 0;
+    transition: color 120ms ease, border-color 120ms ease;
+  }
+  .info-icon::before { content: 'i'; position: relative; top: -0.5px; }
+  .info-icon:hover, .info-icon:focus, .info-icon:focus-within {
+    color: var(--accent);
+    border-color: var(--accent);
+    outline: none;
+  }
+  .info-tip {
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    /* Resting position, which nobody ever sees: -100% keeps the tip's right
+       edge at the icon's centre, so it can never stretch the page rightward.
+       An invisible popover still occupies scroll width — resting a 280px tip
+       centred under a right-side icon is a sideways-scrolling page.
+       positionInfoTip() sets the real, clamped position inline the moment the
+       icon is hovered or focused, so this value only has to be harmless, not
+       centred. Left overflow adds no scroll extent.
+       The SAME trick is needed vertically, and for the same reason:
+       `top:100%` rests the tip BELOW its icon, so an icon low on the page
+       rests a ~290px-tall invisible box past the fold and hands the document
+       that much scrollable area — a page-wide scrollbar with nothing in it.
+       The Y was -2px here, a nudge that never reached the screen anyway:
+       positionInfoTip() writes a bare translateX(...) on hover and focus,
+       which resets Y to 0, so the resting Y is only ever a scroll-extent
+       decision. -100% lifts the box above the icon, where upward overflow
+       adds no scroll extent either. */
+    transform: translate(-100%, -100%);
+    width: max-content;
+    min-width: 200px;
+    max-width: 280px;
+    padding: 14px 11px 10px;
+    background: var(--surface-hi);
+    border: 1px solid var(--border-hi);
+    border-radius: 7px;
+    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.55);
+    font-family: var(--sans);
+    font-size: 11.5px;
+    line-height: 1.5;
+    color: var(--text-dim);
+    text-align: left;
+    text-transform: none;
+    letter-spacing: 0;
+    white-space: normal;
+    opacity: 0;
+    pointer-events: none;
+    /* Opacity only. The resting transform above is a parking spot rather than
+       a position, so transitioning transform would slide the tip in from the
+       left as it takes up its real one. */
+    transition: opacity 160ms ease 80ms;
+    z-index: 60;
+  }
+  .info-icon:hover .info-tip,
+  .info-icon:focus .info-tip,
+  .info-icon:focus-within .info-tip {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translate(-50%, 0);
+  }
+  .info-tip .info-title {
+    display: block;
+    font-weight: 700;
+    color: var(--text);
+    margin-bottom: 4px;
+    font-size: 12px;
+  }
+  .info-tip p { margin: 0 0 5px; }
+  .info-tip p:last-child { margin-bottom: 0; }
+  .info-tip ul { margin: 5px 0 0; padding-left: 16px; }
+  .info-tip li { margin: 1px 0; }
+  /* Series list variant — used in chart-header info tips. Swatch, label,
+     and description lay out as a 3-column grid so columns align across
+     rows regardless of label width. */
+  .info-tip ul.tip-series {
+    list-style: none;
+    padding: 0;
+    margin: 6px 0 0;
+    display: grid;
+    grid-template-columns: 10px auto 1fr;
+    column-gap: 8px;
+    row-gap: 4px;
+    align-items: baseline;
+  }
+  .info-tip ul.tip-series li {
+    display: contents;   /* let the row's children participate in the outer grid */
+  }
+  .info-tip .tip-swatch {
+    display: inline-block;
+    width: 10px; height: 10px;
+    border-radius: 2px;
+    align-self: center;
+  }
+  .info-tip .tip-series-label {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    color: var(--text);
+    font-weight: 600;
+  }
+  .info-tip .tip-series-desc {
+    color: var(--text-dim);
+    font-size: 11px;
+  }
+
+  /* Chart-header info icons sit inline after the legend — no baseline
+     jump, no left-margin hiccup with the adjacent swatch. */
+  .hist-chart-head .info-icon { margin-left: 6px; }
+
+  /* If a row already has a breadkown tooltip (Countries, Versions,
+     Monthly Budget), suppress it while the info icon is being used so
+     only one popover is visible at a time. */
+  .card-row.has-tip:has(.info-icon:hover) .row-tip,
+  .card-row.has-tip:has(.info-icon:focus) .row-tip,
+  .card-row.has-tip:has(.info-icon:focus-within) .row-tip {
+    opacity: 0 !important;
+    pointer-events: none !important;
+  }
+
+  /* Countries tooltip uses a 3-col grid (flag · name · count) */
+  .row-tip.tip-grid { white-space: normal; display: grid; grid-template-columns: 14px 1fr auto; column-gap: 8px; row-gap: 3px; align-items: center; }
+  .row-tip.tip-grid .tip-flag { width: 14px; height: 14px; border-radius: 50%; display: block; object-fit: cover; }
+  .row-tip.tip-grid .tip-flag.unknown { background: var(--surface-hi); border: 1px solid var(--border); }
+  .row-tip.tip-grid .tip-name { color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row-tip.tip-grid .tip-n    { color: var(--text); text-align: right; font-variant-numeric: tabular-nums; }
+
+  /* ── P1 + P2 placeholder sections ───────────────────────────────── */
+  .band-card {
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--surface); padding: 10px 14px 14px;
+  }
+  .band-card h2 {
+    margin: 0 0 6px;
+    font-size: 12px; font-weight: 700; letter-spacing: 0.16em;
+    color: var(--text-dim); text-transform: uppercase;
+  }
+  .band-card .coming-soon {
+    display: flex; align-items: center; justify-content: center;
+    min-height: 120px;
+    color: var(--text-muted);
+    font-family: var(--mono); font-size: 11.5px; letter-spacing: 0.04em;
+    border: 1px dashed var(--border); border-radius: var(--radius-sm);
+    background: var(--bg);
+  }
+
+  /* ── Stale-feed banner ───────────────────────────────────────────── */
+  /* Shown when the validator relay (aperire-relay) stops reporting. Every
+     host-network metric on this page flows only through that feed, so a
+     dead relay leaves the cards/charts blank — this banner says WHY and
+     HOW to fix it, instead of leaving the operator staring at empty panels
+     with no explanation. */
+  .feed-banner {
+    display: flex; align-items: center; gap: 10px;
+    margin-bottom: 14px; padding: 10px 14px;
+    border: 1px solid var(--red); border-radius: var(--radius);
+    background: var(--red-soft); color: var(--text);
+    font-size: 13px; line-height: 1.45;
+  }
+  .feed-banner[hidden] { display: none; }
+  .feed-banner .fb-icon { flex: 0 0 auto; color: var(--red); font-size: 16px; line-height: 1; }
+  .feed-banner .fb-body { flex: 1 1 auto; }
+  .feed-banner .fb-body strong { color: var(--red); }
+  .feed-banner code {
+    background: var(--bg-soft); border: 1px solid var(--border);
+    border-radius: 4px; padding: 1px 5px; font-size: 12px;
+  }
+  /* Cards whose values come from the (now stale) relay feed get dimmed so
+     the operator does not read a frozen number as current. */
+  .metric-card.feed-stale { opacity: 0.5; transition: opacity 0.2s; }
+
+  /* Fleet peer view — D8 last tab batch. Same shape as consensus.html/
+     governance.html's own peer-view banner and unavailable-note. */
+  .peer-view-banner {
+    text-align: center;
+    font-size: 11px; font-weight: 600; letter-spacing: 0.04em;
+    color: var(--amber);
+    padding: 0 0 2px;
+  }
+  .peer-unavailable-note {
+    font-size: 11px; color: var(--text-muted); padding: 6px 2px 0; text-align: center;
+  }
+
+  /* ── History card with time-range toggle + sparkline grid ────────── */
+  /* Shared shape with Consensus tab — operators get the same range toggle
+     (Live / 1h / 6h / 12h / 24h / 7d / 30d) across pages. */
+  .history-card {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    padding: 10px 14px 12px;
+  }
+  .history-header {
+    display: flex; justify-content: space-between; align-items: center;
+    /* #133. The seven range buttons are 256px of nowrap control, and a flex
+       row that cannot fit does not shrink: heading plus toggle needed 351px
+       against a 320px viewport, and the page really was that wide. Wrapping
+       drops the toggle onto its own line there instead. It costs one row of
+       height at a width no other row on this page fits at either, and does
+       nothing from 375 up, where the two still share a line. */
+    flex-wrap: wrap; gap: 4px 10px;
+    margin-bottom: 8px;
+  }
+  .history-header h2 {
+    margin: 0;
+    font-size: 12px; font-weight: 700; letter-spacing: 0.16em;
+    color: var(--text-dim); text-transform: uppercase;
+  }
+  .range-toggle {
+    display: inline-flex; gap: 0;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 2px;
+  }
+  .range-btn {
+    appearance: none;
+    background: transparent;
+    color: var(--text-dim);
+    border: 0;
+    border-radius: 4px;
+    padding: 3px 9px;
+    font-size: 10.5px;
+    font-family: var(--mono);
+    letter-spacing: 0.02em;
+    cursor: pointer;
+    transition: background 120ms ease, color 120ms ease;
+  }
+  .range-btn:hover:not(.active) { color: var(--text); background: rgba(var(--wash-rgb), 0.04); }
+  .range-btn.active {
+    background: rgba(var(--blue-rgb), 0.18);
+    color: var(--accent);
+    box-shadow: inset 0 0 0 1px rgba(var(--blue-rgb), 0.45);
+  }
+  /* 2 columns × 3 rows — symmetrical grid the user asked for. */
+  .history-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    grid-template-rows: repeat(4, auto);
+    gap: 10px;
+  }
+  @media (max-width: 720px) { .history-grid { grid-template-columns: 1fr; grid-template-rows: repeat(8, auto); } }
+
+  /* Mobile and narrow-tablet chart-head layout — the default row had legend
+     + PEAK pills + meta all competing for narrow width, which on iPhone broke
+     titles across two lines and pushed the current-value off the right edge.
+     Let the head wrap cleanly: title + current-value stay on line 1,
+     legend + info-icon drop to line 2.
+
+     Held to 759 rather than 720, because the two-column history grid above
+     starts at 721 and a head on ONE line is 341px wide, so a chart card
+     needs 363px and two of them plus the gap need 707px of grid. At 721
+     the grid has 663px, the `1fr` tracks freeze at that min-content and the
+     right-hand column hangs 15px past the viewport (#246). Wrapping the head
+     drops the card's min-content to ~165px and the tracks go back to their
+     1fr share. The tracks stop being frozen at 765px and up, so this ends
+     below 760, the first width already proven clean. */
+  @media (max-width: 759px) {
+    .hist-chart-head { flex-wrap: wrap; row-gap: 4px; }
+    .hist-title { white-space: nowrap; }
+    /* The info icon sits WITH its title on line 1 (order 1, right after
+       it), never wrapped down to its own line — operator feedback from the
+       iPhone: the lone circled-i under the title read as a stray control.
+       The meta badges keep the right edge; if the row genuinely can't fit,
+       the wrap now breaks before the badges, not between title and icon. */
+    .hist-info-icon { order: 1; }
+    .hist-meta { margin-left: auto; order: 2; }
+    .hist-legend {
+      flex-basis: 100%;
+      order: 3;
+      flex-wrap: wrap; row-gap: 4px;
+    }
+    .hist-total { white-space: nowrap; }
+    .hist-legend .series-peak { font-size: 9px; padding: 0 5px; }
+  }
+  .hist-chart {
+    position: relative;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 6px 10px 4px;
+  }
+  .hist-chart-head {
+    display: flex; justify-content: space-between; align-items: baseline;
+    margin-bottom: 3px;
+    gap: 10px;
+  }
+  .hist-title {
+    font-size: 10.5px; font-weight: 700; letter-spacing: 0.1em;
+    text-transform: uppercase; color: var(--text-muted);
+  }
+  .hist-legend {
+    display: inline-flex; gap: 10px; align-items: center;
+    font-family: var(--mono); font-size: 10px; color: var(--text-dim);
+    letter-spacing: 0.01em;
+  }
+  /* Per-series peak pill — mirrors the bandwidth hist-total's shape/tint
+     so overlaid series-peak readouts visually match the other metrics'
+     range-total badges. Sits adjacent to its legend label with a small
+     left-margin; its inner .lbl element is dimmer so "PEAK" reads as
+     a qualifier and the number pops. */
+  .hist-legend .series-peak {
+    display: inline-flex; align-items: baseline; gap: 4px;
+    font-family: var(--mono); font-size: 10px; font-weight: 700;
+    color: var(--text); letter-spacing: 0.02em;
+    background: rgba(var(--blue-rgb), 0.12);
+    border: 1px solid rgba(var(--blue-rgb), 0.35);
+    border-radius: 4px;
+    padding: 1px 6px;
+    margin-left: 5px;
+  }
+  .hist-legend .series-peak .lbl { color: var(--text-dim); font-weight: 600; }
+  .hist-legend .series-peak:empty { display: none; }
+  .hist-legend .swatch {
+    display: inline-block; width: 8px; height: 8px;
+    border-radius: 2px; margin-right: 4px; vertical-align: middle;
+  }
+  .hist-meta { display: inline-flex; gap: 6px; align-items: baseline; margin-left: auto; }
+  .hist-total {
+    font-family: var(--mono); font-size: 12.5px; font-weight: 700;
+    color: var(--text); letter-spacing: 0.02em;
+    background: rgba(var(--blue-rgb), 0.12);
+    border: 1px solid rgba(var(--blue-rgb), 0.35);
+    border-radius: 4px;
+    padding: 2px 8px;
+  }
+  .hist-total .lbl { color: var(--text-dim); font-weight: 600; margin-right: 5px; }
+  .hist-interval {
+    font-family: var(--mono); font-size: 9.5px; font-weight: 600;
+    color: var(--text-muted); letter-spacing: 0.04em;
+    background: rgba(var(--wash-rgb), 0.04);
+    border-radius: 3px;
+    padding: 1px 5px;
+  }
+  .hist-plot { position: relative; }
+  /* Chart height scales with viewport — see consensus.html for the rationale.
+     Network grew from 3 rows to 4 when the port-connection charts were added,
+     so the clamp is tighter here than on Consensus to keep all 8 charts
+     on-screen at iPad and 1080p without scrolling. */
+  .hist-svg { width: 100%; height: clamp(55px, 10dvh, 100px); display: block; }
+  /* ── Fold fit: size the charts from what is LEFT ──
+     Same treatment as Consensus, four rows instead of two. A fixed dvh slice
+     cannot land the page on the fold here: the card grid above is fixed-height
+     content, so the coefficient only scales the part that already fit. The old
+     12dvh desktop bump is what pushed the bottom row off a 1194x834 iPad.
+
+     530px is the strip — everything on this page that is not a chart body —
+     measured on the lab once the trims below are applied. It is the no-JS
+     default; the fold-fit.js tag at the foot of this file keeps it true as the
+     card grid rewraps or a peer view swaps a panel for a note.
+
+     From 721px up, because the history grid holds its two columns and four
+     rows all the way down to the phone breakpoint, where it becomes eight
+     single rows and the divisor would be wrong. */
+  @media (min-width: 721px) {
+    .hist-svg { height: clamp(55px, calc((100dvh - var(--hist-strip, 530px)) / 4), 150px); }
+  }
+  .hist-line { fill: none; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+  .hist-fill { stroke: none; }
+  .hist-grid line {
+    stroke: rgba(var(--wash-rgb), 0.15);
+    stroke-width: 1;
+    stroke-dasharray: 2 3;
+    vector-effect: non-scaling-stroke;
+  }
+  /* Y-axis ticks: "nice" rounded values between data min and max, rendered
+     as positioned labels to the left of the plot with a fade-out background
+     so the value stays readable even when a line runs under it. */
+  .hist-y-axis {
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+  }
+  .hist-y-axis .hist-tick {
+    position: absolute; left: 2px;
+    transform: translateY(-50%);
+    font-family: var(--mono); font-size: 9.5px;
+    color: var(--text-muted); letter-spacing: 0.02em;
+    opacity: 0.85;
+    background: linear-gradient(90deg, var(--bg) 60%, transparent);
+    padding: 0 4px 0 0;
+    white-space: nowrap;
+  }
+  .hist-axis { position: relative; height: 20px; margin-top: 1px; }
+
+
+  .axis-tick {
+    position: absolute;
+    top: 0;
+    transform: translateX(-50%);
+    font-family: var(--mono);
+    font-size: 9.5px;
+    color: var(--text-muted);
+    line-height: 1.1;
+    text-align: center;
+    white-space: nowrap;
+    pointer-events: none;
+  }
+  .axis-tick .t { display: block; color: var(--text-dim); }
+  .axis-tick .d { display: block; color: var(--text-muted); opacity: 0.85; font-size: 8.5px; margin-top: 1px; }
+
+  /* Hover crosshair + tooltip for history charts. Vertical rule tracks the
+     cursor across the plot; the floating pill reads the time at that x and
+     the nearest sample value for each series on the chart. */
+  .hist-crosshair {
+    stroke: rgba(var(--wash-rgb), 0.35);
+    stroke-width: 1;
+    stroke-dasharray: 2 3;
+    vector-effect: non-scaling-stroke;
+    pointer-events: none;
+  }
+  .hist-hover-tip {
+    position: absolute;
+    pointer-events: none;
+    z-index: 3;
+    min-width: 110px;
+    padding: 6px 9px;
+    background: rgba(var(--bg-rgb), 0.95);
+    border: 1px solid var(--border);
+    border-radius: 5px;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    color: var(--text-dim);
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+    line-height: 1.35;
+    white-space: nowrap;
+  }
+  .hist-hover-tip[hidden] { display: none; }
+  .hist-hover-tip .time {
+    color: var(--text);
+    font-weight: 600;
+    font-size: 10.5px;
+    margin-bottom: 3px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 3px;
+  }
+  .hist-hover-tip .time .date {
+    color: var(--text-muted);
+    font-weight: 400;
+    margin-left: 4px;
+  }
+  .hist-hover-tip .r {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-top: 2px;
+  }
+  .hist-hover-tip .sw {
+    width: 7px; height: 7px; border-radius: 50%;
+    flex: 0 0 auto;
+  }
+  .hist-hover-tip .lbl { color: var(--text-muted); flex: 1; }
+  .hist-hover-tip .val { color: var(--text); font-weight: 600; margin-left: auto; }
+
+  footer {
+    padding: 10px 18px 16px;
+    color: var(--text-muted);
+    font-size: 11px;
+    font-family: var(--mono);
+    display: flex; justify-content: space-between;
+    border-top: 1px solid var(--border);
+    margin-top: 6px;
+  }
+  /* The status footer is a desktop nicety — on a phone or an iPad it is the
+     last thing on every page, saying nothing the header does not, at the
+     cost of a scroll. Tablet tops out at 1199 in the breakpoint table. */
+  @media (max-width: 1199px) { footer { display: none; } }
+
+  /* ── Reclaim strip height so the last chart row clears the fold ──
+     The companion to the chart residual above. Padding, gap and margin trims
+     only — no font shrinks and no row is hidden. Worth ~30px here, which with
+     four chart rows sharing the residual is ~7px on each chart. Scoped to
+     721px and up; the phone layout stacks and scrolls anyway. */
+  @media (min-width: 721px) {
+    main { row-gap: clamp(5px, 0.55vw, 7px); padding-bottom: clamp(8px, 0.7vw, 11px); }
+    .metric-card { padding: 5px 16px 4px; }
+    .metric-card .card-title { margin-bottom: 2px; padding-bottom: 3px; }
+    .history-card { padding: 8px 14px 9px; }
+    .history-header { margin-bottom: 5px; }
+    .history-grid { gap: 8px; }
+  }
+
+  /* Audio toggle */
+  .audio-toggle {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    padding: 3px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-dim);
+    transition: color 0.15s, border-color 0.15s;
+    width: 28px;
+    height: 28px;
+    flex-shrink: 0;
+    align-self: center;
+    margin: 0 0 0 14px;
+  }
+  .audio-toggle:hover { color: var(--text); border-color: var(--text-muted); }
+  .audio-toggle.playing { color: var(--green); border-color: var(--green); }
+  .audio-toggle svg { width: 16px; height: 16px; }
+</style>
+<script src="/theme-toggle.js" defer></script>
+</head>
+<body>
+
+<header>
+  <nav class="tabs" data-tabname="Network">
+    <a class="brand" href="/" aria-label="Aperire — back to the dashboard">
+      <img class="brand-mark" src="/aperire-mark.svg" alt="Aperire One" />
+      <span class="brand-text">Aperire <span class="brand-one">One</span></span>
+      <span class="brand-tip" role="tooltip"><strong>Aperire One</strong>, from the Latin &ldquo;to open&rdquo; or &ldquo;to reveal&rdquo; — an XRPL validator and node dashboard that brings a whole fleet into one view.</span>
+    </a>
+
+    <!-- Fleet node picker — decisions.md D5, task step C. See
+         public/index.html for the full comment; identical markup here. -->
+    <div class="node-chip-wrap" id="fleetChipWrap" hidden>
+      <button type="button" class="node-chip" id="fleetChip" aria-expanded="false" aria-controls="fleetDD">
+        <span class="chip-dot" id="fleetChipDot" aria-hidden="true"></span>
+        <span class="chip-name" id="fleetChipName">&mdash;</span>
+        <span class="chip-sep" id="fleetChipSep" aria-hidden="true">&middot;</span>
+        <span class="chip-roll" id="fleetChipRoll"></span>
+        <span class="chip-caret" aria-hidden="true">&#9662;</span>
+      </button>
+      <div class="node-dd" id="fleetDD" aria-label="Fleet nodes" hidden>
+        <div class="ndd-head">
+          <div class="title">Fleet</div>
+          <div class="node-health-summary" id="fleetDDSummary"></div>
+        </div>
+        <ul class="ndd-list" id="fleetDDList"></ul>
+        <div class="ndd-foot">Switches this dashboard to that node. No second sign-in, no leaving this dashboard.</div>
+      </div>
+    </div>
+
+    <div class="tabs-spacer"></div>
+    <div class="tab-pubkey"><span class="lbl">Pubkey</span><span class="val" id="pubkeyVal">—</span></div>
+    <span class="right-group">
+    <button class="audio-toggle" id="audio-toggle" title="Toggle ambient audio">
+      <svg class="audio-icon-off" viewBox="0 0 16 16" fill="currentColor" style="display:none"><path d="M6.717 3.55A.5.5 0 0 1 7 4v8a.5.5 0 0 1-.812.39L3.825 10.5H1.5A.5.5 0 0 1 1 10V6a.5.5 0 0 1 .5-.5h2.325l2.363-1.89a.5.5 0 0 1 .529-.06zM6 5.04 4.312 6.39A.5.5 0 0 1 4 6.5H2v3h2a.5.5 0 0 1 .312.11L6 10.96V5.04zm3.05.05a.5.5 0 0 1 .707 0c.652.652.978 1.486.978 2.41s-.326 1.758-.978 2.41a.5.5 0 1 1-.707-.707c.476-.476.685-1.073.685-1.703s-.21-1.227-.685-1.703a.5.5 0 0 1 0-.707z"/><path d="M1.5 14.5l13-13" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+      <svg class="audio-icon-on" viewBox="0 0 16 16" fill="currentColor"><path d="M6.717 3.55A.5.5 0 0 1 7 4v8a.5.5 0 0 1-.812.39L3.825 10.5H1.5A.5.5 0 0 1 1 10V6a.5.5 0 0 1 .5-.5h2.325l2.363-1.89a.5.5 0 0 1 .529-.06zM6 5.04 4.312 6.39A.5.5 0 0 1 4 6.5H2v3h2a.5.5 0 0 1 .312.11L6 10.96V5.04zm3.05.05a.5.5 0 0 1 .707 0c.652.652.978 1.486.978 2.41s-.326 1.758-.978 2.41a.5.5 0 1 1-.707-.707c.476-.476.685-1.073.685-1.703s-.21-1.227-.685-1.703a.5.5 0 0 1 0-.707zm2.122-2.12a.5.5 0 0 1 .707 0C13.26 4.352 14 5.985 14 7.5c0 1.515-.74 3.148-2.12 4.53a.5.5 0 0 1-.708-.708C12.37 10.124 13 8.763 13 7.5c0-1.263-.63-2.624-1.828-3.822a.5.5 0 0 1 0-.707z"/></svg>
+    </button>
+
+    <button type="button" class="navbg" id="navBg" hidden aria-label="Break glass open">
+      <span class="navbg-dot" aria-hidden="true"></span>
+      <span id="navBgText">12m</span>
+    </button>
+    <span class="navcur" aria-hidden="true">Network</span>
+    <button type="button" class="hamburger" id="hamburgerBtn" aria-expanded="false" aria-controls="mobMenu" aria-label="Open navigation menu">
+      <span class="bars" aria-hidden="true"><i></i><i></i><i></i></span>
+    </button>
+    </span>
+  </nav>
+
+  <div class="scrim" id="scrim"></div>
+
+  <nav class="mobmenu" id="mobMenu" aria-label="Dashboard sections">
+    <ul>
+      <li><a class="mtab" href="/#/overview">
+        <span class="mtab-body"><span class="mtab-title">Overview</span><span class="mtab-sub">Health at a glance</span></span>
+        <svg class="mtab-check" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M13.7 3.7 6 11.4 2.3 7.7 3.7 6.3 6 8.6l6.3-6.3z"/></svg>
+      </a></li>
+      <li><a class="mtab" href="/#/consensus">
+        <span class="mtab-body"><span class="mtab-title">Consensus</span><span class="mtab-sub">Voting on new ledgers</span></span>
+        <svg class="mtab-check" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M13.7 3.7 6 11.4 2.3 7.7 3.7 6.3 6 8.6l6.3-6.3z"/></svg>
+      </a></li>
+      <li><a class="mtab active" href="/#/network" aria-current="page">
+        <span class="mtab-body"><span class="mtab-title">Network</span><span class="mtab-sub">Peers &amp; connections</span></span>
+        <svg class="mtab-check" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M13.7 3.7 6 11.4 2.3 7.7 3.7 6.3 6 8.6l6.3-6.3z"/></svg>
+      </a></li>
+      <li><a class="mtab" href="/#/system">
+        <span class="mtab-body"><span class="mtab-title">System</span><span class="mtab-sub">Compute health</span></span>
+        <svg class="mtab-check" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M13.7 3.7 6 11.4 2.3 7.7 3.7 6.3 6 8.6l6.3-6.3z"/></svg>
+      </a></li>
+      <li><a class="mtab" href="/#/governance">
+        <span class="mtab-body"><span class="mtab-title">Governance</span><span class="mtab-sub">Rules &amp; votes</span></span>
+        <svg class="mtab-check" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M13.7 3.7 6 11.4 2.3 7.7 3.7 6.3 6 8.6l6.3-6.3z"/></svg>
+      </a></li>
+      <li><a class="mtab" href="/#/insights">
+        <span class="mtab-body"><span class="mtab-title">Insights</span><span class="mtab-sub">Alerts &amp; audit</span></span>
+        <svg class="mtab-check" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M13.7 3.7 6 11.4 2.3 7.7 3.7 6.3 6 8.6l6.3-6.3z"/></svg>
+      </a></li>
+      <li hidden data-advisor-nav><a class="mtab" href="/#/advisor">
+        <span class="mtab-body"><span class="mtab-title">Advisor</span><span class="mtab-sub">Diagnosis &amp; guidance</span></span>
+        <svg class="mtab-check" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M13.7 3.7 6 11.4 2.3 7.7 3.7 6.3 6 8.6l6.3-6.3z"/></svg>
+      </a></li>
+    </ul>
+    <!-- ADR 0016 decision 6. When `any` is false the Advisor tab is not
+         rendered, and this one quiet row takes its place at the BOTTOM of the
+         menu, below the tab list and styled as a secondary item rather than
+         as a tab. It is the only invitation anywhere in the product: not a
+         banner, not a toast, not a badge, and it appears on no other tab.
+         Reached only by deliberate navigation. -->
+    <a class="madd" href="/advisor.html" hidden data-advisor-pointer>
+      <span class="madd-title">Add the Advisor</span>
+      <span class="madd-sub">Optional. One command.</span>
+    </a>
+    <div class="mobmenu-foot">Tap a section to switch. Press Esc or tap outside to close.</div>
+  </nav>
+</header>
+
+<main>
+
+  <!-- D8 last tab batch — "viewing X · as of Ns ago" (security-review-d8-fetchthrough
+       P1-030 — a peer's data must never present as live). Populated by
+       renderPeerBanner(). -->
+  <div class="peer-view-banner" id="peerViewBanner" role="status" hidden></div>
+
+  <!-- Stale-feed banner — hidden until the relay feed goes silent. Gated off
+       while a peer is on screen (checkRelayFeed) — it names THIS box's own
+       relay, never a peer's. -->
+  <div class="feed-banner" id="relayFeedBanner" hidden role="alert">
+    <span class="fb-icon">&#9888;</span>
+    <span class="fb-body">
+      <strong>Host-network feed stale.</strong>
+      <span id="relayFeedDetail">The validator relay has not reported recently.</span>
+      Bandwidth, packets, connection counts and TCP metrics below may be outdated.
+      Check the relay: <code>sudo systemctl status aperire-relay</code>
+    </span>
+  </div>
+
+  <!-- ═══ P0 — 4 cards across ═══ -->
+  <div class="card-grid">
+
+    <!-- Card 1: Peer Pool -->
+    <div class="metric-card">
+      <div class="card-title">Peer Pool</div>
+      <div class="card-row"><span class="lbl">Peer Count</span><span class="val" id="peerCount">—</span></div>
+      <div class="card-row"><span class="lbl">Inbound</span><span class="val" id="peersInbound">—</span></div>
+      <div class="card-row"><span class="lbl">Outbound</span><span class="val" id="peersOutbound">—</span></div>
+      <div class="card-row"><span class="lbl">Insane Peers</span><span class="val" id="peersInsane">—</span></div>
+      <div class="card-row has-tip" tabindex="0"><span class="lbl">Countries</span><span class="val" id="countries">—</span><span class="row-tip" id="countriesTip" role="tooltip">—</span></div>
+      <div class="card-row has-tip" tabindex="0"><span class="lbl">Versions</span><span class="val" id="versionsCount">—</span><span class="row-tip" id="versionsTip" role="tooltip">—</span></div>
+    </div>
+
+    <!-- Card 2: Peer Quality -->
+    <div class="metric-card">
+      <div class="card-title">Peer Quality</div>
+      <div class="card-row"><span class="lbl">Upgrade Status</span><span class="val"><span class="status-pill" id="upgradeStatus">—</span></span></div>
+      <div class="card-row"><span class="lbl">Latency p50</span><span class="val" id="latencyP50">—</span></div>
+      <div class="card-row"><span class="lbl">Latency p90</span><span class="val" id="latencyP90">—</span></div>
+      <div class="card-row"><span class="lbl">Latency p99</span><span class="val" id="latencyP99">—</span></div>
+      <div class="card-row"><span class="lbl">Ahead Peers</span><span class="val" id="aheadCount">—</span></div>
+      <div class="card-row"><span class="lbl">Ahead %</span><span class="val" id="aheadPct">—</span></div>
+    </div>
+
+    <!-- Card 3: Bandwidth Live -->
+    <div class="metric-card" id="bandwidthLiveCard">
+      <div class="card-title">Bandwidth Live</div>
+      <div class="card-row"><span class="lbl">Ingress</span><span class="val" id="ingressBps">—</span></div>
+      <div class="card-row"><span class="lbl">Egress</span><span class="val" id="egressBps">—</span></div>
+      <div class="card-row"><span class="lbl">RX pps</span><span class="val" id="rxPps">—</span></div>
+      <div class="card-row"><span class="lbl">TX pps</span><span class="val" id="txPps">—</span></div>
+      <div class="card-row"><span class="lbl">TCP Established</span><span class="val" id="tcpEstab">—</span></div>
+      <div class="card-row"><span class="lbl">TCP Retrans.</span><span class="val" id="tcpRetrans">—</span></div>
+      <div class="peer-unavailable-note" id="peerBandwidthNote" hidden>Host metrics aren&rsquo;t served for a peer without a relay.</div>
+    </div>
+
+    <!-- Card 4: Errors & Budget -->
+    <div class="metric-card" id="errorsBudgetCard">
+      <div class="card-title">Errors &amp; Budget</div>
+      <div class="card-row"><span class="lbl">RX Errors</span><span class="val" id="rxErrors">—</span></div>
+      <div class="card-row"><span class="lbl">TX Errors</span><span class="val" id="txErrors">—</span></div>
+      <div class="card-row"><span class="lbl">RX Drops</span><span class="val" id="rxDrops">—</span></div>
+      <div class="card-row"><span class="lbl">TX Drops</span><span class="val" id="txDrops">—</span></div>
+      <div class="card-row has-tip" tabindex="0"><span class="lbl">Monthly Budget</span><span class="val" id="monthlyBudget">—</span><span class="row-tip" id="monthlyBudgetTip" role="tooltip">—</span></div>
+      <div class="card-row"><span class="lbl">TCP TIME_WAIT</span><span class="val" id="tcpTimeWait">—</span></div>
+      <div class="peer-unavailable-note" id="peerErrorsNote" hidden>Host metrics aren&rsquo;t served for a peer without a relay.</div>
+    </div>
+
+  </div>
+
+  <!-- ═══ HISTORY — bucketed time-series charts from SQLite ═══ -->
+  <!-- Range toggle + chart templates generated by the script below so the -->
+  <!-- chart list stays in one place (HIST_CHARTS) instead of duplicating -->
+  <!-- across markup and JS. -->
+  <div class="history-card" id="historyCard">
+    <div class="history-header">
+      <h2>History</h2>
+      <div class="range-toggle" id="rangeToggle">
+        <button class="range-btn active" data-range="live">Live</button>
+        <button class="range-btn" data-range="1h">1h</button>
+        <button class="range-btn" data-range="6h">6h</button>
+        <button class="range-btn" data-range="12h">12h</button>
+        <button class="range-btn" data-range="24h">24h</button>
+        <button class="range-btn" data-range="7d">7d</button>
+        <button class="range-btn" data-range="30d">30d</button>
+      </div>
+    </div>
+    <div class="history-grid" id="historyGrid"></div>
+  </div>
+
+</main>
+
+
+<script>
+(function () {
+  'use strict';
+
+  // ── Helpers ────────────────────────────────────────────────────────
+  const setText = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
+  const fmtInt = (n) => Number(n).toLocaleString('en-US');
+  const fmtMs  = (n) => n == null ? '—' : Math.round(n) + ' ms';
+  const fmtPct = (n) => n == null ? '—' : (Math.round(n * 10) / 10).toFixed(1) + '%';
+
+  // Which version is newer, and what that makes the Upgrade Status pill. One
+  // rule for the whole dashboard (#658, #667, #1158): the block below is a
+  // mirror of lib/version-compare.ts, the same one overview.html and
+  // advisor.html carry, and version-compare.test.ts slices it out of this page
+  // and runs the shared vector table through it.
+  //
+  // This page used to read the first three numbers with a regex and drop the
+  // rest, so a node on 3.4.1-rc1 beside peers on 3.4.1 read "Current" and
+  // counted no peer as ahead of it, while the Overview pill, the fleet card's
+  // [R] badge and node_version_behind all said it was behind. The question
+  // here is not the installable release's (#667's) but the mode of what the
+  // peers run; the ORDER is the same on purpose, so the answer a candidate
+  // gets does not depend on which tab it is read from.
+  // ── version-compare mirror (begin) ─────────────────────────────────
+  // #658. ONE compare rule for every surface that decides what this pill
+  // says. It is written in lib/version-compare.ts and mirrored here; the
+  // unit test slices this block out of the page and runs the same vector
+  // table through both, so the mirror cannot drift in silence.
+  //
+  // Numeric segments left to right, a missing segment is 0, and a
+  // pre-release sorts BEFORE its release: 3.4.1-rc1 < 3.4.1, 3.10.0 >
+  // 3.9.0. The old copy here read a segment with Number(), so "1-rc1" fell
+  // to 0 and a release candidate counted as the release below it, while
+  // the server read the same text with parseInt and counted it as the
+  // release itself. Two surfaces, two answers, same two numbers.
+  function vcmpParse(v) {
+    var s = String(v).trim().toLowerCase();
+    var plus = s.indexOf('+');
+    if (plus >= 0) s = s.slice(0, plus);
+    var m = /^v?([0-9]+(?:\.[0-9]+)*)(.*)$/.exec(s);
+    if (!m) return { nums: [], pre: s };
+    return {
+      nums: m[1].split('.').map(function (n) { return parseInt(n, 10); }),
+      pre: m[2].replace(/^[-~.]/, '')
+    };
+  }
+  function vcmpPre(a, b) {
+    var ta = a.match(/[0-9]+|[^0-9]+/g) || [], tb = b.match(/[0-9]+|[^0-9]+/g) || [];
+    for (var i = 0; i < Math.max(ta.length, tb.length); i++) {
+      var x = ta[i], y = tb[i];
+      if (x === undefined) return -1;
+      if (y === undefined) return 1;
+      var nx = /^[0-9]+$/.test(x), ny = /^[0-9]+$/.test(y);
+      if (nx && ny) { var d = parseInt(x, 10) - parseInt(y, 10); if (d) return d < 0 ? -1 : 1; continue; }
+      if (x !== y) return x < y ? -1 : 1;
+    }
+    return 0;
+  }
+  function vcmp(a, b) {
+    var pa = vcmpParse(a), pb = vcmpParse(b);
+    for (var i = 0; i < Math.max(pa.nums.length, pb.nums.length); i++) {
+      var x = pa.nums[i] === undefined ? 0 : pa.nums[i];
+      var y = pb.nums[i] === undefined ? 0 : pb.nums[i];
+      if (x !== y) return x < y ? -1 : 1;
+    }
+    if (pa.pre === pb.pre) return 0;
+    if (pa.pre === '') return 1;
+    if (pb.pre === '') return -1;
+    return vcmpPre(pa.pre, pb.pre);
+  }
+  /** Mirrors isReadableVersion: the version text this page may make a
+   *  claim about. */
+  function vknown(v) { return typeof v === 'string' && /^v?[0-9]+\.[0-9]+/i.test(v.trim()); }
+  // ── version-compare mirror (end) ───────────────────────────────────
+
+  // ── network version decisions (begin) ──────────────────────────────
+  // Pure, reads no DOM and no page state, so version-compare.test.ts can run
+  // it with the mirror above. The page only paints what these return.
+  //
+  // A reported build_version to the version inside it: `rippled-2.5.0-b1`,
+  // `2.5.0`, a fork's `<name>-X.Y.Z`. The first X.Y.Z, then a tail of at most
+  // 24 characters from [0-9a-z._~-]: the candidate tag stays, because that is
+  // what orders it before its release, and everything else a build appends
+  // (`+sha`, a space and a commit, markup) is dropped. Case folded, so one
+  // build is one count key however it was spelled and `3.4.1+x` never splits
+  // from `3.4.1`. Peers send this text, so the key is bounded (tail and
+  // whole): what a peer sends cannot put a long or odd key into the Versions
+  // count. null when nothing in it reads as X.Y.Z.
+  function readBuildVersion(v) {
+    if (typeof v !== 'string') return null;
+    var m = /(\d+\.\d+\.\d+)([-~.]?[0-9a-z._~-]{0,24})/i.exec(v);
+    if (!m) return null;
+    var s = (m[1] + m[2]).toLowerCase();
+    // The three numbers carry no length of their own, so the whole key is held
+    // to what a real version fits in: no real build is near it.
+    if (s.length > 48) return null;
+    return vknown(s) ? s : null;
+  }
+  // The peers' versions, counted by build, and how many are ahead of `ours`.
+  // `raw` is each peer's version text; one that reads as no version is left
+  // out of both, the way the page has always left it out.
+  function summarisePeerVersions(ours, raw) {
+    var counts = new Map();
+    var ahead = 0;
+    for (var i = 0; i < raw.length; i++) {
+      var pv = readBuildVersion(raw[i]);
+      if (!pv) continue;
+      counts.set(pv, (counts.get(pv) || 0) + 1);
+      if (ours && vcmp(pv, ours) > 0) ahead++;
+    }
+    return { counts: counts, ahead: ahead };
+  }
+  // The most common peer version; a tie goes to the one counted first.
+  function modePeerVersion(counts) {
+    var modeKey = null, modeCount = 0;
+    counts.forEach(function (n, k) { if (n > modeCount) { modeKey = k; modeCount = n; } });
+    return modeKey;
+  }
+  // 'Ahead' | 'Behind' | 'Current', or null when either side is unread.
+  function upgradeVerdictOf(ours, counts) {
+    if (!ours || counts.size === 0) return null;
+    var c = vcmp(ours, modePeerVersion(counts));
+    return c > 0 ? 'Ahead' : (c < 0 ? 'Behind' : 'Current');
+  }
+  // ── network version decisions (end) ────────────────────────────────
+
+  // Percentile from a sorted number array. p in [0,1].
+  function percentile(sorted, p) {
+    if (sorted.length === 0) return null;
+    const rank = (sorted.length - 1) * p;
+    const lo = Math.floor(rank), hi = Math.ceil(rank);
+    if (lo === hi) return sorted[lo];
+    const frac = rank - lo;
+    return sorted[lo] * (1 - frac) + sorted[hi] * frac;
+  }
+
+  // ── State ──────────────────────────────────────────────────────────
+  const state = {
+    ourVersion: null,   // readBuildVersion() of server_info.build_version, e.g. '2.5.0-b1'
+    liveBuffers: {},    // { metric_id: [{ ts, value }, ...] } — populated by pushLive
+  };
+
+  // Wall-clock of the last net_stats message the page received. 0 = none yet
+  // this session (covers both "relay never connected" and "feed went silent").
+  // Drives the stale-feed banner via checkRelayFeed().
+  let lastNetStatsClientTs = 0;
+  // When this page started listening. Until the relay has spoken once, this is
+  // what "how long since we heard anything" is measured from — otherwise the
+  // age is Infinity the moment the page loads and the banner fires on every
+  // single visit, a second before the first push arrives. A warning that
+  // always appears and then withdraws itself teaches the operator to ignore
+  // it, which is worse than not having it.
+  const pageOpenedTs = Date.now();
+  // Show the banner once the feed is this stale. The relay pushes every ~5s;
+  // 25s = ~5 missed pushes — clearly silent, not jitter. Deliberately tighter
+  // than the backend alert's 60s (a glance-level hint vs. a notification).
+  const RELAY_STALE_MS = 25_000;
+
+  // ── Incoming: server_info → our build version + pubkey ─────────────
+  function applyServerInfo(info) {
+    if (!info) return;
+    if (info.pubkey_validator) setIdentityStrip(info.pubkey_validator, '');
+    if (info.build_version) {
+      const parsed = readBuildVersion(info.build_version);
+      if (parsed) state.ourVersion = parsed;
+    }
+  }
+
+  // Resolve ISO-3166-alpha-2 codes to full country names (browser-provided).
+  const regionNames = (typeof Intl !== 'undefined' && Intl.DisplayNames)
+    ? new Intl.DisplayNames(['en'], { type: 'region' })
+    : null;
+  const countryName = (cc) => {
+    if (!cc) return 'Unknown';
+    try { return regionNames?.of(cc.toUpperCase()) || cc.toUpperCase(); }
+    catch { return cc.toUpperCase(); }
+  };
+
+  // Format a Map<string,number> as a two-column monospace list sorted desc.
+  function formatBreakdown(entries, labelFn) {
+    if (entries.length === 0) return '—';
+    const labels = entries.map(([k]) => labelFn(k));
+    const maxLabel = Math.max(...labels.map(s => s.length));
+    const maxCount = Math.max(...entries.map(([, n]) => String(n).length));
+    return entries.map(([k, n], i) =>
+      labels[i].padEnd(maxLabel + 2, ' ') + String(n).padStart(maxCount, ' ')
+    ).join('\n');
+  }
+
+  // Render the Countries tooltip as a flag · name · count grid.
+  // Country codes are ISO-3166 alpha-2, lowercased (set server-side for the
+  // circle-flags CDN URL to work directly).
+  function renderCountriesTip(entries) {
+    const tip = document.getElementById('countriesTip');
+    if (!tip) return;
+    tip.classList.add('tip-grid');
+    if (entries.length === 0) { tip.textContent = '—'; return; }
+    tip.innerHTML = entries.map(([cc, n]) => {
+      const name = cc ? countryName(cc) : 'Unknown';
+      const flag = cc
+        ? `<img class="tip-flag" src="https://hatscripts.github.io/circle-flags/flags/${cc.toLowerCase()}.svg" alt="" loading="lazy" />`
+        : `<span class="tip-flag unknown"></span>`;
+      const safeName = name.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+      return `${flag}<span class="tip-name">${safeName}</span><span class="tip-n">${n}</span>`;
+    }).join('');
+  }
+
+  // ── Incoming: peers[] → derive all peer-based rows ─────────────────
+  function applyPeers(peers) {
+    if (!Array.isArray(peers)) return;
+
+    const total = peers.length;
+    let inbound = 0, outbound = 0, insane = 0;
+    const latencies = [];
+    const countryCounts = new Map();
+    // By build, and the peers ahead of this node, both off the one compare
+    // rule above (#1158).
+    const { counts: versionCounts, ahead } = summarisePeerVersions(
+      state.ourVersion, peers.map((p) => p.version));
+
+    for (const p of peers) {
+      if (p.inbound) inbound++;
+      else outbound++;
+      if (typeof p.sanity === 'string' && p.sanity !== 'sane') insane++;
+      if (typeof p.latency === 'number' && Number.isFinite(p.latency) && p.latency >= 0) {
+        latencies.push(p.latency);
+      }
+      const cc = (typeof p.country === 'string' && p.country) ? p.country : '';
+      countryCounts.set(cc, (countryCounts.get(cc) || 0) + 1);
+    }
+
+    // Card 1 — Peer Pool
+    setText('peerCount',    fmtInt(total));
+    setText('peersInbound', fmtInt(inbound));
+    setText('peersOutbound',fmtInt(outbound));
+    setText('peersInsane',  String(insane));
+    // Color the insane count: 0 = ok, 1-5 = warn, 6+ = alert
+    const insaneEl = document.getElementById('peersInsane');
+    if (insaneEl) {
+      insaneEl.classList.remove('ok', 'warn', 'alert');
+      insaneEl.classList.add(insane === 0 ? 'ok' : (insane <= 5 ? 'warn' : 'alert'));
+    }
+
+    // Countries — row shows distinct count; tooltip renders flag + name + count.
+    const countryEntries = [...countryCounts.entries()].sort((a, b) => b[1] - a[1]);
+    const distinctCountries = countryEntries.filter(([cc]) => cc).length;
+    setText('countries', fmtInt(distinctCountries));
+    renderCountriesTip(countryEntries);
+
+    // Versions — distinct rippled builds across peers + hover breakdown.
+    const versionEntries = [...versionCounts.entries()].sort((a, b) => b[1] - a[1]);
+    setText('versionsCount', fmtInt(versionCounts.size));
+    setText('versionsTip', formatBreakdown(versionEntries, k => k));
+
+    // Upgrade status: compare our version to the mode of peer versions
+    updateUpgradeStatus(versionCounts);
+
+    // Card 2 — Peer Quality
+    latencies.sort((a, b) => a - b);
+    const p50 = percentile(latencies, 0.50);
+    const p90 = percentile(latencies, 0.90);
+    const p99 = percentile(latencies, 0.99);
+    setText('latencyP50', fmtMs(p50));
+    setText('latencyP90', fmtMs(p90));
+    setText('latencyP99', fmtMs(p99));
+    setText('aheadCount', fmtInt(ahead));
+    setText('aheadPct',   total > 0 ? fmtPct((ahead / total) * 100) : '—');
+
+    // Latency color bands (p90 is the headline)
+    colorLatency('latencyP50', p50, 100, 500);
+    colorLatency('latencyP90', p90, 250, 1000);
+    colorLatency('latencyP99', p99, 500, 2000);
+
+    // Live-mode history buffers — same source as the cards, fans out to the
+    // rolling sparklines below.
+    pushLive('peer_count',     total);
+    pushLive('peers_inbound',  inbound);
+    pushLive('peers_outbound', outbound);
+    pushLive('peers_insane',   insane);
+    // peer_conn (Public Connections chart) tracks the connected-peer count from
+    // rippled's authoritative peer data — see server.ts. It is fed here, not
+    // from net_stats, so it is correct even when the node runs in a container
+    // (where the relay's host-side port scan reports 0).
+    pushLive('peer_conn',      total);
+    if (p50 != null) pushLive('peer_latency_p50', p50);
+    if (p90 != null) pushLive('peer_latency_p90', p90);
+    if (currentRange === 'live') drawAllLive();
+
+    // Last-update footer timestamp
+    setText('lastUpdate', new Date().toLocaleTimeString());
+  }
+
+  function colorLatency(id, ms, warnMs, alertMs) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.classList.remove('ok', 'warn', 'alert');
+    if (ms == null) return;
+    if (ms >= alertMs) el.classList.add('alert');
+    else if (ms >= warnMs) el.classList.add('warn');
+    else el.classList.add('ok');
+  }
+
+  function updateUpgradeStatus(versionCounts) {
+    const pill = document.getElementById('upgradeStatus');
+    if (!pill) return;
+    pill.classList.remove('behind', 'ahead', 'blocked');
+
+    // This node against the most common peer version.
+    const verdict = upgradeVerdictOf(state.ourVersion, versionCounts);
+    if (!verdict) {
+      pill.textContent = '—';
+      return;
+    }
+    pill.textContent = verdict;
+    if (verdict === 'Ahead')       pill.classList.add('ahead');
+    else if (verdict === 'Behind') pill.classList.add('behind');
+  }
+
+  // ── Bandwidth / errors formatting ──────────────────────────────────
+  function fmtBytesPerSec(n) {
+    if (n == null || !Number.isFinite(n)) return '—';
+    if (n < 1024)           return `${n.toFixed(0)} B/s`;
+    if (n < 1024 ** 2)      return `${(n / 1024).toFixed(1)} KB/s`;
+    if (n < 1024 ** 3)      return `${(n / 1024 ** 2).toFixed(2)} MB/s`;
+    return                         `${(n / 1024 ** 3).toFixed(2)} GB/s`;
+  }
+  function fmtPps(n) {
+    if (n == null || !Number.isFinite(n)) return '—';
+    if (n < 1000)        return `${n.toFixed(0)}/s`;
+    if (n < 1_000_000)   return `${(n / 1000).toFixed(1)} K/s`;
+    return                      `${(n / 1_000_000).toFixed(2)} M/s`;
+  }
+  function fmtBytes(n) {
+    if (n == null || !Number.isFinite(n)) return '—';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+    let i = 0;
+    while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+    return `${n.toFixed(i === 0 ? 0 : 2)} ${units[i]}`;
+  }
+  function fmtRatePerSec(n) {
+    if (n == null || !Number.isFinite(n)) return '—';
+    return `${n < 10 ? n.toFixed(2) : Math.round(n)}/s`;
+  }
+  // Compact integer formatter for packet / segment totals: 1.2K, 3.4M, 5B.
+  function fmtCountCompact(n) {
+    if (n == null || !Number.isFinite(n)) return '—';
+    if (n < 1000) return String(Math.round(n));
+    if (n < 1_000_000)     return (n / 1000).toFixed(n < 10_000 ? 2 : 1) + 'K';
+    if (n < 1_000_000_000) return (n / 1_000_000).toFixed(2) + 'M';
+    return (n / 1_000_000_000).toFixed(2) + 'B';
+  }
+  // Trapezoidal integration of a time series (ts in ms, value in units/sec).
+  // Returns the integrated total in units (e.g. bytes, packets, segments).
+  function integrateSeries(points) {
+    if (!points || points.length < 2) return 0;
+    let total = 0;
+    for (let i = 1; i < points.length; i++) {
+      const dt = (points[i].ts - points[i-1].ts) / 1000;   // seconds
+      const avg = (points[i].value + points[i-1].value) / 2;
+      total += avg * dt;
+    }
+    return total;
+  }
+
+  function setVal(id, txt, bandClass) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = txt;
+    el.classList.remove('ok', 'warn', 'alert', 'dim');
+    if (bandClass) el.classList.add(bandClass);
+  }
+  function bandForCounter(n, warnAt, alertAt) {
+    if (n == null || !Number.isFinite(n)) return null;
+    if (n >= alertAt) return 'alert';
+    if (n >= warnAt)  return 'warn';
+    return 'ok';
+  }
+
+  // ── Incoming: net_stats (from aperire-relay via /ingest → broadcast)
+  function applyNetStats(d) {
+    if (!d) return;
+
+    // Fresh feed — record arrival and clear any stale-feed banner. Guarded
+    // on peerView.label because the peer poll below feeds a PEER's own
+    // net-stats through this same function: without the guard, a peer's
+    // arrival would keep bumping THIS box's own relay-freshness clock, and
+    // returning from a peer whose local relay had actually gone stale
+    // minutes earlier would read as fresh for up to RELAY_STALE_MS after
+    // exit (checkRelayFeed itself already no-ops for a peer, below — this
+    // is the one line upstream of that guard).
+    if (!peerView.label) {
+      lastNetStatsClientTs = Date.now();
+      checkRelayFeed();
+    }
+
+    // Card 3: Bandwidth Live
+    setVal('ingressBps', fmtBytesPerSec(d.rx_bps));
+    setVal('egressBps',  fmtBytesPerSec(d.tx_bps));
+    setVal('rxPps',      fmtPps(d.rx_pps));
+    setVal('txPps',      fmtPps(d.tx_pps));
+    setVal('tcpEstab',   d.tcp_established != null ? fmtInt(d.tcp_established) : '—');
+    setVal('tcpRetrans', fmtRatePerSec(d.tcp_retrans_per_sec),
+      bandForCounter(d.tcp_retrans_per_sec, 1, 10));
+
+    // Card 4: Errors & Budget — cumulative error/drop counters. 0 = ok,
+    // non-zero = warn, ≥100 = alert (the threshold where something is
+    // clearly wrong rather than rare link noise).
+    setVal('rxErrors', fmtInt(d.rx_errors ?? 0), bandForCounter(d.rx_errors, 1, 100));
+    setVal('txErrors', fmtInt(d.tx_errors ?? 0), bandForCounter(d.tx_errors, 1, 100));
+    setVal('rxDrops',  fmtInt(d.rx_drops  ?? 0), bandForCounter(d.rx_drops,  1, 100));
+    setVal('txDrops',  fmtInt(d.tx_drops  ?? 0), bandForCounter(d.tx_drops,  1, 100));
+    setVal('tcpTimeWait', d.tcp_time_wait != null ? fmtInt(d.tcp_time_wait) : '—');
+
+    // Monthly Budget — pct if cap set, otherwise just the used total.
+    if (d.monthly_pct != null && d.monthly_cap_bytes) {
+      const pct = d.monthly_pct;
+      const pctBand = pct >= 95 ? 'alert' : pct >= 80 ? 'warn' : 'ok';
+      setVal('monthlyBudget', pct.toFixed(1) + '%', pctBand);
+      const tip = document.getElementById('monthlyBudgetTip');
+      if (tip) {
+        tip.textContent =
+          `Used   ${fmtBytes(d.monthly_used_bytes)}\n` +
+          `Cap    ${fmtBytes(d.monthly_cap_bytes)}\n` +
+          `NIC    ${d.interface ?? '—'} (${d.interface_source ?? '—'})`;
+      }
+    } else {
+      setVal('monthlyBudget', d.monthly_used_bytes ? fmtBytes(d.monthly_used_bytes) : '—');
+      const tip = document.getElementById('monthlyBudgetTip');
+      if (tip) tip.textContent = 'No monthly cap configured on the relay.';
+    }
+
+    // Live-mode history buffers for the bandwidth + TCP charts.
+    pushLive('rx_bps', d.rx_bps);
+    pushLive('tx_bps', d.tx_bps);
+    pushLive('rx_pps', d.rx_pps);
+    pushLive('tx_pps', d.tx_pps);
+    pushLive('tcp_retrans_per_sec', d.tcp_retrans_per_sec);
+    if (d.tcp_established != null)       pushLive('tcp_established', d.tcp_established);
+    if (d.http_rpc_connections != null)  pushLive('http_rpc_conn',   d.http_rpc_connections);
+    if (d.admin_ws_connections != null)  pushLive('admin_ws_conn',   d.admin_ws_connections);
+    if (d.ws_public_connections != null) pushLive('ws_public_conn',  d.ws_public_connections);
+    // peer_conn is fed from rippled's peer data in applyPeers (above), not from
+    // the relay — it is authoritative on every topology and containerization.
+    if (currentRange === 'live') drawAllLive();
+
+    setText('lastUpdate', new Date().toLocaleTimeString());
+  }
+
+  // ── Stale-feed detection ───────────────────────────────────────────
+  // Toggles the banner (and dims the two relay-fed cards) when net_stats
+  // has gone quiet. Runs on a timer AND on every fresh net_stats so the
+  // banner clears the instant the feed recovers.
+  function checkRelayFeed() {
+    const banner = document.getElementById('relayFeedBanner');
+    if (!banner) return;
+    // This banner names THIS box's own relay — wrong on every count for a
+    // peer (wrong host, and the peer-unavailable notes on the two relay-fed
+    // cards already say why they're blank). blankParameterizedFields already
+    // dimmed those two cards on entry; this function simply stays quiet
+    // about them for the duration.
+    if (peerView.label) { banner.hidden = true; return; }
+    const ageMs  = Date.now() - (lastNetStatsClientTs || pageOpenedTs);
+    const stale  = ageMs >= RELAY_STALE_MS;
+    banner.hidden = !stale;
+    const detail = document.getElementById('relayFeedDetail');
+    if (detail) {
+      detail.textContent = lastNetStatsClientTs
+        ? `No update for ${Math.round(ageMs / 1000)}s (expected every ~5s).`
+        : `Nothing from the relay in the ${Math.round(ageMs / 1000)}s since this page loaded.`;
+    }
+    for (const id of ['bandwidthLiveCard', 'errorsBudgetCard']) {
+      document.getElementById(id)?.classList.toggle('feed-stale', stale);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  // Fleet peer view — D8 last tab batch. This page's cards fall into two
+  // kinds: Peer Pool / Peer Quality are rippled-peer-RPC-derived (the SAME
+  // `peers` route Overview's ring already reads) and genuinely servable for
+  // any peer; Bandwidth Live / Errors & Budget are the aperire-relay's OWN
+  // host-metric push (net_stats), now served by the `net-stats` route —
+  // server.ts's handleRelayPush already maintains lastNetStatsBroadcast
+  // independent of any peer view, the same discipline the `system` route's
+  // own widening established (an earlier version of this comment claimed
+  // "no route at all", which turned out to be simply wrong once actually
+  // checked). What genuinely stays unavailable: a peer with no relay
+  // configured at all (the lab's node2, for instance) never populates
+  // lastNetStatsBroadcast, so the route serves an honest all-null envelope
+  // forever for that peer — not the same fact as the peer being
+  // unreachable (Peer Pool/Peer Quality/pubkey keep rendering normally
+  // either way), so a 404 or an all-null body here only dims these two
+  // cards and shows the "not served" note, exactly as it did before this
+  // route existed.
+  //
+  // History is a third case: the SAME generic `history` route already
+  // proxies rippled-derived series (peer_count, peers_inbound/outbound/
+  // insane, peer_conn, peer_latency_p50/p90) as well as relay-only series
+  // (rx_bps, tx_bps, tcp_retrans_per_sec, ...) — whichever series a peer's
+  // OWN metrics table actually has rows for comes back real; a relay-only
+  // series simply reads empty, the same "no data yet" shape a fresh local
+  // boot already renders. One call-site swap (fetchHistoryFor, below)
+  // covers all of it; no per-chart peer logic.
+  // ═══════════════════════════════════════════════════════════
+
+  const peerView = {
+    label: null, pollTimer: null, fetchSeq: 0,
+    lastGood: null, lastError: null, // 'unreachable' | 'integrity' | null
+    savedOurVersion: null, // this box's own state.ourVersion, restored on exit
+  };
+
+  function setSectionAvailable(sectionEl, noteId, available) {
+    if (sectionEl) sectionEl.style.opacity = available ? '' : '0.25';
+    const note = document.getElementById(noteId);
+    if (note) note.hidden = available;
+  }
+
+  const PEER_UNAVAILABLE_TEXT_FIELD_IDS = [
+    'peerCount', 'peersInbound', 'peersOutbound', 'peersInsane', 'countries', 'versionsCount',
+    'latencyP50', 'latencyP90', 'latencyP99', 'aheadCount', 'aheadPct',
+  ];
+  // Every ID applyNetStats itself writes on Cards 3/4. Unlike system.html's
+  // fill-only fields, every one of applyNetStats's OWN writes is
+  // unconditional (fmtBytesPerSec/fmtPps/fmtRatePerSec/fmtInt already render
+  // '—' for a null input on every call) — so applyNetStats never needs a
+  // reset immediately before it runs. It DOES need one everywhere applyNetStats
+  // is NOT the next call: entering peer mode, a failed/absent `net-stats`
+  // fetch, and exiting — without an explicit blank, these would keep
+  // showing a previous peer's (or, on exit, the last-viewed peer's) numbers
+  // under a different name, the project's characteristic "kept vs observed"
+  // bug, generalized from system.html's own fix to a page whose card was
+  // simply dimmed-and-untouched until now.
+  const NET_STATS_FIELD_IDS = [
+    'ingressBps', 'egressBps', 'rxPps', 'txPps', 'tcpEstab', 'tcpRetrans',
+    'rxErrors', 'txErrors', 'rxDrops', 'txDrops', 'tcpTimeWait', 'monthlyBudget',
+  ];
+  function resetNetStatsFields() {
+    NET_STATS_FIELD_IDS.forEach((id) => setVal(id, '—'));
+    const tip = document.getElementById('monthlyBudgetTip');
+    if (tip) tip.textContent = '';
+  }
+  // The one copy of what an operator does about a refusal lives in
+  // fleet-chip.js (loaded, deferred, on every page that renders these rows).
+  // Read through this accessor so a page that somehow lacks it still says
+  // the short true thing rather than throwing inside a render — the same
+  // wrapper overview.html uses, for the same defer-ordering reason.
+  function refusedTipText(label) {
+    return window.__fleetRefusedTip
+      ? window.__fleetRefusedTip(label)
+      : String(label) + ' rejected this dashboard\u2019s read token.';
+  }
+  // This page has no state pill; the identity strip is where it says what
+  // node is on screen, so that is where a peer error state says why there
+  // is no identity to show. ONE writer, so the tip is cleared by every
+  // other write — a recovered poll must never leave a refusal's sentence
+  // hanging off a real key.
+  function setIdentityStrip(text, tip) {
+    const el = document.getElementById('pubkeyVal');
+    if (!el) return;
+    el.textContent = text;
+    if (tip) el.title = tip; else el.removeAttribute('title');
+  }
+  function blankParameterizedFields() {
+    PEER_UNAVAILABLE_TEXT_FIELD_IDS.forEach((id) => setText(id, '—'));
+    const pill = document.getElementById('upgradeStatus');
+    if (pill) { pill.textContent = '—'; pill.classList.remove('behind', 'ahead', 'blocked'); }
+    setIdentityStrip('—', '');
+    resetNetStatsFields();
+    setSectionAvailable(document.getElementById('bandwidthLiveCard'), 'peerBandwidthNote', false);
+    setSectionAvailable(document.getElementById('errorsBudgetCard'), 'peerErrorsNote', false);
+  }
+  function restoreLocalHostCardAvailability() {
+    setSectionAvailable(document.getElementById('bandwidthLiveCard'), 'peerBandwidthNote', true);
+    setSectionAvailable(document.getElementById('errorsBudgetCard'), 'peerErrorsNote', true);
+  }
+
+  // ── Live for a peer ────────────────────────────────────────────────
+  // Live is fed by the peer poll itself: every successful poll appends ONE
+  // real sample per metric, taken from that poll's own response, at the
+  // cadence the poll actually runs (PEER_POLL_MS). Nothing is interpolated,
+  // tweened or backfilled between polls — a failed poll leaves a gap in the
+  // series, which is the honest rendering of "no observation was made".
+  // A peer's series is therefore lower-resolution than this box's own WS-fed
+  // one, the same trade the quorum row already makes.
+  //
+  // The apply* functions the peer poll reuses (applyPeers / applyNetStats)
+  // are the SAME ones the local WS path calls, and they push into the live
+  // buffers internally. `peerLiveRecording` opens that path for exactly the
+  // duration of one peer-poll render, so a peer's numbers land in the buffer
+  // only when they came from a fetch made FOR that peer — never from any
+  // other caller that happens to run while a peer is on screen.
+  //
+  // The callee must be SYNCHRONOUS: an async one would return before the
+  // flag is cleared and leave the buffer open to whatever ran next.
+  let peerLiveRecording = false;
+  function withPeerLiveRecording(fn) {
+    peerLiveRecording = true;
+    try { fn(); } finally { peerLiveRecording = false; }
+  }
+
+  // node-status's pubkey_validator/build_version → header identity strip.
+  // Also retargets state.ourVersion to the PEER's own version for the
+  // duration — applyPeers (below) compares peer versions against
+  // state.ourVersion to compute Ahead/Behind/Current and the Ahead-peers
+  // count; left pointed at this box's version, a peer's Upgrade Status
+  // would silently compare the wrong two nodes. Restored on exit.
+  function applyPeerNetworkStatus(ns) {
+    setIdentityStrip(ns.pubkey_validator || '—', '');
+    if (ns.build_version) {
+      const parsed = readBuildVersion(ns.build_version);
+      if (parsed) state.ourVersion = parsed;
+    }
+  }
+
+  // ReadPeerRow names latency `latency_ms`; applyPeers (the SAME function
+  // the local WS path calls) reads `p.latency` — mapped here at the call
+  // site rather than editing applyPeers, which must keep reading the local
+  // WS shape unchanged.
+  function applyPeerPeers(rows) {
+    const mapped = Array.isArray(rows) ? rows.map((r) => ({ ...r, latency: r.latency_ms })) : [];
+    // Records this poll's peer_count / peers_inbound / peers_outbound /
+    // peers_insane / peer_conn / peer_latency_p50 / p90 into the live
+    // buffers — computed by applyPeers itself, so a peer's sparkline can
+    // never disagree with the same node's own local page.
+    withPeerLiveRecording(() => applyPeers(mapped));
+  }
+
+  function fmtPeerAge(ms) {
+    const s = Math.max(0, Math.round(ms / 1000));
+    if (s < 60) return s + 's ago';
+    return Math.round(s / 60) + 'm ago';
+  }
+  function renderPeerBanner() {
+    // Banner removed per operator request (feedback #16): the fleet chip/card
+    // already names the active node and the "as of Ns ago" line read as noise
+    // and bounced. The HARD stale guard is unaffected — an unreachable/unverified
+    // peer still surfaces in the STATE pill via renderPeerErrorState.
+    const el = document.getElementById('peerViewBanner');
+    if (el) el.hidden = true;
+  }
+  renderPeerBanner();
+
+  // kind: 'integrity' | 'refused' | 'unreachable'. Three different facts,
+  // and the work each one needs is different (#268: a 401 rendered as
+  // UNREACHABLE sent the operator to check a network path that was fine).
+  // Only the refusal carries a word here, because only the refusal has a
+  // fix the operator can act on; integrity and unreachable keep the blank
+  // strip they have always had on this page.
+  function renderPeerErrorState(kind) {
+    peerView.lastError = kind;
+    peerView.lastGood = null;
+    blankParameterizedFields();
+    if (kind === 'refused') setIdentityStrip('REFUSED', refusedTipText(peerView.label));
+    renderPeerBanner();
+  }
+
+  const PEER_POLL_MS = 2000; // server positive TTL is 1.5s (fleet-fetch-through.ts) — lands inside a fresh window most ticks
+  function fetchPeerNodeStatusOnce() {
+    return window.aperirePeerFetch.readFetch('node-status', {})
+      .then((r) => r.json().catch(() => null).then((body) => ({ status: r.status, body })))
+      .catch(() => ({ status: 0, body: null }));
+  }
+  function fetchPeerPeersOnce() {
+    return window.aperirePeerFetch.readFetch('peers', {})
+      .then((r) => r.json().catch(() => null).then((body) => ({ status: r.status, body })))
+      .catch(() => ({ status: 0, body: null }));
+  }
+  function fetchPeerNetStatsOnce() {
+    return window.aperirePeerFetch.readFetch('net-stats', {})
+      .then((r) => r.json().catch(() => null).then((body) => ({ status: r.status, body })))
+      .catch(() => ({ status: 0, body: null }));
+  }
+  function handlePeerNodeStatusResponse(label, status, body) {
+    if (status === 404 && body && body.error === 'peer_unknown') {
+      // Hash first, THEN exit. peer-fetch.js resolves local-vs-peer off the
+      // hash at call time, and exitPeerMode now re-seeds the Live buffers —
+      // exiting while the hash still named the vanished peer would send that
+      // seed straight back to the 404 that got us here and leave the local
+      // series empty. Clearing the hash first costs nothing: the hashchange
+      // it fires lands after this task, by which point exitPeerMode has
+      // already run and early-returns.
+      clearActiveNodeInHash();
+      exitPeerMode();
+      return;
+    }
+    if (status === 409 || (body && body.error === 'peer_integrity_mismatch')) { renderPeerErrorState('integrity'); return; }
+    // The peer answered and rejected this dashboard's read token (#268).
+    // Checked before the catch-all below, which would otherwise call a box
+    // that is up and answering unreachable — the same branch, in the same
+    // order, Overview already has.
+    if (body && body.error === 'peer_refused') { renderPeerErrorState('refused'); return; }
+    if (status !== 200 || !body || typeof body !== 'object') { renderPeerErrorState('unreachable'); return; }
+    peerView.lastError = null;
+    peerView.lastGood = {
+      receivedAtClientMs: Date.now(),
+      serverInfoAgeMsAtFetch: typeof body.server_info_age_ms === 'number' ? body.server_info_age_ms : null,
+      reachOk: !(body.node_reach && body.node_reach.ok === false),
+    };
+    applyPeerNetworkStatus(body);
+    renderPeerBanner();
+  }
+  // A mixed-version fleet can legitimately 404 on `peers` alone even when
+  // node-status just answered fine (an un-upgraded peer's read API knows
+  // one route but not the other) — that leaves Peer Pool/Peer Quality at
+  // their loading '—' rather than flipping the whole view to UNREACHABLE.
+  function handlePeerPeersResponse(status, body) {
+    if (status !== 200 || !body || !Array.isArray(body.peers)) return;
+    applyPeerPeers(body.peers);
+  }
+  // A mixed-version fleet can legitimately 404 here (an un-upgraded peer's
+  // read API doesn't know this route yet), and the route itself serves an
+  // honest all-null body FOREVER for a peer with no relay configured at all
+  // — neither is the same fact as the peer being unreachable, so a failure
+  // here only dims these two cards rather than flipping the whole view to
+  // UNREACHABLE (Peer Pool/Peer Quality/pubkey keep rendering normally
+  // either way). `rx_bps` is checked rather than just `body` because the
+  // all-null case still returns a 200 with every field null (see
+  // NetStatsResponse's doc comment) — feeding that straight into
+  // applyNetStats would render "0" for rxErrors/txDrops/etc. via its own
+  // `?? 0` fallbacks, the exact "0 read as a real reading" lie this
+  // project stays vigilant against (see `system`'s own doc comment on the
+  // same class of bug).
+  function handlePeerNetStatsResponse(status, body) {
+    if (status !== 200 || !body || typeof body !== 'object' || typeof body.rx_bps !== 'number') {
+      resetNetStatsFields();
+      setSectionAvailable(document.getElementById('bandwidthLiveCard'), 'peerBandwidthNote', false);
+      setSectionAvailable(document.getElementById('errorsBudgetCard'), 'peerErrorsNote', false);
+      return;
+    }
+    // Records this poll's rx/tx_bps, rx/tx_pps, tcp_retrans_per_sec and the
+    // three connection counts into the live buffers. A peer with no relay
+    // never reaches this line (the all-null body is rejected above), so
+    // those charts stay honestly empty rather than flat-lining at 0.
+    withPeerLiveRecording(() => applyNetStats(body));
+    setSectionAvailable(document.getElementById('bandwidthLiveCard'), 'peerBandwidthNote', true);
+    setSectionAvailable(document.getElementById('errorsBudgetCard'), 'peerErrorsNote', true);
+  }
+  function schedulePeerPoll() {
+    if (peerView.pollTimer) { clearTimeout(peerView.pollTimer); peerView.pollTimer = null; }
+    if (!peerView.label) return;
+    peerView.pollTimer = setTimeout(pollPeerOnce, PEER_POLL_MS);
+  }
+  async function pollPeerOnce() {
+    if (peerView.pollTimer) { clearTimeout(peerView.pollTimer); peerView.pollTimer = null; }
+    if (!peerView.label) return;
+    if (document.hidden) { schedulePeerPoll(); return; }
+    const label = peerView.label;
+    const seq = ++peerView.fetchSeq;
+    const [nsResult, peersResult, netStatsResult] = await Promise.all([
+      fetchPeerNodeStatusOnce(),
+      fetchPeerPeersOnce(),
+      fetchPeerNetStatsOnce(),
+    ]);
+    if (seq !== peerView.fetchSeq || peerView.label !== label) return;
+    handlePeerNodeStatusResponse(label, nsResult.status, nsResult.body);
+    if (peerView.label === label && !peerView.lastError) {
+      handlePeerPeersResponse(peersResult.status, peersResult.body);
+      handlePeerNetStatsResponse(netStatsResult.status, netStatsResult.body);
+    }
+    schedulePeerPoll();
+  }
+
+  function enterPeerMode(label) {
+    if (peerView.label === label) return; // a redundant hashchange must not restart the poll cycle
+    peerView.label = label;
+    peerView.lastGood = null;
+    peerView.lastError = null;
+    peerView.fetchSeq++;
+    peerView.savedOurVersion = state.ourVersion;
+    // A peer→peer flip lands here too (enterPeerMode only early-returns on
+    // the SAME label), so the buffers are emptied on every switch: two
+    // nodes' readings must never share one series.
+    clearLiveBuffers();
+    blankParameterizedFields();
+    renderPeerBanner();
+    pollPeerOnce();
+    // The operator's range choice is left alone — the page's own default is
+    // Live, so entering a peer view lands on Live unless they picked
+    // something else. A range mode reloads because it is the peer's own
+    // history now.
+    if (currentRange !== 'live') loadHistory();
+    // Live is seeded too, from THIS peer's own stored samples. The order
+    // matters: clearLiveBuffers above already emptied the buffers and bumped
+    // the seed generation, so this reads into a buffer that belongs to the
+    // new label and nothing the previous owner started can land in it. The
+    // poll started above keeps appending on top, and a failed or empty seed
+    // leaves the chart exactly where it used to start — empty, filling one
+    // real sample per poll — rather than blocking the poll loop.
+    seedLiveBuffers();
+  }
+  function exitPeerMode() {
+    if (!peerView.label) return;
+    peerView.label = null;
+    peerView.fetchSeq++;
+    if (peerView.pollTimer) { clearTimeout(peerView.pollTimer); peerView.pollTimer = null; }
+    peerView.lastGood = null;
+    peerView.lastError = null;
+    state.ourVersion = peerView.savedOurVersion;
+    peerView.savedOurVersion = null;
+    restoreLocalHostCardAvailability();
+    // The peer's last real bandwidth/error reading has no restorer
+    // otherwise: this page's local WS handler is gated off for the whole
+    // time a peer is on screen (`if (peerView.label) return;`, below), so
+    // without this the peer's numbers would keep showing under "This Node"
+    // — fully undimmed, since restoreLocalHostCardAvailability just ran —
+    // for up to 5s until the next local net_stats broadcast lands. Same fix
+    // system.html's own exitPeerMode needed for its host-metric fields.
+    resetNetStatsFields();
+    renderPeerBanner();
+    // Same reasoning one level down, for the Live series: the peer's own
+    // samples must not sit under "This Node". Cleared, then re-seeded from
+    // this box's OWN stored samples — peerView.label is already null and the
+    // hash no longer names a peer by the time either caller reaches here, so
+    // readFetch inside seedLiveBuffers resolves to the local /recent. The
+    // local WS stream resumes appending on top within one broadcast (~5s).
+    clearLiveBuffers();
+    seedLiveBuffers();
+    // No cached local payload to replay (unlike consensus.html's
+    // state.lastServerInfo etc.) — this page's own WS gate below simply
+    // resumes on the next server_info/peers/net_stats broadcast, seconds
+    // away. History re-seeds itself on the next 60s poll or an operator
+    // range click, same as a fresh page load.
+    if (currentRange !== 'live') loadHistory();
+  }
+  // A minimal local clearer, not a reuse of window.__aperireSetActiveNode —
+  // that global only exists inside overview.html's/consensus.html's OWN
+  // iframe window, never reachable from a sibling tab's window like this
+  // one (governance.html's own clearActiveNodeInHash, unchanged here).
+  function clearActiveNodeInHash() {
+    let topWin;
+    try { topWin = window.top; } catch { topWin = window; }
+    let h = (topWin.location.hash || '').replace(/^#/, '');
+    h = h.replace(/(^|[?&])node=[a-z0-9-]{1,32}/, (_m, sep) => (sep === '&' ? '&' : ''));
+    h = h.replace(/[?&]$/, '');
+    topWin.location.hash = h;
+  }
+  function syncActiveNodeFromHash() {
+    const label = window.aperirePeerFetch ? window.aperirePeerFetch.activePeerLabel() : null;
+    if (label) enterPeerMode(label);
+    else exitPeerMode();
+  }
+  let topWinForHash;
+  try { topWinForHash = window.top; } catch { topWinForHash = window; }
+  topWinForHash.addEventListener('hashchange', syncActiveNodeFromHash);
+  window.addEventListener('pagehide', () => {
+    try { topWinForHash.removeEventListener('hashchange', syncActiveNodeFromHash); } catch { /* already gone */ }
+    if (peerView.pollTimer) clearTimeout(peerView.pollTimer);
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && peerView.label) pollPeerOnce();
+  });
+
+  // ── WebSocket to the bridge ────────────────────────────────────────
+  function connectWS() {
+    const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws';
+    const ws = new WebSocket(url);
+    ws.addEventListener('open',  () => console.log('[ws] live'));
+    ws.addEventListener('close', () => { console.log('[ws] closed, reconnect in 2s'); setTimeout(connectWS, 2000); });
+    ws.addEventListener('error', (e) => console.warn('[ws] error', e));
+    ws.addEventListener('message', (e) => {
+      if (peerView.label) return; // a peer is on screen — the local WS stream must never repaint over it
+      let msg; try { msg = JSON.parse(e.data); } catch { return; }
+      switch (msg.type) {
+        case 'snapshot':
+          if (msg.data.server_info) applyServerInfo(msg.data.server_info);
+          if (msg.data.peers)       applyPeers(msg.data.peers);
+          if (msg.data.net_stats)   applyNetStats(msg.data.net_stats);
+          break;
+        case 'server_info': applyServerInfo(msg.data); break;
+        case 'peers':       applyPeers(msg.data); break;
+        case 'net_stats':   applyNetStats(msg.data); break;
+      }
+    });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // History panel — bucketed sparklines + Live rolling buffers.
+  // Mirrors the Consensus tab pattern so operators see the same range
+  // toggle (Live / 1h / 6h / 12h / 24h / 7d / 30d) and chart shape on
+  // every page that has a History card.
+  // ═══════════════════════════════════════════════════════════════════
+
+  // Six charts in a 2×3 grid, arranged by operator scan priority:
+  //   Left column  = network pipe (Bandwidth → Packets/sec → TCP Retrans)
+  //   Right column = peer health   (Peer Count → Peer Latency → Insane Peers)
+  // Each column tells the same top-to-bottom story: headline, supporting
+  // detail, then the error-condition signal. Multi-series overlays share
+  // one y-axis so related signals (in vs out, p50 vs p90, etc.) compare
+  // at a glance without scanning across two cards.
+  //
+  // `help` + per-series `desc` drive the info-icon tooltip in the chart
+  // header — same tooltip shape as the metric-row icons, plus a colored
+  // swatch per series to match the in-chart legend.
+  const HIST_CHARTS = [
+    // Row 1 — rippled port connection counts, grouped by access class.
+    // Both panels use totalMode: 'peak' — the per-series peak over the
+    // visible range is rendered inline with each legend entry as
+    // "label · PEAK N", so overlaid series each get their own readout.
+    // Paired by scale so a shared Y-axis reads cleanly.
+    {
+      id: 'admin_conns',
+      title: 'Admin Connections',
+      fmt: (v) => fmtInt(Math.round(v)),
+      totalMode: 'peak',
+      totalFmt: (n) => fmtInt(Math.round(n)),
+      help: 'Concurrent ESTABLISHED TCP connections on rippled\'s admin ports: HTTP RPC and Admin WebSocket. Same scale (usually 0-10), so a shared Y-axis is legible. Ports are auto-detected from rippled.cfg at relay startup. Source: /proc/net/tcp filtered by local port.',
+      series: [
+        { metric: 'http_rpc_conn', label: 'HTTP RPC', color: 'var(--chart-blue)', desc: 'ESTABLISHED sockets where the local port matches the admin HTTP-RPC port' },
+        { metric: 'admin_ws_conn', label: 'WS Admin', color: 'var(--chart-purple)', desc: 'ESTABLISHED sockets where the local port matches the Admin WebSocket port' },
+      ],
+    },
+    {
+      id: 'public_conns',
+      title: 'Public Connections',
+      fmt: (v) => fmtInt(Math.round(v)),
+      totalMode: 'peak',
+      totalFmt: (n) => fmtInt(Math.round(n)),
+      help: 'Public-facing connection counts. Peer is the count of connected peers from rippled\'s own peer list (admin RPC) — authoritative regardless of where the dashboard runs or whether rippled is containerized. WS Public is ESTABLISHED sockets on the public WebSocket port, observed by the relay on the host (auto-detected from rippled.cfg; reads 0 when there are no public WS clients, or when that port is container-internal).',
+      series: [
+        { metric: 'peer_conn',      label: 'Peer',      color: 'var(--chart-green)', desc: 'Connected peers reported by rippled (admin RPC peer list) — same source as Peer Count, correct on every deployment' },
+        { metric: 'ws_public_conn', label: 'WS Public', color: 'var(--chart-amber)', desc: 'ESTABLISHED sockets on the public WebSocket port, counted by the relay on the host (0 if no clients or not host-visible)' },
+      ],
+    },
+    // Row 2
+    {
+      id: 'bandwidth',
+      title: 'Bandwidth',
+      fmt: fmtBytesPerSec,
+      // Integrate rx+tx rates over the selected range → total bytes moved.
+      totalFmt: (bytes) => fmtBytes(bytes),
+      help: 'Byte rate in and out of the primary NIC over time. The base "how busy is this host\'s link" measurement.',
+      series: [
+        { metric: 'rx_bps', label: 'Ingress', color: 'var(--chart-green)', desc: 'Incoming bytes per second' },
+        { metric: 'tx_bps', label: 'Egress',  color: 'var(--chart-purple)', desc: 'Outgoing bytes per second (usually the larger number on a validator)' },
+      ],
+    },
+    {
+      id: 'peers',
+      title: 'Peer Count',
+      fmt: (v) => fmtInt(Math.round(v)),
+      help: 'Connected peer count over time. A quick-glance reachability signal.',
+      series: [
+        { metric: 'peer_count',     label: 'Total',    color: 'var(--chart-blue)', desc: 'All connected peers (Inbound + Outbound)' },
+        { metric: 'peers_inbound',  label: 'Inbound',  color: 'var(--chart-green)', desc: 'Peers that dialed in to us' },
+        { metric: 'peers_outbound', label: 'Outbound', color: 'var(--chart-amber)', desc: 'Peers we dialed out to' },
+      ],
+    },
+    // Row 2
+    {
+      id: 'pps',
+      title: 'Packets / sec',
+      fmt: fmtPps,
+      // Integrate rx+tx packet rates → total packets over the range.
+      totalFmt: (n) => fmtCountCompact(n) + ' pkts',
+      help: 'Packet rate on the primary NIC. Decouples small-packet storms from byte-rate saturation.',
+      series: [
+        { metric: 'rx_pps', label: 'RX', color: 'var(--chart-green)', desc: 'Incoming packets per second' },
+        { metric: 'tx_pps', label: 'TX', color: 'var(--chart-purple)', desc: 'Outgoing packets per second' },
+      ],
+    },
+    {
+      id: 'latency',
+      title: 'Peer Latency',
+      fmt: (v) => Math.round(v) + ' ms',
+      help: 'Round-trip latency distribution across connected peers. Tracks tail latency over time.',
+      series: [
+        { metric: 'peer_latency_p50', label: 'p50', color: 'var(--chart-blue)', desc: 'Median peer RTT' },
+        { metric: 'peer_latency_p90', label: 'p90', color: 'var(--chart-amber)', desc: '90th-percentile peer RTT — tail-latency indicator' },
+      ],
+    },
+    // Row 3
+    {
+      id: 'tcp_retrans',
+      title: 'TCP Retransmits',
+      fmt: (v) => (v < 10 ? v.toFixed(2) : Math.round(v).toString()) + '/s',
+      // Integrate retrans/s → total retransmitted segments over the range.
+      totalFmt: (n) => fmtCountCompact(n) + ' segs',
+      help: 'TCP segments retransmitted per second. A rising line indicates a lossy or congested network path.',
+      series: [
+        { metric: 'tcp_retrans_per_sec', label: '', color: 'var(--chart-amber)' },
+      ],
+    },
+    {
+      id: 'insane',
+      title: 'Insane Peers',
+      fmt: (v) => fmtInt(Math.round(v)),
+      help: 'Count of peers rippled has flagged as misbehaving (sanity != "sane") over time. Healthy is low and flat.',
+      series: [
+        { metric: 'peers_insane', label: '', color: 'var(--chart-red)' },
+      ],
+    },
+  ];
+
+  // Live mode: per-metric in-browser ring buffer fed by the WS messages.
+  // 30-min cap matches Consensus; visible window is the most recent 5 min.
+  const LIVE_WINDOW_MS = 30 * 60_000;
+  const LIVE_MAX_POINTS = 360;        // ample headroom even at 5s cadence
+  const LIVE_VIEW_MS    = 5 * 60_000;
+
+  // Initialize one buffer per metric referenced by any chart's series.
+  for (const ch of HIST_CHARTS) {
+    for (const s of ch.series) state.liveBuffers[s.metric] = [];
+  }
+
+  // ── Seed generation ────────────────────────────────────────────────
+  // The buffers have exactly one owner at a time (this box, or one named
+  // peer). `seedGen` names that ownership era: clearLiveBuffers bumps it,
+  // and clearLiveBuffers is called on precisely the three events that
+  // change owner — entering a peer view, flipping peer→peer, returning to
+  // self. A seed fetch captures the generation it started in and throws its
+  // result away if the generation moved while it was in flight, which is
+  // what stops node A's stored samples from landing in node B's series.
+  //
+  // `seedInFlight` makes a seed single-flight PER GENERATION. Two call
+  // sites legitimately fire in the same era — boot resolves the hash first,
+  // so a deep link into #node=X reaches enterPeerMode's seed and then boot's
+  // own seed with nothing in between — and two concurrent passes would both
+  // read-merge-write the same buffer, the second either duplicating points
+  // or dropping what the first had merged. Same generation returns the SAME
+  // promise instead.
+  let seedGen = 0;
+  let seedInFlight = null;   // { gen, promise } | null
+
+  function pushLive(metric, value) {
+    // One buffer, one owner at a time. While a peer is on screen the only
+    // writer allowed is the peer poll's own render (withPeerLiveRecording,
+    // in the peer-view module above) — applyPeers/applyNetStats are the SAME
+    // functions the local WS path calls, so without this gate a stray local
+    // caller would blend this box's readings into the peer's series
+    // (feedback_d8_slice4_gotchas: "pushLive contamination needs a `record`
+    // flag not just shape-matching"). With no peer active the condition is
+    // exactly the local behaviour it replaced.
+    if (peerView.label && !peerLiveRecording) return;
+    if (!Number.isFinite(value)) return;
+    const buf = state.liveBuffers[metric];
+    if (!buf) return;
+    const now = Date.now();
+    buf.push({ ts: now, value });
+    const cutoff = now - LIVE_WINDOW_MS;
+    while (buf.length && buf[0].ts < cutoff) buf.shift();
+    if (buf.length > LIVE_MAX_POINTS) buf.shift();
+  }
+
+  // Emptied whenever the buffers change owner — entering a peer view,
+  // flipping between peers, and returning to self. Never merged across two
+  // nodes, and never carried over a switch.
+  function clearLiveBuffers() {
+    // The buffers change owner here, so every seed started under the old
+    // owner is now invalid — bump the generation before emptying, so a
+    // fetch that resolves a moment from now finds seedGen moved and drops
+    // its points instead of writing the previous node's samples into the
+    // buffer this call just emptied for the next one.
+    seedGen++;
+    seedInFlight = null;
+    for (const m of Object.keys(state.liveBuffers)) state.liveBuffers[m] = [];
+    if (currentRange === 'live') drawAllLive();
+  }
+
+  // Tick presets in ms (shared with Consensus). pickTickInterval picks the
+  // smallest preset whose resulting tick count is <= ~5 across the visible span.
+  const TICK_PRESETS = [
+    [5_000,        '5s'],   [10_000,       '10s'],  [30_000,       '30s'],
+    [60_000,       '1m'],   [2*60_000,     '2m'],   [5*60_000,     '5m'],
+    [10*60_000,    '10m'],  [15*60_000,    '15m'],  [30*60_000,    '30m'],
+    [60*60_000,    '1h'],   [2*3600_000,   '2h'],   [4*3600_000,   '4h'],
+    [6*3600_000,   '6h'],   [12*3600_000,  '12h'],  [86_400_000,   '1d'],
+    [2*86_400_000, '2d'],   [7*86_400_000, '1w'],
+  ];
+  function pickTickInterval(spanMs) {
+    const ideal = spanMs / 5;
+    for (const [ms] of TICK_PRESETS) if (ms >= ideal) return ms;
+    return TICK_PRESETS[TICK_PRESETS.length - 1][0];
+  }
+  function intervalLabel(ms) {
+    const found = TICK_PRESETS.find(([m]) => m === ms);
+    return found ? found[1] : '—';
+  }
+
+  let currentRange = 'live';
+  const SVG_NS = 'http://www.w3.org/2000/svg';
+
+  // "Nice" step sizes — 1, 2, 2.5, 5, 10, 20, 25, 50 × 10^n. Same family
+  // of numbers every axis library converges on because operators read them
+  // naturally ("0, 25, 50, 75, 100" parses at a glance).
+  function niceStep(rough) {
+    if (!(rough > 0)) return 1;
+    const pow10 = Math.pow(10, Math.floor(Math.log10(rough)));
+    const norm  = rough / pow10;
+    let nice;
+    if      (norm <= 1.5) nice = 1;
+    else if (norm <= 3)   nice = 2;
+    else if (norm <= 4)   nice = 2.5;
+    else if (norm <= 7)   nice = 5;
+    else                  nice = 10;
+    return nice * pow10;
+  }
+  function niceYTicks(vMin, vMax, target) {
+    if (!(vMax > vMin)) return [vMin];
+    const step = niceStep((vMax - vMin) / target);
+    const first = Math.ceil(vMin / step) * step;
+    const out = [];
+    for (let t = first; t <= vMax + step * 1e-6; t += step) {
+      // Floating-point clean-up: snap "0.1 + 0.2" noise back to the step grid.
+      out.push(Math.round(t / step) * step);
+    }
+    return out;
+  }
+
+  // Linear polyline — the monitoring-dashboard default (Grafana, Prometheus,
+  // node_exporter UIs, etc.). Straight segments preserve exact sample
+  // fidelity: what you see is what was recorded, spikes stay sharp, step
+  // changes stay step-like, and operators aren't second-guessing whether
+  // a curve rounded off a real event.
+  function smoothPath(points) {
+    if (points.length === 0) return '';
+    let d = `M ${points[0].x.toFixed(1)},${points[0].y.toFixed(1)}`;
+    for (let i = 1; i < points.length; i++) {
+      d += ` L ${points[i].x.toFixed(1)},${points[i].y.toFixed(1)}`;
+    }
+    return d;
+  }
+
+  // Build the info-icon markup for a chart header. Tooltip shows the
+  // chart title, a one-line help body, and a legend list where each
+  // series has its swatch color + description inline — so the reader
+  // can match a color in the chart to what it means.
+  function buildHistInfoIcon(ch) {
+    const parts = [`<span class="info-title">${escHtml(ch.title)}</span>`];
+    if (ch.help) parts.push(`<p>${escHtml(ch.help)}</p>`);
+    const described = ch.series.filter(s => s.desc);
+    if (described.length) {
+      const items = described.map(s =>
+        `<li><span class="tip-swatch" style="background:${s.color}"></span>` +
+        `<span class="tip-series-label">${escHtml(s.label)}</span>` +
+        `<span class="tip-series-desc">${escHtml(s.desc)}</span></li>`
+      ).join('');
+      parts.push(`<ul class="tip-series">${items}</ul>`);
+    }
+    return `<span class="info-icon hist-info-icon" tabindex="0" role="button" aria-label="${escHtml(ch.title)} info"><span class="info-tip">${parts.join('')}</span></span>`;
+  }
+
+  // ── Render the chart slots once at startup. Markup driven from HIST_CHARTS
+  // so adding/removing charts means editing the array, not the HTML.
+  function buildChartGrid() {
+    const grid = document.getElementById('historyGrid');
+    if (!grid) return;
+    grid.innerHTML = HIST_CHARTS.map(ch => {
+      const showLegend = ch.series.length > 1;
+      // On multi-series charts with totalMode: 'peak', drop the combined
+      // "hist-total" badge and instead render each series' peak inline
+      // with its legend swatch: "<swatch> HTTP RPC · PEAK 5". Keeps the
+      // header to one row no matter how many series the chart has.
+      const perSeriesPeak = showLegend && ch.totalMode === 'peak';
+      const legend = showLegend
+        ? `<span class="hist-legend">` +
+            ch.series.map(s => {
+              const peakHtml = perSeriesPeak
+                ? `<span class="series-peak" data-metric="${s.metric}"></span>`
+                : '';
+              return `<span><span class="swatch" style="background:${s.color}"></span>${s.label}${peakHtml}</span>`;
+            }).join('') +
+          `</span>`
+        : '';
+      const infoIcon = buildHistInfoIcon(ch);
+      const linePaths = ch.series.map((s, i) =>
+        `<path class="hist-line" data-series="${i}" style="stroke:${s.color}"></path>`
+      ).join('');
+      const showHistTotal = ch.totalFmt && !perSeriesPeak;
+      return `
+        <div class="hist-chart" data-chart="${ch.id}">
+          <div class="hist-chart-head">
+            <span class="hist-title">${ch.title}</span>
+            ${legend}${infoIcon}
+            <span class="hist-meta">${showHistTotal ? '<span class="hist-total"><span class="lbl">—</span><span class="val">—</span></span>' : ''}<span class="hist-interval">—</span><span class="hist-value">—</span></span>
+          </div>
+          <div class="hist-plot">
+            <svg class="hist-svg" viewBox="0 0 200 60" preserveAspectRatio="none">
+              <g class="hist-grid"></g>
+              ${linePaths}
+              <line class="hist-crosshair" y1="0" y2="60" x1="0" x2="0" style="display:none"></line>
+            </svg>
+            <div class="hist-y-axis"></div>
+            <div class="hist-hover-tip" hidden></div>
+          </div>
+          <div class="hist-axis"></div>
+        </div>`;
+    }).join('');
+  }
+
+  // Multi-series renderer. seriesPoints is an array aligned to chart.series:
+  // each entry is the array of {ts, value} samples for that series, oldest
+  // first. Y-axis is shared across all series of the chart.
+  function drawHistChart(chart, seriesPoints, opts) {
+    const card = document.querySelector('.hist-chart[data-chart="' + chart.id + '"]');
+    if (!card) return;
+    const valueEl     = card.querySelector('.hist-value');
+    const yAxisEl     = card.querySelector('.hist-y-axis');
+    const gridG       = card.querySelector('.hist-grid');
+    const axisEl      = card.querySelector('.hist-axis');
+    const intervalEl  = card.querySelector('.hist-interval');
+    const linePaths   = card.querySelectorAll('.hist-line');
+
+    const isLive = !!(opts && opts.live);
+
+    // No data anywhere → reset all elements to blank.
+    const allEmpty = seriesPoints.every(s => !s || s.length === 0);
+    if (allEmpty) {
+      valueEl.textContent = '—';
+      linePaths.forEach(p => p.setAttribute('d', ''));
+      if (yAxisEl) yAxisEl.innerHTML = '';
+      if (gridG) gridG.innerHTML = '';
+      if (axisEl) axisEl.innerHTML = '';
+      if (intervalEl) intervalEl.textContent = '—';
+      return;
+    }
+
+    // Headline value = most recent raw sample from the live buffer.
+    // Falling back to the rendered (range-bucketed) series would make the
+    // headline shrink when zooming out, because longer ranges use wider
+    // buckets and the last bucket's average smooths over more time. The
+    // live buffer always holds raw unaggregated samples, so it gives a
+    // stable "what is this metric right now" readout regardless of range.
+    const primary = seriesPoints.find(s => s && s.length > 0);
+    const liveBuf = state.liveBuffers[chart.series[0].metric];
+    const latest = (liveBuf && liveBuf.length > 0)
+      ? liveBuf[liveBuf.length - 1].value
+      : primary[primary.length - 1].value;
+    valueEl.textContent = chart.fmt(latest);
+
+    // Range total (only on charts that opted in via totalFmt). Integrate
+    // every series on the chart (trapezoidal) and sum them — for bandwidth
+    // that's rx+tx bytes, for packets it's rx+tx packets, for retransmits
+    // the one series is retransmitted segments.
+    //
+    // In Live mode we integrate only the last 60 seconds of the live
+    // buffer so the badge reads "1M · <total last minute>" — a tight
+    // right-now complement to the latest-rate value on the right. In
+    // range modes we integrate every bucket the range returned.
+    // Per-series peak readout — on multi-series peak-mode charts, each
+    // legend entry gets a "· PEAK N" appended so overlaid series each show
+    // their own max without fighting for the single hist-total slot.
+    const perSeriesPeak = chart.totalMode === 'peak' && chart.series.length > 1;
+    if (perSeriesPeak) {
+      const cutoff = Date.now() - 60_000;
+      for (let i = 0; i < chart.series.length; i++) {
+        const s = chart.series[i];
+        const peakEl = card.querySelector(`.series-peak[data-metric="${s.metric}"]`);
+        if (!peakEl) continue;
+        let peak = -Infinity;
+        if (isLive) {
+          const buf = state.liveBuffers[s.metric] || [];
+          for (const p of buf) if (p.ts >= cutoff && p.value > peak) peak = p.value;
+        } else {
+          const pts = seriesPoints[i] || [];
+          for (const p of pts) if (p.value > peak) peak = p.value;
+        }
+        const display = Number.isFinite(peak) ? chart.totalFmt(peak) : '—';
+        peakEl.innerHTML = '<span class="lbl">PEAK</span>' + display;
+      }
+    }
+
+    const totalEl = card.querySelector('.hist-total');
+    if (totalEl && chart.totalFmt && !perSeriesPeak) {
+      totalEl.style.display = '';
+      let total = 0;
+      let label;
+      if (chart.totalMode === 'peak') {
+        // Single-series peak — scans the visible range (or last 60s in
+        // live mode) and picks the max.
+        let peak = -Infinity;
+        if (isLive) {
+          const cutoff = Date.now() - 60_000;
+          for (const s of chart.series) {
+            const buf = state.liveBuffers[s.metric] || [];
+            for (const p of buf) if (p.ts >= cutoff && p.value > peak) peak = p.value;
+          }
+        } else {
+          for (const s of seriesPoints) for (const p of (s || [])) if (p.value > peak) peak = p.value;
+        }
+        total = Number.isFinite(peak) ? peak : 0;
+        label = chart.totalLabel || 'PEAK';
+      } else if (isLive) {
+        const cutoff = Date.now() - 60_000;
+        for (const s of chart.series) {
+          const buf = state.liveBuffers[s.metric] || [];
+          const last60 = buf.filter(p => p.ts >= cutoff);
+          total += integrateSeries(last60);
+        }
+        label = '1M';
+      } else {
+        for (const s of seriesPoints) total += integrateSeries(s);
+        label = String(currentRange).toUpperCase();
+      }
+      totalEl.querySelector('.lbl').textContent = label;
+      totalEl.querySelector('.val').textContent = chart.totalFmt(total);
+    }
+
+    // Time-axis bounds. In Live mode we anchor the right edge to the wall
+    // clock (Date.now()) so the axis slides continuously at 1Hz and samples
+    // enter smoothly from the right, instead of the axis jumping when new
+    // data arrives. In range modes we anchor to the newest sample so the
+    // line touches the right edge.
+    let newestSample = -Infinity, oldestSample = Infinity;
+    for (const s of seriesPoints) {
+      if (!s || s.length === 0) continue;
+      if (s[s.length - 1].ts > newestSample) newestSample = s[s.length - 1].ts;
+      if (s[0].ts < oldestSample) oldestSample = s[0].ts;
+    }
+    const tsMax = isLive ? Date.now() : newestSample;
+    const tsMin = isLive ? (tsMax - LIVE_VIEW_MS) : oldestSample;
+    const tsSpan = Math.max(1, tsMax - tsMin);
+
+    // Y-axis bounds: combined across all series within the visible time window.
+    let vMin = Infinity, vMax = -Infinity;
+    for (const s of seriesPoints) {
+      if (!s) continue;
+      for (const p of s) {
+        if (p.ts < tsMin) continue;
+        if (p.value < vMin) vMin = p.value;
+        if (p.value > vMax) vMax = p.value;
+      }
+    }
+    if (!Number.isFinite(vMin)) { vMin = vMax = 0; }
+    if (vMin === vMax) { vMin -= 1; vMax += 1; }
+    const valSpan = vMax - vMin;
+    const pad = valSpan * 0.12;
+    const yMin = vMin - pad, yMax = vMax + pad;
+
+    // Plot geometry. LM is the left-margin reserved for Y-axis labels
+    // (in viewBox units out of W=200). Data points map into [LM, W] so
+    // the line doesn't run under the Y-axis number strip on the left.
+    // The labels themselves have a fade-out background so a few pixels
+    // of overlap on narrow cards is still readable.
+    const W = 200, H = 60;
+    // Adaptive left margin: reserve exactly the widest rendered y-label
+    // (+8px breathing room), measured on the previous frame and cached on
+    // the card — the first frame falls back to the old fixed 15 units.
+    // px -> viewBox units because the svg stretches (preserveAspectRatio
+    // none); clamped so a pathological label can never eat the plot. This
+    // replaces a fixed CSS gutter that fit the widest possible label but
+    // left a silly gap next to short ones ("12", "150 ms").
+    const _svgW = (card.querySelector('.hist-svg') || {}).clientWidth || 0;
+    const LM = (card.__yLabelPx && _svgW)
+      ? Math.max(10, Math.min(70, ((card.__yLabelPx + 8) * W) / _svgW))
+      : 15;
+    const x = (ts) => LM + ((tsMax - ts) / tsSpan) * (W - LM);   // newest-on-left
+    const y = (v) => H - ((v - yMin) / (yMax - yMin)) * H;
+
+    // Build path per series. Includes one point beyond tsMin (the last
+    // off-screen sample) so we can interpolate a clean edge point at
+    // x=W — otherwise the line's right endpoint jumps inward when a
+    // sample ages out, producing the "bounce" artefact as the chart
+    // slides.
+    for (let i = 0; i < chart.series.length; i++) {
+      const pts = seriesPoints[i] || [];
+      const screen = [];
+      let lastOff = null;
+      for (const p of pts) {
+        if (p.ts < tsMin) { lastOff = p; continue; }
+        if (screen.length === 0 && lastOff !== null) {
+          const dt = p.ts - lastOff.ts;
+          if (dt > 0) {
+            const frac = (tsMin - lastOff.ts) / dt;
+            const edgeY = lastOff.value + frac * (p.value - lastOff.value);
+            screen.push({ x: W, y: y(edgeY) });
+          }
+        }
+        screen.push({ x: x(p.ts), y: y(p.value) });
+      }
+      if (linePaths[i]) linePaths[i].setAttribute('d', smoothPath(screen));
+    }
+
+    // Y-axis: pick ~4 nice tick values spanning the data range, render
+    // labels in the left-margin strip and horizontal gridlines across
+    // the plot area (starting from LM so they don't run under labels).
+    const yTicks = niceYTicks(vMin, vMax, 4);
+    gridG.innerHTML = '';    // cleared here so horizontal lines go in first
+    yAxisEl.innerHTML = yTicks.map((v) => {
+      const pct = (y(v) / H) * 100;
+      return `<span class="hist-tick" style="top:${pct.toFixed(2)}%">${chart.fmt(v)}</span>`;
+    }).join('');
+    // Measure the widest label so the NEXT frame's adaptive LM fits it.
+    let _mw = 0;
+    yAxisEl.querySelectorAll('.hist-tick').forEach((t) => { _mw = Math.max(_mw, t.offsetWidth); });
+    if (_mw) card.__yLabelPx = _mw;
+    for (const v of yTicks) {
+      const yPx = y(v);
+      const line = document.createElementNS(SVG_NS, 'line');
+      line.setAttribute('x1', LM); line.setAttribute('x2', W);
+      line.setAttribute('y1', yPx.toFixed(2)); line.setAttribute('y2', yPx.toFixed(2));
+      gridG.appendChild(line);
+    }
+
+    // Time-axis gridlines + HH:MM (· date) labels. Percent calculations
+    // now run off x(t) (which respects LM) so both gridlines and labels
+    // align with the plot area rather than the raw element edge.
+    const tickMs = pickTickInterval(tsSpan);
+    intervalEl.textContent = intervalLabel(tickMs);
+    const tzOffset = new Date().getTimezoneOffset() * 60_000;
+    const firstTick = Math.ceil((tsMin - tzOffset) / tickMs) * tickMs + tzOffset;
+    const LM_PCT = (LM / W) * 100;
+
+    axisEl.innerHTML = '';
+    let prevDate = null;
+    const showSeconds = tickMs < 60_000;
+    const ticks = [];
+    for (let t = firstTick; t <= tsMax; t += tickMs) ticks.push(t);
+    ticks.reverse();
+    for (const t of ticks) {
+      const xV = x(t);
+      const xPct = (xV / W) * 100;
+      // Skip ticks crowding the edges of the plot area.
+      if (xPct < LM_PCT + 2 || xPct > 98) continue;
+      const line = document.createElementNS(SVG_NS, 'line');
+      line.setAttribute('x1', xV); line.setAttribute('x2', xV);
+      line.setAttribute('y1', 0);  line.setAttribute('y2', H);
+      gridG.appendChild(line);
+
+      const dt = new Date(t);
+      const time = showSeconds
+        ? dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+        : dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const date = dt.toLocaleDateString([], { month: 'short', day: 'numeric' });
+      const showDate = (prevDate === null) || (prevDate !== date);
+      prevDate = date;
+
+      const tickEl = document.createElement('div');
+      tickEl.className = 'axis-tick';
+      tickEl.style.left = xPct.toFixed(2) + '%';
+      tickEl.innerHTML = '<span class="t">' + time + '</span>' +
+        (showDate ? '<span class="d">' + date + '</span>' : '');
+      axisEl.appendChild(tickEl);
+    }
+
+    // Stash the current plot window + data on the card so the hover handler
+    // can map cursor-x back to a timestamp and look up each series' value.
+    card._hoverState = { tsMin: tsMax - tsSpan, tsMax, LM, W, chart, seriesPoints };
+  }
+
+  // Vertical crosshair + floating tooltip on history charts. Wires once per
+  // card; the handler reads the stashed hover state each mousemove so the
+  // lookup stays in sync with whatever was last drawn (Live or range mode).
+  function wireHistHover() {
+    document.querySelectorAll('.hist-chart').forEach(card => {
+      if (card.dataset.hoverWired) return;
+      card.dataset.hoverWired = '1';
+      const plot = card.querySelector('.hist-plot');
+      const svg = card.querySelector('.hist-svg');
+      const crosshair = svg && svg.querySelector('.hist-crosshair');
+      const tip = card.querySelector('.hist-hover-tip');
+      if (!plot || !svg || !crosshair || !tip) return;
+
+      const hide = () => {
+        crosshair.style.display = 'none';
+        tip.hidden = true;
+      };
+
+      const show = (e) => {
+        const st = card._hoverState;
+        if (!st) return;
+        const rect = svg.getBoundingClientRect();
+        if (rect.width <= 0) return;
+        const xPx = e.clientX - rect.left;
+        const yPx = e.clientY - rect.top;
+        const xViewBox = (xPx / rect.width) * 200;
+        const { tsMin, tsMax, LM, W, chart, seriesPoints } = st;
+        if (xViewBox < LM || xViewBox > W) { hide(); return; }
+        // Newest-on-left inverse: ts = tsMax - (x - LM)/(W - LM) * (tsMax - tsMin)
+        const ts = tsMax - ((xViewBox - LM) / (W - LM)) * (tsMax - tsMin);
+
+        crosshair.setAttribute('x1', xViewBox.toFixed(2));
+        crosshair.setAttribute('x2', xViewBox.toFixed(2));
+        crosshair.style.display = '';
+
+        // Nearest sample per series (points are ascending by ts, so break
+        // once we pass the target — subsequent samples only move further).
+        const rows = [];
+        for (let i = 0; i < chart.series.length; i++) {
+          const s = chart.series[i];
+          const pts = seriesPoints[i] || [];
+          if (pts.length === 0) continue;
+          let nearest = pts[0];
+          let minDt = Math.abs(pts[0].ts - ts);
+          for (let j = 1; j < pts.length; j++) {
+            const d = Math.abs(pts[j].ts - ts);
+            if (d < minDt) { minDt = d; nearest = pts[j]; }
+            if (pts[j].ts > ts) break;
+          }
+          const lbl = s.label ? '<span class="lbl">' + escHtml(s.label) + '</span>' : '';
+          rows.push(
+            '<div class="r"><span class="sw" style="background:' + s.color + '"></span>' +
+            lbl + '<span class="val">' + chart.fmt(nearest.value) + '</span></div>'
+          );
+        }
+        const dt = new Date(ts);
+        const timeStr = dt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        const dateStr = dt.toLocaleDateString([], { month: 'short', day: 'numeric' });
+        tip.innerHTML = '<div class="time">' + timeStr + ' <span class="date">' + dateStr + '</span></div>' + rows.join('');
+        tip.hidden = false;
+
+        // Position the pill near the cursor but keep it inside the plot.
+        const plotRect = plot.getBoundingClientRect();
+        const px = e.clientX - plotRect.left;
+        const py = e.clientY - plotRect.top;
+        const tipW = tip.offsetWidth;
+        const tipH = tip.offsetHeight;
+        let left = px + 12;
+        if (left + tipW > plotRect.width) left = px - tipW - 12;
+        if (left < 0) left = 0;
+        let top = py - tipH - 8;
+        if (top < 0) top = py + 14;
+        tip.style.left = left + 'px';
+        tip.style.top = top + 'px';
+      };
+
+      plot.addEventListener('mousemove', show);
+      plot.addEventListener('mouseleave', hide);
+    });
+  }
+
+  function drawAllLive() {
+    for (const ch of HIST_CHARTS) {
+      const seriesPoints = ch.series.map(s => state.liveBuffers[s.metric] || []);
+      drawHistChart(ch, seriesPoints, { live: true });
+    }
+  }
+
+  function allHistoryMetrics() {
+    const s = new Set();
+    for (const ch of HIST_CHARTS) for (const x of ch.series) s.add(x.metric);
+    return [...s];
+  }
+
+  async function fetchHistoryFor(range) {
+    const results = {};
+    // readFetch resolves to this box's own /history when no peer is active
+    // (peer-fetch.js's LOCAL_PATH), and to the peer's read API otherwise —
+    // one call site covers both, and lights up for a relay-bearing peer
+    // later with no further change here.
+    await Promise.all(allHistoryMetrics().map(async (m) => {
+      try {
+        const res = await window.aperirePeerFetch.readFetch('history', { metric: m, range });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        const data = await res.json();
+        results[m] = data.points || [];
+      } catch (err) {
+        console.warn('history fetch failed:', m, err);
+        results[m] = [];
+      }
+    }));
+    return results;
+  }
+
+  async function loadHistory() {
+    const results = await fetchHistoryFor(currentRange);
+    for (const ch of HIST_CHARTS) {
+      const seriesPoints = ch.series.map(s => results[s.metric] || []);
+      drawHistChart(ch, seriesPoints, { live: false });
+    }
+  }
+
+  // Seed the Live buffers from the `recent` read route so the charts arrive
+  // filled rather than growing from nothing on every load, reload and peer
+  // flip. Routed through peer-fetch.js's readFetch, so ONE code path serves
+  // both owners: no peer active and it resolves to this box's own /recent;
+  // a peer active and it resolves to `/api/node/<label>/read/recent`, that
+  // peer's own stored samples. On the aggregator (every node a peer) the
+  // second branch is the only one that ever runs, which is why the earlier
+  // "a peer's Live series is not seeded at all" rule left the charts empty
+  // there on literally every page view.
+  //
+  // `recent` (raw samples), never `history` (minute buckets), even though
+  // this function used to pull `history?range=1h`. A bucket is an aggregate
+  // stamped with the bucket's own time, not an observation taken at that
+  // time — the wrong shape for a series whose other points are individual
+  // readings, and at 1-minute granularity it also drew about five points
+  // across the five-minute window on a metric stored every ten seconds.
+  // `fetchHistoryFor` is untouched and still serves range mode, where a
+  // bucket is exactly what was asked for.
+  //
+  // Every seeded point is a REAL stored sample at its REAL recorded
+  // timestamp. Nothing is interpolated, resampled or padded.
+  //
+  // Three orderings this has to survive:
+  //
+  //   1. A live push racing the fetch. The WS snapshot (or, for a peer,
+  //      pollPeerOnce's first render) can land a point before this returns.
+  //      Plain append would leave the buffer as
+  //        [live_new, seed_oldest, ..., seed_newest]
+  //      — not chronological, and drawHistChart reads the last point as
+  //      tsMax. We merge: seed points first (oldest → newest), then only
+  //      those existing points strictly newer than the seed's last, so the
+  //      newer real observation is neither lost nor duplicated.
+  //
+  //   2. The owner changing mid-flight — `gen`, see clearLiveBuffers.
+  //
+  //   3. Clock skew. A peer's stored timestamps come from THAT host's
+  //      clock; pushLive stamps with THIS browser's. A peer running ahead
+  //      would otherwise seed points in the future and every subsequent
+  //      live push would be "older" than the seed — a buffer that walks
+  //      backwards. Seed points later than `now` are DISCARDED, never
+  //      shifted: moving a real sample to a time it was not taken is the
+  //      fabrication this function exists to refuse. After the clamp every
+  //      seed point is <= now and every later push >= now, so the buffer
+  //      stays monotonic.
+  function seedLiveBuffers() {
+    const gen = seedGen;
+    if (seedInFlight && seedInFlight.gen === gen) return seedInFlight.promise;
+    const promise = runSeedLiveBuffers(gen).then(() => {
+      if (seedInFlight && seedInFlight.promise === promise) seedInFlight = null;
+    }, () => {
+      if (seedInFlight && seedInFlight.promise === promise) seedInFlight = null;
+    });
+    seedInFlight = { gen, promise };
+    return promise;
+  }
+
+  function mergeSeedPoints(metric, points, gen) {
+    if (gen !== seedGen) return;                 // owner changed while we fetched
+    const buf = state.liveBuffers[metric];
+    if (!buf) return;
+    const now = Date.now();
+    const cutoff = now - LIVE_WINDOW_MS;
+    const seeded = [];
+    for (const p of (points || [])) {
+      if (!p || typeof p.ts !== 'number' || !Number.isFinite(p.value)) continue;
+      if (p.ts > now || p.ts < cutoff) continue;  // future-stamped or already off the window
+      seeded.push({ ts: p.ts, value: p.value });
+    }
+    if (seeded.length === 0) return;
+    seeded.sort((a, b) => a.ts - b.ts);           // the route serves ascending; do not depend on it
+    const lastSeedTs = seeded[seeded.length - 1].ts;
+    const existingNewer = buf.filter(p => p.ts > lastSeedTs);
+    buf.length = 0;
+    for (const p of seeded) buf.push(p);
+    for (const p of existingNewer) buf.push(p);
+    if (buf.length > LIVE_MAX_POINTS) buf.splice(0, buf.length - LIVE_MAX_POINTS);
+  }
+
+  async function runSeedLiveBuffers(gen) {
+    await Promise.all(allHistoryMetrics().map(async (m) => {
+      try {
+        const res = await window.aperirePeerFetch.readFetch('recent', { metric: m, limit: LIVE_MAX_POINTS });
+        if (!res.ok) return;                      // peer unknown / unreachable / integrity mismatch — start empty, exactly as before
+        const data = await res.json();
+        mergeSeedPoints(m, data.points, gen);
+      } catch { /* silent — Live still fills in from the stream or the poll */ }
+    }));
+    if (gen !== seedGen) return;
+    if (currentRange === 'live') drawAllLive();
+  }
+
+  function setRange(range) {
+    if (range === currentRange) return;
+    currentRange = range;
+    document.querySelectorAll('#rangeToggle .range-btn').forEach(b => {
+      b.classList.toggle('active', b.dataset.range === range);
+    });
+    if (range === 'live') {
+      drawAllLive();
+    } else {
+      loadHistory();
+    }
+  }
+
+  function wireRangeToggle() {
+    const root = document.getElementById('rangeToggle');
+    if (!root) return;
+    root.querySelectorAll('.range-btn').forEach(btn => {
+      btn.addEventListener('click', () => setRange(btn.dataset.range));
+    });
+  }
+
+  // Touch-device tooltip dismiss. On iPad/Android a tap opens either the
+  // row-level has-tip or the info-icon tooltip via :focus-within, but a
+  // tap elsewhere doesn't auto-blur that element — the tip stays pinned
+  // until something else gets focus. We fix that by blurring the focused
+  // tooltip host when the user taps outside it.
+  document.addEventListener('click', (e) => {
+    const active = document.activeElement;
+    if (!active || !active.classList) return;
+    const isTipHost = active.classList.contains('has-tip') || active.classList.contains('info-icon');
+    if (isTipHost && !active.contains(e.target)) active.blur();
+  });
+
+  // ── Per-metric info icons ──────────────────────────────────────────
+  // Tooltip content is pulled from docs/dashboard-layout.md so the
+  // operator-facing copy lives in one place. Icons get injected into
+  // every .card-row whose label matches a registry key — no need to
+  // hand-edit markup for each metric.
+  const INFO_TOOLTIPS = {
+    // ── Peer Pool ────────────────────────────────────────────────────
+    'Peer Count': {
+      title: 'Peer Count',
+      body: 'Total connected peers on the XRPL overlay network. Equals Inbound + Outbound.',
+      bullets: [
+        'Healthy: 21-50 (stable)',
+        'Acceptable: 15-21',
+        'Low: 10-15 (monitor)',
+        'Critical: <10 (investigate)',
+      ],
+    },
+    'Inbound': {
+      title: 'Inbound Peers',
+      body: 'Peers that dialed IN to this node. A zero or dropping count means peers are failing to reach us — usually a firewall, NAT, or advertised-IP problem.',
+    },
+    'Outbound': {
+      title: 'Outbound Peers',
+      body: 'Peers this node dialed out to. Indicates our peer discovery is healthy and outbound slots are filled.',
+    },
+    'Insane Peers': {
+      title: 'Insane Peers',
+      body: 'Peers rippled has flagged as misbehaving (sanity != "sane"). Part of peer health.',
+      bullets: ['Healthy: 0-2', 'Warn: 3-5', 'Alert: >5 sustained'],
+    },
+    'Countries': {
+      title: 'Countries',
+      body: 'Number of distinct countries represented across connected peers (GeoIP). Hover the row for the full breakdown with flags. Geographic diversity improves resilience to regional outages.',
+    },
+    'Versions': {
+      title: 'rippled Versions',
+      body: 'Count of distinct rippled builds observed across connected peers. Hover the row for the full breakdown. Fragmentation during an amendment cycle is expected; persistent fragmentation at other times is worth investigating.',
+    },
+
+    // ── Peer Quality ─────────────────────────────────────────────────
+    'Upgrade Status': {
+      title: 'Upgrade Status',
+      body: 'Compares this node\'s rippled build to the most common version seen across its peers.',
+      bullets: [
+        'Current: matches peer majority',
+        'Ahead: newer than peers',
+        'Behind: older than peers',
+        'Blocked: amendment-blocked, needs upgrade',
+      ],
+    },
+    'Latency p50': {
+      title: 'Latency p50',
+      body: 'Median peer round-trip latency.',
+      bullets: ['Healthy: <100 ms', 'Warn: >500 ms'],
+    },
+    'Latency p90': {
+      title: 'Latency p90',
+      body: '90th-percentile peer RTT. Tail-latency indicator — surfaces the slow 10%.',
+      bullets: ['Healthy: <250 ms', 'Warn: >1000 ms'],
+    },
+    'Latency p99': {
+      title: 'Latency p99',
+      body: 'Worst-case peer RTT. One bad peer will dominate here.',
+      bullets: ['Healthy: <500 ms', 'Warn: >2000 ms'],
+    },
+    'Ahead Peers': {
+      title: 'Ahead Peers',
+      body: 'Count of peers running a newer rippled than ours. A rising number often precedes an amendment activation.',
+    },
+    'Ahead %': {
+      title: 'Ahead %',
+      body: 'Share of connected peers running a newer rippled build than ours.',
+    },
+
+    // ── Bandwidth Live ───────────────────────────────────────────────
+    'Ingress': {
+      title: 'Ingress',
+      body: 'Current incoming byte rate on the primary NIC. Watch for approaching the hosting plan\'s link cap.',
+    },
+    'Egress': {
+      title: 'Egress',
+      body: 'Current outgoing byte rate on the primary NIC. For most validators, outbound peer traffic dominates.',
+    },
+    'RX pps': {
+      title: 'RX Packets/sec',
+      body: 'Incoming packet rate. Decouples small-packet storms from byte-rate saturation.',
+    },
+    'TX pps': {
+      title: 'TX Packets/sec',
+      body: 'Outgoing packet rate.',
+    },
+    'TCP Established': {
+      title: 'TCP Established',
+      body: 'Current count of TCP connections in the ESTABLISHED state across the whole host (not just rippled).',
+    },
+    'TCP Retrans.': {
+      title: 'TCP Retransmits',
+      body: 'TCP segments retransmitted per second. A lossy network path or a congested link drives this up.',
+      bullets: ['Healthy: <1/s', 'Warn: 1-10/s', 'Alert: >10/s'],
+    },
+
+    // ── Errors & Budget ──────────────────────────────────────────────
+    'RX Errors': {
+      title: 'RX Errors',
+      body: 'Cumulative receive errors since the interface came up. Non-zero usually points at NIC, cable, or switch-port issues. Expect zero on a healthy host.',
+    },
+    'TX Errors': {
+      title: 'TX Errors',
+      body: 'Cumulative transmit errors since interface up. Non-zero suggests link-level problems.',
+    },
+    'RX Drops': {
+      title: 'RX Drops',
+      body: 'Cumulative dropped incoming packets. Typical cause is the kernel receive buffer filling faster than userspace drains it — sustained non-zero means the host is behind.',
+    },
+    'TX Drops': {
+      title: 'TX Drops',
+      body: 'Cumulative dropped outgoing packets. Usually signals queue overflow at the NIC.',
+    },
+    'Monthly Budget': {
+      title: 'Monthly Budget',
+      body: 'Percentage of the hosting plan\'s monthly egress cap used this month (UTC month boundary). Hover the row itself for Used / Cap / NIC.',
+      bullets: ['Green: <80%', 'Amber: 80-94%', 'Red: ≥95%'],
+    },
+    'TCP TIME_WAIT': {
+      title: 'TCP TIME_WAIT',
+      body: 'Sockets waiting for straggler packets before fully closing. Elevated values can signal connection churn or mis-tuned TCP keep-alive.',
+    },
+  };
+
+  function escHtml(s) {
+    return String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  }
+
+  function installInfoIcons() {
+    document.querySelectorAll('.metric-card .card-row .lbl').forEach(lbl => {
+      if (lbl.querySelector('.info-icon')) return;              // idempotent
+      const key = lbl.textContent.trim();
+      const info = INFO_TOOLTIPS[key];
+      if (!info) return;
+      const icon = document.createElement('span');
+      icon.className = 'info-icon';
+      icon.tabIndex = 0;
+      icon.setAttribute('role', 'button');
+      icon.setAttribute('aria-label', info.title + ' info');
+      const parts = [`<span class="info-title">${escHtml(info.title)}</span>`];
+      if (info.body) parts.push(`<p>${escHtml(info.body)}</p>`);
+      if (info.bullets && info.bullets.length) {
+        parts.push('<ul>' + info.bullets.map(b => `<li>${escHtml(b)}</li>`).join('') + '</ul>');
+      }
+      icon.innerHTML = `<span class="info-tip">${parts.join('')}</span>`;
+      lbl.appendChild(icon);
+    });
+  }
+
+  // When an info-icon activates, compute where the tooltip would sit
+  // (centered below the icon) and shift it horizontally if either edge
+  // would fall outside the viewport. We base the math on the icon's
+  // rect (always laid out) and the tooltip's offsetWidth (laid out even
+  // when opacity:0), rather than the tooltip's getBoundingClientRect —
+  // that rect can return interpolated values while the opacity/transform
+  // transition is still running and yield the wrong shift on hover.
+  function positionInfoTip(icon) {
+    const tip = icon.querySelector('.info-tip');
+    if (!tip) return;
+    const iconRect = icon.getBoundingClientRect();
+    const iconCenter = iconRect.left + iconRect.width / 2;
+    const tipWidth = tip.offsetWidth;
+    const vw = window.innerWidth;
+    const margin = 8;
+    const leftEdge  = iconCenter - tipWidth / 2;
+    const rightEdge = iconCenter + tipWidth / 2;
+    let shift = 0;
+    if (leftEdge  < margin)          shift = margin - leftEdge;
+    else if (rightEdge > vw - margin) shift = (vw - margin) - rightEdge;
+    tip.style.transform = (shift !== 0)
+      ? `translateX(calc(-50% + ${shift.toFixed(1)}px))`
+      : 'translateX(-50%)';
+    // Vertical: the tip rests below its icon. On the bottom row of a card
+    // near the fold that puts it under the viewport edge, clipped (operator,
+    // 2026-08-18: READ BPS, JOB QUEUE on System). Flip it above the icon
+    // when there is no room below and there is room above; the tab pages
+    // are iframes, so the viewport here is the frame's own height, which is
+    // exactly the box the tip has to fit in.
+    const tipHeight = tip.offsetHeight;
+    const vh = (window.visualViewport && window.visualViewport.height) || window.innerHeight;
+    const roomBelow = vh - iconRect.bottom;
+    const roomAbove = iconRect.top;
+    if (roomBelow < tipHeight + margin && roomAbove > roomBelow) {
+      tip.style.top = 'auto';
+      tip.style.bottom = '100%';
+    } else {
+      tip.style.top = '';
+      tip.style.bottom = '';
+    }
+  }
+
+  document.addEventListener('mouseover', (e) => {
+    const icon = e.target.closest?.('.info-icon');
+    if (!icon) return;
+    if (e.target.closest('.info-tip')) return;     // already inside the tip
+    positionInfoTip(icon);
+  });
+  document.addEventListener('focusin', (e) => {
+    const icon = e.target.closest?.('.info-icon');
+    if (icon) positionInfoTip(icon);
+  });
+
+  // Bootstrap: build the markup, wire the toggle, draw whatever we have.
+  installInfoIcons();
+  buildChartGrid();
+  wireHistHover();
+  wireRangeToggle();
+  drawAllLive();
+  // The hash may already name a peer on first load (a reload while viewing
+  // one, or a direct deep link into #node=label) — resolved before
+  // seedLiveBuffers so its own peer guard sees the right peerView.label.
+  syncActiveNodeFromHash();
+  // Seed from SQLite in the background so reloads / tab-flips show history
+  // immediately. Runs concurrently with WS connect — live pushes layer on
+  // top of whatever we seeded.
+  seedLiveBuffers();
+  // Live mode also redraws on each WS message (see pushLive callers in
+  // applyPeers / applyNetStats). The 1Hz tick below catches the time axis
+  // sliding forward when no new sample arrives — keeps the rightmost tick
+  // anchored to "now" instead of letting it drift back.
+  setInterval(() => { if (document.hidden) return; if (currentRange === 'live') drawAllLive(); }, 1000);
+
+  // Stale-feed watchdog — re-checks even when no message arrives (the dead-feed
+  // case is precisely "no message"), so the banner appears on its own.
+  setInterval(checkRelayFeed, 5000);
+  checkRelayFeed();
+
+  connectWS();
+})();
+
+</script>
+<script src="/audio-toggle.js" data-key="aperire-audio" data-default="on" defer></script>
+
+<script src="/mobile-nav.js" defer></script>
+<script src="/fleet-chip.js" defer></script>
+<script src="/advisor-presence.js" defer></script>
+<script src="/idle-tracker.js" defer></script>
+<!-- Keeps --hist-strip equal to the height of everything on this page that is
+     not a chart body, so the four history rows can claim the rest and the page
+     ends at the fold. See the "Fold fit" comment on .hist-svg above. -->
+<script src="/fold-fit.js" defer
+        data-target=".hist-svg" data-rows="4" data-var="--hist-strip"
+        data-min-width="721"></script>
+</body>
+</html>

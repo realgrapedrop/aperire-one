@@ -1,0 +1,16 @@
+# The key that signs Aperire One releases, in OpenSSH allowed_signers format.
+#
+# Every release publishes release.json and a detached signature over it,
+# release.json.sig. The installer and the updater refuse a release whose
+# signature does not verify against a key on this list. docs/RELEASE-SIGNING.md
+# carries the same line and its fingerprint, and says how to check a release
+# by hand.
+#
+# One plain ssh-ed25519 key. Two only during a key change, in the two signed
+# steps the guide describes. Every line has this shape:
+#
+#   aperire-release-key namespaces="aperire-release" ssh-ed25519 <base64> [comment]
+#
+# This is the committed release key: a host whose set is not this one trusts
+# a lab or test key.
+aperire-release-key namespaces="aperire-release" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHIkP5Gqz/T/4taeWVb5repX47RKnpgYkNJPJ69Di9kp aperire-release-key-1

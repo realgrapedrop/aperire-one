@@ -1,0 +1,157 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="796" viewBox="0 0 1240 796" font-family="Helvetica, Arial, sans-serif">
+  <!-- What the broker is. One root program behind a private socket, one verb
+       per connection, and the red paths are the point of the drawing: they
+       are the things it cannot do, drawn at the same weight as the things it
+       can, because that asymmetry is the whole argument.
+       Layout: the operator's decision on the left, the socket in the middle
+       as a narrow gate, root on the right, and what root writes below it.
+       The four refusals hang off the same box so nothing has to be read
+       twice to see which side of the wall it is on.
+       The second band is the three Advisor verbs (#641, #647): they edit a
+       row that is already there, so they hang off one stem and one bus
+       rather than the three arrows that append a new one.
+       Every line in the red box has to stay true (P3-060). Revoke removes
+       the named node's rows (#859), so "remove a fleet row" is not on it any
+       more; what a revoke or a repin can never do is move root's own pin,
+       which is what decides where a model key may be sent. -->
+  <defs>
+    <marker id="bh" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#333"/>
+    </marker>
+    <marker id="bhg" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#2e8b57"/>
+    </marker>
+    <style>
+      .box  { fill: #fff; stroke-width: 2.5; }
+      .navy { stroke: #1f3a5f; } .green { stroke: #2e8b57; } .orange { stroke: #e67e22; }
+      .grey { stroke: #9a9a9a; } .cyan { stroke: #17a2b8; }
+      .t  { font-size: 19px; fill: #222; text-anchor: middle; font-weight: bold; }
+      .ts { font-size: 14px; fill: #444; text-anchor: middle; }
+      .tn { font-size: 12.5px; fill: #666; text-anchor: middle; }
+      .lc { font-size: 13.5px; fill: #555; text-anchor: middle; }
+      .lr { font-size: 14px; fill: #c0392b; font-weight: bold; }
+      .a  { fill: none; stroke: #333; stroke-width: 1.6; marker-end: url(#bh); }
+      .ag { fill: none; stroke: #2e8b57; stroke-width: 1.8; marker-end: url(#bhg); }
+      .gl { fill: none; stroke: #2e8b57; stroke-width: 1.8; }
+      .blocked { fill: none; stroke: #c0392b; stroke-width: 2; stroke-dasharray: 8 6; }
+      .foot { font-size: 15px; fill: #444; text-anchor: middle; }
+      .mono { font-family: "SFMono-Regular", Consolas, monospace; font-size: 12.5px; fill: #555; text-anchor: middle; }
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="1240" height="796" fill="#fff"/>
+  <text x="620" y="40" class="t" font-size="22">What the broker is</text>
+  <text x="620" y="66" class="ts">One root program, behind a private socket, that does one narrow thing per connection</text>
+
+  <!-- the operator's decision -->
+  <rect x="40" y="110" width="240" height="112" rx="10" class="box navy"/>
+  <text x="160" y="146" class="t" font-size="17">An administrator</text>
+  <text x="160" y="170" class="ts">compares a fingerprint</text>
+  <text x="160" y="192" class="ts">and touches a passkey</text>
+  <text x="160" y="213" class="tn">on the Settings page</text>
+
+  <!-- the dashboard -->
+  <rect x="340" y="110" width="230" height="112" rx="10" class="box cyan"/>
+  <text x="455" y="146" class="t" font-size="17">The dashboard</text>
+  <text x="455" y="170" class="ts">runs as your own account</text>
+  <text x="455" y="192" class="ts">and cannot use sudo</text>
+  <text x="455" y="213" class="tn">no privilege of its own</text>
+
+  <path d="M285,166 L335,166" class="a"/>
+
+  <!-- the socket, as a gate -->
+  <rect x="612" y="96" width="34" height="142" rx="6" fill="#fdf6ec" stroke="#e67e22" stroke-width="2.5"/>
+  <text x="629" y="88" class="lc">one verb per connection</text>
+
+  <path d="M575,166 L607,166" class="a"/>
+  <path d="M651,166 L697,166" class="a"/>
+  <!-- One payload crossing the gate, every seven seconds. There is one
+       direction: nothing is read back. -->
+  <circle r="5" fill="#e67e22">
+    <animate attributeName="cx" values="575;607;629;651;697" dur="1.4s" begin="0s;go.end+5.6s" id="go" fill="freeze"/>
+    <animate attributeName="cy" values="166;166;166;166;166" dur="1.4s" begin="0s;go.end+5.6s" fill="freeze"/>
+    <animate attributeName="opacity" values="0;1;1;1;0" dur="1.4s" begin="0s;go.end+5.6s" fill="freeze"/>
+  </circle>
+
+  <!-- root -->
+  <rect x="700" y="110" width="250" height="112" rx="10" class="box green"/>
+  <text x="825" y="146" class="t" font-size="17">aperire-fleet-broker</text>
+  <text x="825" y="170" class="ts">runs as root, started by</text>
+  <text x="825" y="192" class="ts">systemd for one connection</text>
+  <text x="825" y="213" class="tn">takes no arguments</text>
+
+  <!-- what it writes -->
+  <text x="440" y="368" class="lc" font-weight="bold" fill="#2e8b57">it appends</text>
+  <rect x="150" y="392" width="290" height="86" rx="10" class="box green"/>
+  <text x="295" y="422" class="ts" font-weight="bold">one row in the fleet registry</text>
+  <text x="295" y="444" class="tn">appended as text, pinned to the node key</text>
+  <text x="295" y="464" class="tn">your own comments and rows untouched</text>
+
+  <rect x="470" y="392" width="290" height="86" rx="10" class="box green"/>
+  <text x="615" y="422" class="ts" font-weight="bold">that row's two token files</text>
+  <text x="615" y="444" class="tn">named after the label, in one</text>
+  <text x="615" y="464" class="tn">fixed directory, readable by the two services</text>
+
+  <rect x="790" y="392" width="290" height="86" rx="10" class="box green"/>
+  <text x="935" y="422" class="ts" font-weight="bold">one reload</text>
+  <text x="935" y="444" class="tn">the dashboard re-reads its registry</text>
+  <text x="935" y="464" class="tn">in place; nothing restarts</text>
+
+  <path d="M780,228 C700,280 420,300 300,387" class="ag"/>
+  <path d="M820,228 C790,290 660,320 615,387" class="ag"/>
+  <path d="M900,228 C930,300 935,340 935,387" class="ag"/>
+
+  <!-- the same root program, editing a row that is already there. One stem
+       comes down the gap between the second and third boxes above, splits on
+       a bus, and drops into one box per verb. -->
+  <path d="M752,222 C752,300 775,340 775,395 L775,512" class="gl"/>
+  <path d="M295,512 L935,512" class="gl"/>
+  <path d="M295,512 L295,530" class="ag"/>
+  <path d="M615,512 L615,530" class="ag"/>
+  <path d="M935,512 L935,530" class="ag"/>
+  <text x="440" y="502" class="lc" font-weight="bold" fill="#2e8b57">and, on a row that is already there, it edits</text>
+
+  <rect x="150" y="532" width="290" height="102" rx="10" class="box green"/>
+  <text x="295" y="562" class="ts" font-weight="bold">attach-advisor</text>
+  <text x="295" y="584" class="tn">gives one existing link row an Advisor</text>
+  <text x="295" y="602" class="tn">address and token file, and marks it</text>
+  <text x="295" y="620" class="tn">in root's record; the pins must agree</text>
+
+  <rect x="470" y="532" width="290" height="102" rx="10" class="box green"/>
+  <text x="615" y="562" class="ts" font-weight="bold">detach-advisor</text>
+  <text x="615" y="584" class="tn">takes those back off the row and</text>
+  <text x="615" y="602" class="tn">deletes that one token file; the node's</text>
+  <text x="615" y="620" class="tn">own Advisor and its token are untouched</text>
+
+  <rect x="790" y="532" width="290" height="102" rx="10" class="box green"/>
+  <text x="935" y="562" class="ts" font-weight="bold">refresh-advisor-token</text>
+  <text x="935" y="584" class="tn">replaces the content of that token file</text>
+  <text x="935" y="602" class="tn">on a row already attached; no port,</text>
+  <text x="935" y="620" class="tn">no registry and no mark changes</text>
+
+  <!-- On its own white ground: the three curves above pass through here on
+       their way out, and SVG paints in document order, so this comes after
+       operator reads twice. -->
+  <rect x="516" y="248" width="226" height="54" fill="#fff"/>
+  <text x="629" y="264" class="mono">/run/aperire/fleet-broker.sock</text>
+  <text x="629" y="284" class="tn">mode 0600, your account only</text>
+  <text x="629" y="298" class="tn">nothing on the command line</text>
+
+  <!-- and what it cannot -->
+  <rect x="1000" y="110" width="200" height="196" rx="10" fill="#fdf0ef" stroke="#c0392b" stroke-width="2.5" stroke-dasharray="8 6"/>
+  <text x="1100" y="140" class="ts" font-weight="bold" fill="#c0392b">it cannot</text>
+  <text x="1100" y="288" class="tn" font-size="11">revoke takes out only</text>
+  <text x="1100" y="301" class="tn" font-size="11">the node you named</text>
+  <text x="1020" y="168" class="lr" font-size="13">rename a fleet row</text>
+  <text x="1020" y="192" class="lr" font-size="13">move root's pin</text>
+  <text x="1020" y="216" class="lr" font-size="13">name a path</text>
+  <text x="1020" y="240" class="lr" font-size="13">choose a port</text>
+  <text x="1020" y="264" class="lr" font-size="13">hand back the key</text>
+  <path d="M955,166 L995,166" class="blocked"/>
+
+  <text x="620" y="676" class="foot">The socket is one direction. The payload goes in; a few facts and one</text>
+  <text x="620" y="698" class="foot">sentence come back, and nothing else does.</text>
+  <text x="620" y="736" class="lc">So the worst a compromised dashboard gets from this socket is one node more,</text>
+  <text x="620" y="756" class="lc">one fewer, or an Advisor marked on a node already there. The only writes beyond</text>
+  <text x="620" y="776" class="lc">that account's own files are the Advisor's registry, the token files and root's record.</text>
+</svg>

@@ -1,0 +1,101 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="600" viewBox="0 0 1400 600" font-family="Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="ah" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#333"/>
+    </marker>
+    <style>
+      .zone { fill: #fff; stroke: #9a9a9a; stroke-width: 1.5; stroke-dasharray: 7 5; rx: 6; }
+      .zlbl { font-size: 20px; fill: #333; }
+      .zsub { font-size: 14px; fill: #666; }
+      .box  { fill: #fff; stroke-width: 2.5; }
+      .purple { stroke: #8e44ad; } .orange { stroke: #e67e22; } .cyan { stroke: #17a2b8; } .navy { stroke: #1f3a5f; } .green { stroke: #2e8b57; }
+      .t  { font-size: 20px; fill: #222; text-anchor: middle; }
+      .ti { font-size: 17px; fill: #222; text-anchor: middle; }
+      .ts { font-size: 15px; fill: #444; text-anchor: middle; }
+      .sn { font-size: 13px; fill: #666; text-anchor: middle; letter-spacing: 1px; }
+      .l  { font-size: 14.5px; fill: #555; }
+      .lc { font-size: 14.5px; fill: #555; text-anchor: middle; }
+      .a  { fill: none; stroke: #333; stroke-width: 1.6; marker-end: url(#ah); }
+      .foot { font-size: 14px; fill: #666; text-anchor: middle; }
+    </style>
+  </defs>
+  <rect width="1400" height="600" fill="#fff"/>
+
+  <!-- One command in -->
+  <rect class="box purple" x="40" y="40" width="380" height="76" rx="12"/>
+  <text class="t"  x="230" y="74">git clone</text>
+  <text class="ts" x="230" y="98">cd aperire-one</text>
+
+  <line class="a" x1="422" y1="78" x2="476" y2="78"/>
+
+  <rect class="box cyan" x="480" y="40" width="340" height="76" rx="12"/>
+  <text class="t"  x="650" y="74">sudo bash aperire-one</text>
+  <text class="ts" x="650" y="98">the front door</text>
+
+  <line class="a" x1="822" y1="78" x2="936" y2="78"/>
+  <text class="lc" x="879" y="64">already installed</text>
+
+  <rect class="box navy" x="940" y="40" width="420" height="76" rx="12"/>
+  <text class="t"  x="1150" y="70">the operator menu</text>
+  <text class="ts" x="1150" y="94">install · operators · fleet · Advisor · verify</text>
+
+  <line class="a" x1="650" y1="118" x2="650" y2="196"/>
+  <text class="l" x="662" y="162">nothing installed yet</text>
+
+  <!-- Guided setup -->
+  <rect class="zone" x="40" y="200" width="1320" height="272"/>
+  <text class="zlbl" x="56" y="228">Guided setup</text>
+  <text class="zsub" x="56" y="250">five steps, about 15 minutes, most of it the build in STEP 1</text>
+
+  <!-- STEP 0 -->
+  <rect class="box purple" x="60" y="270" width="236" height="104" rx="12"/>
+  <text class="sn" x="178" y="296">STEP 0</text>
+  <text class="ti" x="178" y="322">what this host is</text>
+  <text class="ts" x="178" y="348">pick the role</text>
+  <text class="lc" x="178" y="404">co-located, dashboard,</text>
+  <text class="lc" x="178" y="424">validator or cli-only</text>
+  <line class="a" x1="298" y1="322" x2="314" y2="322"/>
+
+  <!-- STEP 1 -->
+  <rect class="box cyan" x="316" y="270" width="236" height="104" rx="12"/>
+  <text class="sn" x="434" y="296">STEP 1</text>
+  <text class="ti" x="434" y="322">install</text>
+  <text class="ts" x="434" y="348">install.sh, its plan, one yes</text>
+  <text class="lc" x="434" y="404">every part running as a</text>
+  <text class="lc" x="434" y="424">non-privileged service</text>
+  <line class="a" x1="554" y1="322" x2="570" y2="322"/>
+
+  <!-- STEP 2 -->
+  <rect class="box green" x="572" y="270" width="236" height="104" rx="12"/>
+  <text class="sn" x="690" y="296">STEP 2</text>
+  <text class="ti" x="690" y="322">your first operator</text>
+  <text class="ts" x="690" y="348">the address, then the account</text>
+  <text class="lc" x="690" y="404">an admin account and</text>
+  <text class="lc" x="690" y="424">the enrollment link</text>
+  <line class="a" x1="810" y1="322" x2="826" y2="322"/>
+
+  <!-- STEP 3 -->
+  <rect class="box orange" x="828" y="270" width="236" height="104" rx="12"/>
+  <text class="sn" x="946" y="296">STEP 3</text>
+  <text class="ti" x="946" y="322">what the role needs</text>
+  <text class="ts" x="946" y="348">relay, or a node joined</text>
+  <text class="lc" x="946" y="404">the last wire</text>
+  <text class="lc" x="946" y="424">connected</text>
+  <line class="a" x1="1066" y1="322" x2="1082" y2="322"/>
+
+  <!-- STEP 4 -->
+  <rect class="box navy" x="1084" y="270" width="236" height="104" rx="12"/>
+  <text class="sn" x="1202" y="296">STEP 4</text>
+  <text class="ti" x="1202" y="322">verify</text>
+  <text class="ts" x="1202" y="348">units, /healthz, reboot check</text>
+  <text class="lc" x="1202" y="404">proof, in the</text>
+  <text class="lc" x="1202" y="424">terminal</text>
+
+  <!-- Out -->
+  <line class="a" x1="700" y1="474" x2="700" y2="512"/>
+  <rect class="box green" x="420" y="514" width="560" height="60" rx="12"/>
+  <text class="ti" x="700" y="540">open the enrollment link, register your passkey</text>
+  <text class="ts" x="700" y="562">then sign in to the dashboard</text>
+
+  <text class="foot" x="700" y="592">Every step prints the real command before it runs it. A step already done says so and offers to skip.</text>
+</svg>

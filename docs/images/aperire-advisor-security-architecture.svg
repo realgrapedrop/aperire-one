@@ -1,0 +1,154 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="960" viewBox="0 0 1400 960" font-family="Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="ah" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#333"/>
+    </marker>
+    <style>
+      .zone { fill: #fff; stroke: #9a9a9a; stroke-width: 1.5; stroke-dasharray: 7 5; rx: 6; }
+      .zlbl { font-size: 19px; fill: #333; font-weight: bold; }
+      .zsub { font-size: 13px; fill: #666; }
+      .box  { fill: #fff; stroke-width: 2.5; rx: 10; }
+      .purple { stroke: #8e44ad; } .orange { stroke: #e67e22; } .cyan { stroke: #17a2b8; }
+      .navy { stroke: #1f3a5f; } .green { stroke: #2e8b57; } .red { stroke: #c0392b; }
+      .t  { font-size: 17px; fill: #222; text-anchor: middle; font-weight: bold; }
+      .ts { font-size: 12.5px; fill: #555; text-anchor: middle; }
+      .a  { fill: none; stroke: #333; stroke-width: 1.6; marker-end: url(#ah); }
+      .chip { fill: #f4f4f4; stroke: #9a9a9a; stroke-width: 1.5; rx: 8; }
+      .cl { font-size: 14.5px; fill: #333; text-anchor: middle; font-weight: bold; }
+    </style>
+  </defs>
+  <rect width="1400" height="960" fill="#fff"/>
+
+  <!-- Untrusted inputs -->
+  <rect class="zone" x="20" y="30" width="230" height="560"/>
+  <text class="zlbl" x="36" y="58">Untrusted inputs</text>
+  <rect class="box purple" x="40" y="86" width="190" height="86"/>
+  <text class="t" x="135" y="118">Operator questions</text>
+  <text class="ts" x="135" y="138">dashboard drawer; session-</text>
+  <text class="ts" x="135" y="154">gated, role stamped server-side</text>
+  <rect class="box purple" x="40" y="196" width="190" height="86"/>
+  <text class="t" x="135" y="228">Node readings</text>
+  <text class="ts" x="135" y="248">metrics, logs, config — the</text>
+  <text class="ts" x="135" y="264">node may be the incident</text>
+  <rect class="box purple" x="40" y="306" width="190" height="86"/>
+  <text class="t" x="135" y="338">Knowledge corpus</text>
+  <text class="ts" x="135" y="358">shipped · pulled · fleet ·</text>
+  <text class="ts" x="135" y="374">per-node (ADR 0017)</text>
+  <rect class="box purple" x="40" y="416" width="190" height="86"/>
+  <text class="t" x="135" y="448">Public XRPL APIs</text>
+  <text class="ts" x="135" y="468">ledger + validator registry</text>
+  <text class="ts" x="135" y="484">lookups, config-gated</text>
+
+  <!-- Agent runtime -->
+  <rect class="zone" x="280" y="30" width="560" height="560"/>
+  <text class="zlbl" x="296" y="58">Agent runtime</text>
+  <text class="zsub" x="440" y="58">aperire-advisord — own account, loopback, no Docker access</text>
+
+  <rect class="box orange" x="300" y="86" width="220" height="90"/>
+  <text class="t" x="410" y="116">Input gateway</text>
+  <text class="ts" x="410" y="136">dashboard proxy: session, CSRF,</text>
+  <text class="ts" x="410" y="152">role + operator stamped; bearer token</text>
+
+  <!-- Reasoning core -->
+  <rect class="zone" x="300" y="200" width="520" height="260"/>
+  <text class="zlbl" x="316" y="226" style="font-size:16px">Reasoning core</text>
+  <rect class="box cyan" x="316" y="240" width="235" height="90"/>
+  <text class="t" x="433" y="268">Prompt + context</text>
+  <text class="ts" x="433" y="288">persona · read menu · ranked</text>
+  <text class="ts" x="433" y="304">knowledge · role + window line</text>
+  <rect class="box cyan" x="570" y="240" width="235" height="90"/>
+  <text class="t" x="687" y="268">Interrogative loop</text>
+  <text class="ts" x="687" y="288">4 rounds · 12 reads · 3 host</text>
+  <text class="ts" x="687" y="304">reads · byte budgets per tier</text>
+  <rect class="box cyan" x="316" y="350" width="235" height="90"/>
+  <text class="t" x="433" y="378">Read menu</text>
+  <text class="ts" x="433" y="398">finite verbs; role-refused;</text>
+  <text class="ts" x="433" y="414">results clamped + redacted</text>
+  <rect class="box cyan" x="570" y="350" width="235" height="90"/>
+  <text class="t" x="687" y="378">Marker parser</text>
+  <text class="ts" x="687" y="398">action/intent/offer/remember</text>
+  <text class="ts" x="687" y="414">always stripped, never trusted</text>
+
+  <rect class="box cyan" x="300" y="484" width="520" height="82"/>
+  <text class="t" x="560" y="514">Memory / state</text>
+  <text class="ts" x="560" y="534">proposals inbox (promote is human) · offer + progress stores (TTL) ·</text>
+  <text class="ts" x="560" y="550">break-glass windows (4 bounds)</text>
+
+  <!-- External model -->
+  <rect class="zone" x="870" y="30" width="240" height="180"/>
+  <text class="zlbl" x="886" y="58">External model</text>
+  <rect class="box green" x="890" y="86" width="200" height="104"/>
+  <text class="t" x="990" y="118">LLM provider</text>
+  <text class="ts" x="990" y="138">sealed per-host key ·</text>
+  <text class="ts" x="990" y="154">outbound HTTPS only ·</text>
+  <text class="ts" x="990" y="170">readings out, never secrets</text>
+
+  <!-- Human approval -->
+  <rect class="box red" x="1160" y="86" width="216" height="104"/>
+  <text class="t" x="1268" y="118">Human approval</text>
+  <text class="ts" x="1268" y="138">confirm code from the plan ·</text>
+  <text class="ts" x="1268" y="154">passkey verified on the node ·</text>
+  <text class="ts" x="1268" y="170">spent on first use</text>
+
+  <!-- Side effects -->
+  <rect class="zone" x="870" y="240" width="510" height="350"/>
+  <text class="zlbl" x="886" y="268">Side effects</text>
+  <rect class="box navy" x="890" y="286" width="225" height="104"/>
+  <text class="t" x="1002" y="314">Action policy gate</text>
+  <text class="ts" x="1002" y="334">compact classes · runbook registry ·</text>
+  <text class="ts" x="1002" y="350">preconditions re-measured ·</text>
+  <text class="ts" x="1002" y="366">wrong-node + role refusals</text>
+  <rect class="box navy" x="1140" y="286" width="225" height="104"/>
+  <text class="t" x="1252" y="314">Executor + wrapper</text>
+  <text class="ts" x="1252" y="334">root socket · finite verbs ·</text>
+  <text class="ts" x="1252" y="350">root-owned config · backups</text>
+  <text class="ts" x="1252" y="366">forced · secrets unreachable</text>
+  <rect class="box navy" x="890" y="420" width="225" height="86"/>
+  <text class="t" x="1002" y="452">Peer advisords</text>
+  <text class="ts" x="1002" y="472">signed trust bundles · each node</text>
+  <text class="ts" x="1002" y="488">verifies its own approvals</text>
+  <rect class="box navy" x="1140" y="420" width="225" height="86"/>
+  <text class="t" x="1252" y="452">The node + host</text>
+  <text class="ts" x="1252" y="472">rippled (read-only RPC) ·</text>
+  <text class="ts" x="1252" y="488">docker + files via wrapper only</text>
+
+  <!-- Evidence layer -->
+  <rect class="zone" x="280" y="620" width="1100" height="130"/>
+  <text class="zlbl" x="296" y="648">Evidence layer</text>
+  <rect class="box green" x="300" y="662" width="310" height="72"/>
+  <text class="t" x="455" y="690">Identity &amp; secrets</text>
+  <text class="ts" x="455" y="710" style="font-size:12px">per-node credential stores · sealed model key · tokens</text>
+  <rect class="box green" x="640" y="662" width="720" height="72"/>
+  <text class="t" x="1000" y="690" style="font-size:16px">Hash-chained ledger · run transcripts · witness mirror · break-glass IR</text>
+  <text class="ts" x="1000" y="710">every read, approval, action and refusal named; tampering breaks the chain visibly</text>
+
+  <!-- arrows -->
+  <line class="a" x1="230" y1="129" x2="298" y2="129"/>
+  <path class="a" d="M230,239 L268,239 L268,395 L314,395"/>
+  <path class="a" d="M230,349 L288,349 L288,285 L314,285"/>
+  <path class="a" d="M230,459 L280,459 L280,395"/>
+  <line class="a" x1="410" y1="176" x2="410" y2="238"/>
+  <line class="a" x1="551" y1="285" x2="568" y2="285"/>
+  <path class="a" d="M687,330 L687,348"/>
+  <path class="a" d="M433,330 L433,348"/>
+  <path class="a" d="M805,285 L888,138"/>
+  <path class="a" d="M805,395 L1002,395 L1002,284"/>
+  <path class="a" d="M560,460 L560,482"/>
+  <line class="a" x1="1268" y1="190" x2="1268" y2="284"/>
+  <line class="a" x1="1115" y1="338" x2="1138" y2="338"/>
+  <path class="a" d="M1252,390 L1252,418"/>
+  <path class="a" d="M1002,390 L1002,418"/>
+
+  <!-- principles -->
+  <rect class="chip" x="20" y="790" width="320" height="52"/>
+  <text class="cl" x="180" y="822">Inputs are untrusted</text>
+  <rect class="chip" x="360" y="790" width="320" height="52"/>
+  <text class="cl" x="520" y="822">Reasoning is nondeterministic</text>
+  <rect class="chip" x="700" y="790" width="320" height="52"/>
+  <text class="cl" x="860" y="822">Actions have side effects</text>
+  <rect class="chip" x="1040" y="790" width="340" height="52"/>
+  <text class="cl" x="1210" y="822">Evidence makes risk measurable</text>
+
+  <text class="zsub" x="20" y="880">The model proposes; code disposes. Every action crosses the policy gate, the wrapper, and a human ceremony — the model holds no authority at any point.</text>
+  <text class="zsub" x="20" y="900">Same control points as the agentic-security reference architecture; each is implemented in product code and named in the Advisor guide's security principles.</text>
+</svg>

@@ -1,0 +1,142 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="884" viewBox="0 0 1400 884" font-family="Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="ah" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#333"/>
+    </marker>
+    <marker id="ahs" markerWidth="10" markerHeight="10" refX="1" refY="5" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M10,0 L0,5 L10,10 z" fill="#333"/>
+    </marker>
+    <style>
+      .zone { fill: #fff; stroke: #9a9a9a; stroke-width: 1.5; stroke-dasharray: 7 5; rx: 6; }
+      .zlbl { font-size: 20px; fill: #333; }
+      .zsub { font-size: 14px; fill: #666; }
+      .box  { fill: #fff; stroke-width: 2.5; }
+      .purple { stroke: #8e44ad; } .orange { stroke: #e67e22; } .cyan { stroke: #17a2b8; } .navy { stroke: #1f3a5f; } .green { stroke: #2e8b57; }
+      .t  { font-size: 20px; fill: #222; text-anchor: middle; }
+      .ts { font-size: 15px; fill: #444; text-anchor: middle; }
+      .l  { font-size: 14.5px; fill: #555; }
+      .lc { font-size: 14.5px; fill: #555; text-anchor: middle; }
+      .a  { fill: none; stroke: #333; stroke-width: 1.6; marker-end: url(#ah); }
+      .a2 { fill: none; stroke: #333; stroke-width: 1.6; marker-end: url(#ah); marker-start: url(#ahs); }
+      .foot { font-size: 14px; fill: #666; text-anchor: middle; }
+    </style>
+  </defs>
+  <rect width="1400" height="884" fill="#fff"/>
+
+  <!-- Cloud zone -->
+  <rect class="zone" x="20" y="16" width="1360" height="176"/>
+  <text class="zlbl" x="32" y="44">Cloud</text>
+  <rect class="box purple" x="44" y="76" width="224" height="84" rx="12"/>
+  <text class="t" x="156" y="110">Browser</text><text class="ts" x="156" y="134">(public Internet URL)</text>
+  <rect class="box orange" x="400" y="76" width="254" height="84" rx="12"/>
+  <text class="t" x="527" y="108">Cloudflare Zero Trust</text><text class="t" x="527" y="134">tunnel + edge</text>
+  <rect class="box green" x="686" y="76" width="260" height="84" rx="12"/>
+  <text class="t" x="816" y="108">LLM provider</text><text class="ts" x="816" y="134">(model API, outbound only)</text>
+  <rect class="box navy" x="1126" y="76" width="234" height="84" rx="12"/>
+  <text class="t" x="1243" y="124">node peers</text>
+  <line class="a2" x1="270" y1="118" x2="398" y2="118"/>
+  <text class="lc" x="334" y="108">:443 wss</text>
+
+  <!-- Dashboard host zone -->
+  <rect class="zone" x="300" y="248" width="420" height="580"/>
+  <text class="zlbl" x="312" y="276">Dashboard host</text>
+  <text class="zsub" x="312" y="298">(your pane of glass; LAN box or small VM)</text>
+
+  <rect class="box orange" x="400" y="318" width="256" height="54" rx="12"/>
+  <text class="t" x="528" y="352">cloudflared (optional)</text>
+  <line class="a2" x1="528" y1="316" x2="528" y2="164"/>
+  <text class="l" x="538" y="212">:443 outbound QUIC</text><text class="l" x="538" y="232">(no inbound ports)</text>
+
+  <rect class="box cyan" x="368" y="440" width="320" height="130" rx="14"/>
+  <text class="t" x="528" y="486">aperire-server</text>
+  <text class="ts" x="528" y="510">Node.js + SQLite :7800 loopback</text>
+  <text class="ts" x="528" y="532">(UI, fleet view, history)</text>
+  <line class="a" x1="528" y1="374" x2="528" y2="438"/>
+  <text class="l" x="538" y="410">:7800 loopback</text>
+
+  <!-- LAN browser -->
+  <rect class="box purple" x="44" y="466" width="220" height="80" rx="12"/>
+  <text class="t" x="154" y="498">Browser</text><text class="ts" x="154" y="522">(LAN or SSH tunnel)</text>
+  <line class="a2" x1="266" y1="506" x2="366" y2="506"/>
+  <text class="lc" x="316" y="496">:7800</text>
+
+  <!-- Other fleet nodes -->
+  <rect class="zone" x="20" y="600" width="264" height="150"/>
+  <text class="zlbl" x="32" y="630">Other validators</text>
+  <rect class="box cyan" x="44" y="650" width="220" height="80" rx="12"/>
+  <text class="t" x="154" y="682">same stack</text><text class="ts" x="154" y="706">(one host per node)</text>
+  <path class="a" d="M266,690 L340,690 L340,546 L366,546"/>
+  <text class="lc" x="348" y="600" style="text-anchor:start">:790x /</text>
+  <text class="lc" x="348" y="620" style="text-anchor:start">:791x</text>
+
+  <!-- Validator host zone -->
+  <rect class="zone" x="770" y="248" width="610" height="580"/>
+  <text class="zlbl" x="802" y="276">Validator host</text>
+  <text class="zsub" x="802" y="298">(every Aperire port loopback; inbound only :51235 and :22)</text>
+
+  <!-- rippled -->
+  <rect class="box navy" x="1060" y="318" width="240" height="90" rx="12"/>
+  <text class="t" x="1180" y="356">rippled</text><text class="ts" x="1180" y="380">(validator)</text>
+  <line class="a" x1="1206" y1="316" x2="1206" y2="164"/>
+  <line class="a" x1="1240" y1="164" x2="1240" y2="316"/>
+  <text class="l" x="1198" y="212" style="text-anchor:end">:51235 peer</text><text class="l" x="1198" y="232" style="text-anchor:end">protocol</text>
+
+  <!-- node aperire-server -->
+  <rect class="box cyan" x="800" y="440" width="260" height="130" rx="14"/>
+  <text class="t" x="930" y="484">aperire-server</text>
+  <text class="ts" x="930" y="508">:7800 loopback only</text>
+  <text class="ts" x="930" y="530">(node read API + history)</text>
+  <!-- rippled -> node server -->
+  <path class="a" d="M1058,363 L930,363 L930,438"/>
+  <text class="lc" x="994" y="336">:6006 admin WS</text>
+  <text class="lc" x="994" y="354">loopback</text>
+
+  <!-- relay below rippled -->
+  <rect class="box cyan" x="1100" y="470" width="200" height="80" rx="12"/>
+  <text class="t" x="1200" y="502">aperire-relay</text><text class="ts" x="1200" y="526">(Go, /proc + rippled.cfg)</text>
+  <path class="a" d="M1098,510 L1062,510"/>
+  <text class="lc" x="1200" y="574">:7800 /ingest, loopback, 5 s</text>
+
+  <!-- Advisor zone -->
+  <rect class="zone" x="800" y="622" width="560" height="200"/>
+  <text class="zlbl" x="812" y="644">Advisor</text>
+  <text class="zsub" x="1018" y="644" style="font-size:15px">(optional, one per node)</text>
+  <rect class="box cyan" x="830" y="656" width="216" height="76" rx="12"/>
+  <text class="t" x="938" y="686">aperire-advisord</text><text class="ts" x="938" y="710">:7810 loopback, own account</text>
+  <rect class="box cyan" x="1110" y="656" width="212" height="76" rx="12"/>
+  <text class="t" x="1216" y="686">aperire-executor</text><text class="ts" x="1216" y="710">(wrapper, root socket)</text>
+  <rect class="box green" x="818" y="748" width="240" height="44" rx="12"/>
+  <text class="t" x="938" y="777" style="font-size:17px">knowledge · memory · ledger</text>
+  <text class="ts" x="962" y="812" style="font-size:13px">(knowledge shipped; memory + ledger per node)</text>
+  <line class="a2" x1="938" y1="746" x2="938" y2="734"/>
+  <rect class="box green" x="1110" y="748" width="212" height="44" rx="12"/>
+  <text class="t" x="1216" y="777" style="font-size:17px">sealed model key</text>
+  <text class="ts" x="1216" y="812" style="font-size:13.5px">(usable on this host only)</text>
+  <line class="a2" x1="938" y1="572" x2="938" y2="654"/>
+  <text class="l" x="948" y="616">loopback + token</text>
+  <!-- advisord -> LLM provider, outbound only; hops over the :790x line -->
+  <path class="a2" d="M830,672 L786,672 L786,494 A7,7 0 0 1 786,480 L786,164"/>
+  <text class="l" x="796" y="204" style="font-size:13.5px">:443 outbound HTTPS</text>
+  <text class="l" x="796" y="222" style="font-size:13.5px">questions out, answers back</text>
+  <text class="l" x="796" y="240" style="font-size:13.5px">(never key material, nothing inbound)</text>
+  <!-- executor -> rippled, far right -->
+  <path class="a" d="M1324,694 L1350,694 L1350,363 L1302,363"/>
+  <text class="l" x="1345" y="600" style="text-anchor:end">approved upgrade steps</text>
+  <text class="l" x="1345" y="618" style="text-anchor:end">(code + passkey)</text>
+
+  <!-- dashboard host -> validator host tunnels -->
+  <path class="a" d="M798,486 L690,486"/>
+  <text class="l" x="696" y="474" style="font-size:13px">:790x readings</text>
+  <path class="a2" d="M690,548 L744,548 L744,700 L828,700"/>
+  <text class="l" x="736" y="600" style="text-anchor:end">:791x Advisor API</text>
+  <text class="l" x="736" y="620" style="text-anchor:end">+ signed trust bundle</text>
+
+
+  <!-- Operator -->
+  <g stroke="#222" stroke-width="2" fill="none">
+    <circle cx="1130" cy="600" r="0"/>
+  </g>
+
+  <!-- footer -->
+  <text class="foot" x="700" y="866">Inbound on the validator host: :51235 (peers) and :22 (ssh, from the dashboard host only). Nothing else. Arrows show where data flows; every connection is dialled from the dashboard host or the node, never into it.</text>
+</svg>

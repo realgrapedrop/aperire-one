@@ -1,0 +1,96 @@
+# Aperire — Operator authentication (authn) config
+#
+# THIS IS THE TEMPLATE. Copy it to authn.yaml and edit that copy:
+#
+#     cp dashboard/config/authn.yaml.example dashboard/config/authn.yaml
+#
+# The installer does this for you when authn.yaml is absent. Your live
+# authn.yaml is deliberately not tracked in git: it names the host operators
+# reach this dashboard at, which is yours and not a default anyone should
+# inherit.
+#
+# The two values below that MUST be right before an operator can enroll a
+# passkey are public_url and rp_id. Left at the localhost defaults, an
+# enrollment link points at localhost and a passkey created through a public
+# hostname will not verify.
+#
+# Authentication only — *who you are*. A future authz.yaml (not yet
+# present) would govern *what you can do* once roles arrive. For now
+# every authenticated operator has the same access.
+#
+# Single file shared by:
+#   - the dashboard (read at startup; reload with `sudo systemctl restart aperire-server`)
+#   - the SSH CLI at scripts/aperire-auth.sh (re-read on every invocation)
+#
+# Authentication itself is passwordless WebAuthn / passkeys (Touch ID, Face ID,
+# Windows Hello, YubiKey, etc). Operators are bootstrapped from the SSH CLI:
+#
+#     scripts/aperire-auth.sh add <email> --role admin
+#     scripts/aperire-auth.sh magic-link <email>        # one-time URL → enroll a passkey
+#
+# Once enrolled, the operator signs in with biometrics. Sessions are tracked
+# server-side (sqlite); the cookie carries an opaque random id.
+
+# The database is not configured here. It lives at <repo>/data/aperire.db —
+# outside the source tree, so the hardened service unit can write it while the
+# source stays read-only. Move it with the APERIRE_DB_PATH environment variable,
+# which the installer writes into /etc/aperire/aperire.env: the dashboard and
+# the CLI both read that one variable, so they cannot end up on different files.
+
+# ── How operators reach the dashboard ────────────────────────────────
+# The base URL operators type into a browser. Two purposes:
+#   1. Built into magic-link URLs the CLI hands out for first-time enrollment
+#   2. Pinned in WebAuthn as the "expected origin" — passkeys created here
+#      can only sign in from this exact origin (security feature)
+#
+# Examples:
+#   http://localhost:7800                  — local dev / SSH tunnel access
+#   https://aperire.your-domain.example    — prod via Cloudflare tunnel
+#
+# After changing this, every operator must re-enroll their passkey because
+# WebAuthn ties credentials to the rp_id (next field). Plan accordingly.
+public_url: http://localhost:7800
+
+# WebAuthn relying-party identifier. Must be the host portion of public_url
+# (no scheme, no port). Browsers reject passkey creation/use if this doesn't
+# match window.location's hostname.
+#
+# Examples:
+#   localhost                              — pairs with public_url localhost:7800
+#   aperire.your-domain.example            — pairs with https://aperire.your-domain.example
+rp_id: localhost
+
+# Human-readable name shown in OS biometric prompts: "Use Touch ID for {rp_name}"
+rp_name: Aperire
+
+# ── Session policy ───────────────────────────────────────────────────
+session:
+  # Auto-lock after N minutes of no operator input (mouse, key, scroll).
+  # Background API polls don't reset this — only real interaction does.
+  # Set to 0 to disable idle timeout (not recommended in prod).
+  idle_timeout_minutes: 30
+
+  # Show "Stay signed in" toast this many seconds before auto-lock fires.
+  # One click extends the session another full idle window.
+  idle_warning_seconds: 60
+
+# ── Magic-link enrollment ────────────────────────────────────────────
+# When you run `aperire-auth magic-link <email>` the CLI generates a
+# single-use URL that lets the operator enroll a passkey on a new device
+# without needing an existing one. By default the URL is printed to the
+# terminal; flip send_via_email to true to have it mailed via the email
+# channel in channels.yaml (saves copy-paste over Slack/SMS).
+magic_link:
+  # How long an enrollment URL is valid. The token is single-use either way;
+  # this is the upper bound. 15 min is plenty for an operator who's expecting
+  # the email to arrive.
+  ttl_minutes: 15
+
+  # Set to true to email the URL to the user's stored email (auth_users.email)
+  # via the email channel configured in channels.yaml. Requires the email
+  # channel to be working; the CLI verifies before sending and falls back to
+  # printing if anything's wrong.
+  send_via_email: false
+
+  # Subject line of the enrollment email when send_via_email is true.
+  email_subject: "Aperire — enroll your passkey"

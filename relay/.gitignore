@@ -1,0 +1,10 @@
+# Build output
+/aperire-relay
+/aperire-relay-*
+
+# Dev config — contains a test token, not a production artifact
+/relay.conf.dev
+
+# Go toolchain leftovers
+*.test
+*.out

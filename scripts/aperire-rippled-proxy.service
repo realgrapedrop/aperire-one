@@ -1,0 +1,71 @@
+[Unit]
+Description=Aperire rippled admin allow-list proxy
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+User=@RUN_USER@
+Group=@RUN_USER@
+WorkingDirectory=@REPO@/dashboard
+# The two logs are opened by the shell below, after systemd has switched to
+# User=, and not by StandardOutput=append:. systemd opens an append: file as
+# root, before it drops privilege, and follows a link at that name. data/logs
+# belongs to the dashboard's account, so that account could point
+# proxy-out.log at any file on the host and have root open it for append on
+# the next start (#871). Opened here, the worst a link can do is reach a file
+# this account could already write. `exec` replaces the shell, so the main PID
+# is still node.
+ExecStart=/bin/sh -c 'exec "@NODE_BIN@/node" "@REPO@/dashboard/node_modules/tsx/dist/cli.mjs" rippled-admin-proxy.ts >>"@REPO@/data/logs/proxy-out.log" 2>>"@REPO@/data/logs/proxy-err.log"'
+Restart=always
+RestartSec=3
+
+# Where the proxy listens (dashboard points RIPPLED_URL here) and where it
+# forwards to (the real rippled admin WS). Set PROXY_LISTEN to loopback so the
+# proxy is never network-exposed; point RIPPLED_UPSTREAM_URL at rippled — and
+# lock rippled's admin port to accept only the proxy (admin_ip / firewall) so
+# the dashboard process cannot bypass the proxy and dial rippled directly.
+Environment=PROXY_LISTEN=127.0.0.1:6007
+Environment=RIPPLED_UPSTREAM_URL=ws://127.0.0.1:6006
+Environment=PATH=@NODE_BIN@:/usr/local/bin:/usr/bin:/bin
+
+# Memory — small, fixed footprint; cap the cgroup so a runaway can't OOM the host.
+MemoryHigh=128M
+MemoryMax=256M
+TasksMax=64
+OOMScoreAdjust=-100
+
+# Hardening — least-privilege file system + kernel surface. The proxy reads no
+# files at runtime beyond its own code (read-only) and holds no secrets, so the
+# whole FS is read-only except the one directory its two logs live in. The
+# shell above opens them as User=, so that account has to own data/logs: run
+# the proxy as the dashboard's own account.
+NoNewPrivileges=true
+PrivateTmp=true
+# 0027: files 0640, directories 0750. Without it the service creates
+# world-readable files by default, and what these services write includes
+# the operator database and the audit trail.
+UMask=0027
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=@REPO@/data/logs
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+# Loopback only — no need for anything but AF_INET/AF_INET6 (and AF_UNIX for libc).
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelLogs=true
+CapabilityBoundingSet=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,70 @@
+# Aperire One - what a working copy produces and should not commit.
+#
+# The install builds in place: `npm ci` fills dashboard/node_modules, the Go
+# builds drop binaries beside their sources, and the dashboard writes its
+# database and logs under data/. None of that is source, and all of it turns
+# up in `git status` on a clone that has been installed once.
+#
+# The three live configs are the ones that matter most. They hold this host's
+# WebAuthn origin, this host's notification addresses and this host's fleet.
+# The installer seeds each from the .example beside it, so the template is
+# what is tracked and the filled-in file never is.
+
+# Node
+node_modules/
+dist/
+build/
+*.log
+npm-debug.log*
+
+# Python cruft
+__pycache__/
+*.pyc
+
+# What this install is: the tag, the commit and the sha256 the bootstrap
+# wrote at the end of it. One host's identity, never source.
+.release
+
+# The dashboard's database, and the runtime data and service logs beside it.
+# Per-deployment, never source.
+*.db
+*.db-shm
+*.db-wal
+data/
+
+# Built binaries.
+relay/aperire-relay
+relay/aperire-relay-*
+advisor/bin/
+
+# Advisor host state: the action ledger, approvals, the sealed model config,
+# and the evidence snapshots the executor captures. All of it is this host's,
+# and the ledger is hash-chained, so a copy of it is not a backup.
+advisor/state/
+advisor/evidence/
+
+# Fleet knowledge: the base layer arrives by signed bundle, the local layer is
+# whatever this operator has promoted. Neither travels by git.
+advisor/knowledge-fleet/
+advisor/knowledge-bundles/
+
+# Configs you edit, seeded from the .example files beside them.
+dashboard/config/authn.yaml
+dashboard/config/channels.yaml
+dashboard/config/fleet.yaml
+dashboard/config/rules.local.yaml
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo

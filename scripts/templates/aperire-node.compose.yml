@@ -1,0 +1,116 @@
+# The hardened node compose, decision D3 of the fleet baseline. Every Aperire
+# node runs this file, parameterised only by name, paths and image tag.
+#
+# scripts/install-aperire-node.sh renders it with sed:
+#
+#   @NAME@   container name AND compose project name (the fleet label)
+#   @DIR@    the install directory; config/ and data/ live under it
+#   @IMAGE@  the whole image reference, e.g. localhost/xrpld:3.4.1
+#   @PULL_POLICY@  never for an image built here, missing for a registry one
+#   @UID@    the uid the node runs as, and owns data/ on the host
+#   @GID@    its group, and the group the config is readable by
+#
+# Substitution is sed over these placeholders on purpose. The healthcheck's
+# backslash escapes do not survive being re-emitted through a heredoc (that
+# cost a proving run an afternoon), so the file is copied and patched, never
+# regenerated.
+#
+# Why each hardening line is here:
+#
+#   user @UID@:@GID@              the node is not root inside its own
+#       container (#31). The image ships the account it is meant to run as,
+#       `xrpld`, uid 997 gid 997 with /var/lib/xrpld for a home, and this runs
+#       it as that account rather than inventing one. Nothing it needs is
+#       privileged: the three ports it binds are 2459, 5005 and 6006, all
+#       above 1024, so no capability is added back to make this work.
+#   cap_drop / no-new-privileges  the node needs no capability it is not
+#       given, and cannot acquire one. The caveat: dropping ALL leaves the
+#       process bound by the host file modes on the mounts, whatever uid it
+#       is. So data/ must be owned by @UID@ or the first start crash-loops on
+#       "Can not create /var/lib/xrpld/db", and the config must be readable by
+#       @GID@ or the node cannot open it. The installer sets both, and
+#       scripts/migrate-node-nonroot.sh moves an older install onto them.
+#   stop_grace_period 90s         NuDB is never hard-killed on a recreate.
+#   127.0.0.1 on 5005 / 6006      the admin RPC and admin WebSocket are
+#       loopback-only. They are admin ports: anything that reaches them can
+#       ask this node to stop.
+#   51235:2459                    2459 is xrpld's compiled-in [port_peer]
+#       default and what the shipped rippled.stock.cfg sets. 51235 is the
+#       conventional public mainnet peer port. Map host 51235 to container
+#       2459 and change neither half alone: a mapping to a port nothing
+#       listens on takes inbound peers away silently.
+#   logging json-file, capped     an uncapped container log reached 2.9 GB on
+#       one node, and docker's json log has no index, so every bounded read of
+#       it scanned the whole file. 100 MB x 5, compressed.
+#   healthcheck on server_state   healthy means the node answered, not that
+#       the process exists. /etc/xrpld/xrpld.cfg is the path the node opens.
+#   the config, mounted twice     the image's entrypoint copies
+#       /config/rippled.cfg to /etc/xrpld/xrpld.cfg at start, and as a
+#       non-root user it cannot write into /etc/xrpld. So the config is
+#       mounted at BOTH paths, read-only, and the copy becomes a no-op on a
+#       file that already holds exactly those bytes. Three things come with
+#       that. The entrypoint prints one "Read-only file system" line per
+#       config file at every start; that line is expected, and the node
+#       underneath it is reading the operator's config. The image's own
+#       default xrpld.cfg is masked by the mount, so the failure that started
+#       this (a config the container could not read, xrpld silently coming up
+#       on image defaults) cannot happen here at all: with no readable config
+#       at that path the node refuses to start and says so. And anything
+#       asking docker where this file is mounted gets two answers in an order
+#       docker does not keep stable, so it has to pick one deliberately; the
+#       two readers that do (the wrapper's config-readable and
+#       close-node-config-exposure.sh) sort and take the first.
+name: @NAME@
+services:
+  @NAME@:
+    container_name: @NAME@
+    # pull_policy is never for an image built on this host (localhost/xrpld
+    # has no registry behind it, so a missing one must fail loudly rather
+    # than send compose to Docker Hub), and missing, compose's own default,
+    # for a registry image. It sits directly under the image line on
+    # purpose: that is the one the wrapper's set-image verbs manage, and
+    # they read the line that follows the image to find it.
+    image: @IMAGE@
+    pull_policy: @PULL_POLICY@
+    # The arguments this node runs with, written down rather than inherited
+    # (#682). Both images that can appear on the line above carry a default
+    # and the two defaults differ: the image built here from the signed
+    # package runs an entrypoint script that copies the config and then
+    # execs xrpld with --conf, while the official image starts xrpld with
+    # --net --silent --conf. Taking whichever applies would change how this
+    # node starts when the image changes, and nobody would have asked for
+    # it. --silent in particular blanks docker logs, which is the stream the
+    # store-rotation guard and the can-delete timer read.
+    #
+    # Written out, the two images behave identically here, and an upgrade
+    # really is one line. The config is mounted at the path named below, so
+    # bypassing an image's own entrypoint costs nothing.
+    entrypoint: ["/usr/bin/xrpld"]
+    command: ["--conf", "/etc/xrpld/xrpld.cfg"]
+    restart: unless-stopped
+    init: true
+    user: "@UID@:@GID@"
+    stop_grace_period: 90s
+    ports:
+      - "51235:2459/tcp"
+      - "127.0.0.1:5005:5005"
+      - "127.0.0.1:6006:6006"
+    volumes:
+      - @DIR@/config/rippled.cfg:/etc/xrpld/xrpld.cfg:ro
+      - @DIR@/config/validators.txt:/etc/xrpld/validators.txt:ro
+      - @DIR@/config/rippled.cfg:/config/rippled.cfg:ro
+      - @DIR@/config/validators.txt:/config/validators.txt:ro
+      - @DIR@/data:/var/lib/xrpld
+    mem_limit: "20g"
+    memswap_limit: "20g"
+    cpus: "6.0"
+    logging: { driver: json-file, options: { max-size: "100m", max-file: "5", compress: "true" } }
+    ulimits: { nofile: { soft: 65535, hard: 65535 } }
+    security_opt: [ "no-new-privileges:true" ]
+    cap_drop: [ ALL ]
+    healthcheck:
+      test: ["CMD-SHELL", "xrpld --conf /etc/xrpld/xrpld.cfg -q server_info | grep -Eq '\"server_state\"\\s*:\\s*\"(connected|syncing|tracking|full|proposing)\"'"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 10

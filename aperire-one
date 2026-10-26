@@ -1,0 +1,18 @@
+#!/bin/bash
+# aperire-one — the front door.
+#
+#   git clone <this repo> aperire-one && cd aperire-one
+#   sudo bash aperire-one
+#
+# One command, from a fresh clone to a dashboard you are signed into. On a
+# host with nothing installed this opens the guided setup; on one that is
+# already running it opens the operator menu. Install, operators, fleet,
+# Advisor, day-2 maintenance and the verifies are all behind it.
+#
+# The menu itself is scripts/aperire.sh, and after the CLI shortcut is
+# installed the command is just `aperire-one` from any directory. This file
+# exists so the very first run needs nothing installed and no path typed —
+# it is the front door, not a second copy of anything.
+set -u
+
+exec bash "$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/scripts/aperire.sh" "$@"

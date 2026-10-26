@@ -1,0 +1,381 @@
+# Aperire metric-alert knowledge library
+#
+# Each entry is keyed on a catalog metric name. When an alert rule fires
+# (config/rules.yaml, plus your own config/rules.local.yaml over it, ADR
+# 0020), the dashboard looks up the matching entry here and
+# surfaces description + recommended actions inline on the Alert History
+# row tooltip and the Currently Firing card.
+#
+# Schema:
+#   - metric:               required. Must match a metric in the catalog.
+#     category:             grouping for filter UIs and side-panel sorting
+#     description:          one-sentence what-it-is
+#     why_it_matters:       1–3 sentences on operational impact
+#     likely_causes:        list of 2–5 plausible root causes, plain prose
+#     recommended_actions:  list of imperative one-liners, ordered by
+#                           "do this first." Shell commands ok.
+#     further_reading:      list of links (XRPL docs, GitHub issues,
+#                           internal incident reports)
+#     applies_to:           rippled version constraint (semver-style)
+#     last_verified:        date the entry was last sanity-checked against
+#                           rippled current behavior. Stale dates surface
+#                           a "review me" badge on the side panel.
+#
+# Authoring discipline:
+#   - Every new ALERTS-EVIDENCE.md incident is a candidate for an entry
+#     or a refinement of an existing one.
+#   - Update last_verified when you confirm an entry against current
+#     rippled behavior; the dashboard reminds you when entries go stale.
+#   - Recommendations should be testable. "Check the System tab" beats
+#     "investigate further."
+#   - Every shell command in recommended_actions names the host it runs
+#     on. A metric belongs to the node that reported it, and in a fleet
+#     the operator is usually reading it somewhere else — on an aggregator,
+#     or on a peer's page. An action that says only "systemctl status
+#     aperire-relay" gets run wherever the operator happens to be sitting;
+#     that happened, on a host that has no relay by design, and the empty
+#     output read as a second fault. Say "on this node's own host" (or
+#     name the box) so the command carries its address with it. Actions
+#     that stay inside the dashboard need no such marker — a tab is the
+#     same tab from anywhere.
+
+- metric: cpu_busy_pct
+  category: compute
+  description: rippled or another process saturated CPU on the host.
+  why_it_matters: |
+    Sustained CPU > 95% means consensus messages are not processed in
+    time, leading to missed validations. Tail-latency rise is the
+    earliest observable symptom — agreement % drops by the time it is
+    visible on the Overview tab.
+  likely_causes:
+    - Heavy ledger replay (catch-up after a disconnect)
+    - Job queue overflow with operator transactions piling up
+    - Another process competing for CPU on a shared host
+    - Insufficient core count for current network load
+  recommended_actions:
+    - "Confirm rippled is the consumer, on this node's own host: top -p $(pgrep rippled)"
+    - "Check the Job Queue card on the System tab for backlog"
+    - "Cross-reference load_factor — both elevated means network-driven"
+    - "If repeated, scale core count or move to a dedicated host"
+  further_reading:
+    - https://xrpl.org/docs/infrastructure/troubleshooting
+  applies_to: ">=1.12"
+  last_verified: 2026-04-25
+
+- metric: mem_used_pct
+  category: compute
+  description: Host memory utilization, calculated as (MemTotal - MemAvailable) / MemTotal.
+  why_it_matters: |
+    rippled's working set scales with shard count, peer count, and ledger
+    replay activity. Sustained memory > 90% means the OOM killer is one
+    pressure spike away from terminating rippled. Recovery requires a
+    full restart and ledger reload — minutes of downtime.
+  likely_causes:
+    - rippled growth from increased peer load or shard expansion
+    - Memory leak in a recent rippled version (rare, check release notes)
+    - Another process with a leak on a shared host
+    - Insufficient RAM provisioned for the workload
+  recommended_actions:
+    - "Check rippled RSS on the System tab — confirm rippled is the consumer"
+    - "Run free -h on this node's own host to see system-wide memory pressure"
+    - "Inspect dmesg on this node's own host for prior OOM events"
+    - "Restart rippled if memory is climbing without obvious cause"
+  applies_to: ">=1.12"
+  last_verified: 2026-04-25
+
+- metric: swap_used_pct
+  category: compute
+  description: Swap space utilization on the host.
+  why_it_matters: |
+    A long-running Linux host parks pages in swap and holds them there
+    without reclaiming, so a steady level that hasn't moved in days is
+    ordinary, on a validator's own box included. What matters is direction:
+    swap that keeps climbing, or vmstat 1 showing active paging (si/so
+    staying above zero), means disk I/O in rippled's hot path and missed
+    validations even when CPU and memory headlines look fine. A resident
+    amount that sits flat is not that.
+  likely_causes:
+    - Memory pressure forced the kernel to page out, and it hasn't stopped
+    - Mistaken vm.swappiness configuration
+    - Another process consuming RAM
+  recommended_actions:
+    - "Confirm on this node's own host with vmstat 1: si/so at zero means parked pages, not active swapping"
+    - "Check whether the percentage is climbing over time, not just its current value"
+    - "Address root cause in mem_used_pct if it is climbing (it is usually the driver)"
+    - "If vm.swappiness > 10, consider lowering it to 1 on validator hosts"
+    - "Add RAM if this recurs"
+  applies_to: ">=1.12"
+  last_verified: 2026-09-20
+
+- metric: load_factor
+  category: load
+  description: rippled load factor — combined local + network multiplier.
+  why_it_matters: |
+    Load factor crosses 100 when rippled enters fee escalation. Sustained
+    high load_factor correlates with missed validations because the node
+    is shedding work. Spikes can be local (this host overloaded) or
+    network-wide (everyone is overloaded).
+  likely_causes:
+    - Local CPU/IO saturation forcing rippled to back off
+    - Network-wide demand surge (NFT mint, exploit attempt, congestion)
+    - Job queue overflow upstream
+  recommended_actions:
+    - "Compare with cpu_busy_pct and mem_used_pct — local resource issue?"
+    - "Compare with other validators (community Discord) — network-wide?"
+    - "Check the System tab Job Queue card for backlog"
+    - "If local, address the root resource constraint"
+  further_reading:
+    - https://xrpl.org/docs/concepts/transactions/fees
+  applies_to: ">=1.12"
+  last_verified: 2026-04-25
+
+- metric: jq_trans_overflow
+  category: load
+  description: Transactions dropped because the job queue overflowed.
+  why_it_matters: |
+    Any non-zero value here means rippled rejected work it could not
+    process in time. Operator transactions submitted during the window
+    will need resubmission. Sustained overflow indicates the host is
+    structurally undersized for current load.
+  likely_causes:
+    - Sustained high load_factor exceeding queue capacity
+    - rippled CPU pinned and unable to drain the queue
+    - Disk I/O backpressure (storage overloaded)
+  recommended_actions:
+    - "Check load_factor history during the firing window"
+    - "Inspect cpu_busy_pct and mem_used_pct concurrently"
+    - "Review pressure_io on the System tab"
+    - "Capacity-plan if this recurs — host is undersized"
+  applies_to: ">=1.12"
+  last_verified: 2026-04-25
+
+- metric: peer_count
+  category: network
+  description: Connected peer count (inbound + outbound).
+  why_it_matters: |
+    Default rippled config caps peers at 21 (peers_max), and xrpl.org
+    recommends staying near that — more peers waste bandwidth without
+    improving consensus reach. Anything in the 15-30 range is healthy
+    for a validator. Below 10 risks missing validation messages; below
+    5 the validator may partition from the network. A drop here often
+    precedes an agreement % drop.
+  likely_causes:
+    - Local network outage or firewall change
+    - Upstream link saturation
+    - Misconfigured [ips] / [ips_fixed] in rippled.cfg
+    - Restarted rippled and still rebuilding the peer ring
+  recommended_actions:
+    - "Check the Network tab Peer rebalance card"
+    - "From this node's own host, run dig or curl to a known seed peer to verify outbound connectivity"
+    - "Inspect rippled.cfg [ips] and [ips_fixed]"
+    - "Look at recent rippled startup time — was it just restarted?"
+    - "See the rippled field guide §peers_max for the trade-off table"
+  applies_to: ">=1.12"
+  last_verified: 2026-04-27
+
+- metric: peer_latency_p50
+  category: network
+  description: Median round-trip time to connected peers, in milliseconds.
+  why_it_matters: |
+    Consensus is a conversation on a deadline. Proposals and validations
+    that arrive after the ledger closes are worth nothing, so the time it
+    takes to reach the median peer is the budget every consensus round is
+    spent against. A node twenty milliseconds from its peers has room; a
+    node half a second away is late to every round it takes part in, and
+    the first visible symptom is usually a fall in agreement rather than
+    anything on this chart. The median is used deliberately: one distant
+    peer moves p90 and means nothing, while a moved median means the path
+    from this box to the network has changed.
+  likely_causes:
+    - Upstream link saturated — check outgoing traffic on the Network tab first
+    - Host CPU pinned, so replies queue behind work rather than travel slowly
+    - A VPN, tunnel, or proxy inserted in front of the node
+    - Peers concentrated on one distant continent after a peer-ring rebuild
+    - Failing NIC or a congested path upstream (cross-check TCP retransmits)
+  recommended_actions:
+    - "Compare against the peer count — latency rising as peers fall is a connectivity problem, not a distance one"
+    - "Check the Network tab bandwidth panels for saturation at the same moment"
+    - "Check CPU on the System tab: a saturated host looks exactly like a slow network from here"
+    - "From this node's own host, run mtr or ping against two or three known peer addresses to see whether the path or the box is slow"
+    - "If the node sits behind a fixed set of proxies, confirm this is simply what that path costs before changing anything"
+  applies_to: ">=1.12"
+  last_verified: 2026-08-13
+
+- metric: tcp_retrans_per_sec
+  category: network
+  description: TCP segments retransmitted per second on the primary NIC.
+  why_it_matters: |
+    Retransmits indicate packet loss on the local network path. Low
+    levels (< 1/s) are normal. Sustained > 10/s means peers are getting
+    degraded service from this validator and may disconnect.
+  likely_causes:
+    - NIC driver issue or hardware fault
+    - Upstream link congestion
+    - Bad cable or switch port
+    - VM host or hypervisor-level network problem
+  recommended_actions:
+    - "Run ip -s link on this node's own host to see NIC error counters"
+    - "From this node's own host, run mtr to a known peer for path-level loss localization"
+    - "Check dmesg on this node's own host for NIC driver messages"
+    - "If virtualized, check the hypervisor host's network stats"
+  applies_to: ">=1.12"
+  last_verified: 2026-04-25
+
+- metric: agreement_pct_1h
+  category: consensus
+  description: Percentage of ledgers in the last hour where this validator agreed with network consensus.
+  why_it_matters: |
+    The single most important validator-health metric. Below 95% over a
+    sustained window damages reputation and risks UNL removal. Drops
+    here are usually downstream of more specific signals (load_factor,
+    peer_count, mem_used_pct), so check those first.
+  likely_causes:
+    - Validator missed proposals (peer connectivity)
+    - Validator's votes arrived late (CPU / job queue)
+    - Sync lag (ledger replay / disk I/O)
+    - rippled disagreed with majority on an amendment vote
+  recommended_actions:
+    - "Cross-reference Alert History around the firing window — what else fired?"
+    - "Check the Consensus tab close-timing chart for lateness"
+    - "Inspect agreement % on the Overview tab over the last 24h"
+    - "If agreement remains low after 1h, escalate — possible UNL impact"
+  further_reading:
+    - https://xrpl.org/docs/concepts/consensus-protocol
+  applies_to: ">=1.12"
+  last_verified: 2026-04-25
+
+- metric: missed_validations_1h
+  category: consensus
+  description: Count of ledgers in the last hour this validator did not validate.
+  why_it_matters: |
+    A direct consequence of the same root causes as agreement_pct_1h, but
+    expressed as an absolute count rather than a percentage. Useful for
+    incident reports because the count is concrete (3 missed vs 99.7% is
+    less actionable than "3 missed").
+  likely_causes:
+    - See agreement_pct_1h — same upstream causes
+  recommended_actions:
+    - "See agreement_pct_1h actions"
+    - "Cross-reference network traffic around each missed ledger window"
+    - "Record the incident with timestamps and peer/network context for later correlation"
+  applies_to: ">=1.12"
+  last_verified: 2026-04-25
+
+- metric: relay_feed_age_s
+  category: network
+  description: Seconds since the validator relay (aperire-relay) last reported host-network telemetry.
+  why_it_matters: |
+    Every Network-tab host metric — bandwidth, packets, port connection
+    counts, TCP retransmits, and the Bandwidth/Errors live panels — flows
+    ONLY through the relay's net_stats push. When the relay stops, those
+    charts silently go blank with no other signal. This metric climbs while
+    the relay is silent, turning that silent gap into a firing alert. The
+    validator itself is unaffected (the relay is read-only monitoring), so
+    this is a monitoring-visibility outage, not a consensus emergency.
+  likely_causes:
+    - Relay process not running (crashed, OOM, or never started)
+    - Box rebooted and the relay was not a supervised/enabled service
+    - aperire-relay.service stopped or disabled
+    - Dashboard ingest port / RELAY_TOKENS mismatch after a config change
+    - Network path between relay and dashboard broken (split deployment)
+  recommended_actions:
+    - "On this node's own host — not on an aggregator or whichever dashboard you are reading this from — check the service: sudo systemctl status aperire-relay"
+    - "If dead, start it on that same host: sudo systemctl enable --now aperire-relay"
+    - "Read why it stopped, on that same host: sudo journalctl -u aperire-relay -n 50 --no-pager"
+    - "Confirm freshness from that node's own dashboard host: curl -s http://127.0.0.1:7800/healthz"
+    - "Verify token match on that same host: relay.conf auth_token == RELAY_TOKENS in /etc/aperire/aperire.env"
+  further_reading:
+    - docs/RELAY-REFERENCE.md
+  applies_to: ">=1.12"
+  last_verified: 2026-06-27
+
+- metric: verify_failed_checks
+  category: compute
+  description: Checks that failed in the host verifier's last run.
+  why_it_matters: |
+    The verifier is the post-restart check, run on a timer: services active
+    and on the accounts they should be, the node proposing, the validator
+    config still closed to the Advisor's account, both loopback endpoints
+    answering. Most of what it finds is also watched by a metric of its own,
+    which fires sooner. What is only watched here is the quiet kind: a
+    validator config left world-readable after a config edit, a service that
+    came back on the wrong account, a fleet-trust file the Advisor can no
+    longer read. Those break nothing today and surface at the worst moment.
+  likely_causes:
+    - A service did not come back after a reboot, or came back on the wrong account
+    - The node is still catching up (a run too soon after a restart)
+    - Node config permissions changed by a hand edit or a container recreate
+    - The dashboard or advisord is not answering on loopback
+  recommended_actions:
+    - "Read the run on this node's own host: journalctl -u aperire-verify.service -n 50 --no-pager"
+    - "Or run it now and watch it: bash scripts/verify-after-restart.sh"
+    - "Each failing line names its own fix; start there rather than with the code"
+    - "The machine-readable copy of the same run is data/verify-report.json"
+  applies_to: ">=1.12"
+  last_verified: 2026-08-31
+
+- metric: verify_report_age_s
+  category: compute
+  description: Seconds since the host verifier last completed a run, from the report's own stamp.
+  why_it_matters: |
+    This is not about what the verifier found, it is about whether it still
+    runs. A stopped timer leaves the last good report in place, and the host
+    reads green forever on a check that is no longer happening. The stamp
+    comes from the run, never the file's mtime, so a copy or a restore cannot
+    make a stale report look fresh.
+  likely_causes:
+    - aperire-verify.timer stopped, disabled, or masked
+    - aperire-verify.service failing on start (bad path after a move, missing account)
+    - The account the timer runs as can no longer write the data directory
+    - The host was off for more than a day
+  recommended_actions:
+    - "On this node's own host: systemctl list-timers aperire-verify.timer"
+    - "If it is not listed: sudo systemctl enable --now aperire-verify.timer"
+    - "If runs are failing: journalctl -u aperire-verify.service -n 50 --no-pager"
+    - "Check the report is being written and by whom: ls -l data/verify-report.json"
+  applies_to: ">=1.12"
+  last_verified: 2026-08-31
+
+- metric: verify_report_missing
+  category: compute
+  description: 1 when this host installs the verifier and has never left a usable report.
+  why_it_matters: |
+    The other two verify metrics are read out of the report, so on a host with
+    no report they say nothing at all, and the host reads green because
+    nothing is reading it. This is the one that speaks in that case. It is
+    written only where the verifier's timer unit is installed, so it is never
+    a complaint about a box that was set up another way, and a host it fires
+    on is a host nothing has checked since it was built.
+  likely_causes:
+    - The timer is installed but was never started (no reboot since the install)
+    - aperire-verify.service failed on its first run
+    - The account the timer runs as cannot write the data directory
+    - The report was deleted, or the data directory was moved
+  recommended_actions:
+    - "On this node's own host: systemctl list-timers --all aperire-verify.timer"
+    - "If it shows no next run: sudo systemctl enable --now aperire-verify.timer"
+    - "See whether a run failed: journalctl -u aperire-verify.service -n 20 --no-pager"
+    - "Or leave the first report by hand: bash scripts/verify-after-restart.sh"
+  applies_to: ">=1.12"
+  last_verified: 2026-09-06
+
+- metric: update_available
+  category: compute
+  description: 1 when the release endpoint publishes an Aperire release this host is not on.
+  why_it_matters: |
+    This is Aperire's own version, not the node's. node_version_behind says
+    rippled is old; this says the thing watching rippled is old, and the two
+    must never be read as one metric. It is written only when there is a
+    verdict: a host with no release stamp, an endpoint caught mid-publish and
+    a box with no egress all write nothing, so a 0 here means somebody
+    compared this install against a published release and they matched.
+  likely_causes:
+    - A newer release was published and this host has not been reinstalled onto it
+    - The host was last updated by the fleet tool rather than from a release
+  recommended_actions:
+    - "Read what the endpoint publishes: the hamburger menu, Check for updates"
+    - "Apply it on the box: curl -fsSL https://get.aperire.one | bash"
+    - "The install keeps data/, the operator's config and the Advisor's state, and the previous tree is left beside it"
+    - "To stop this host asking at all: APERIRE_UPDATE_CHECK=off in /etc/aperire/aperire.env"
+  applies_to: ">=1.12"
+  last_verified: 2026-09-08

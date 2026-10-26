@@ -1,0 +1,45 @@
+# Aperire alert rules, yours.
+#
+# This file overrides `rules.yaml`, the set the product ships. Nothing writes
+# it but you: no install, no update, no fleet deploy ever touches it, and the
+# installer creates it once and then leaves it alone. Delete it and the host
+# runs the shipped rules exactly.
+#
+# A rule is named by its metric and its severity. An entry here with the same
+# pair replaces the fields it lists; an entry with a pair the shipped set does
+# not have is a new rule; `enabled: false` switches a shipped rule off.
+#
+# Uncomment the `rules:` line before adding anything under it.
+#
+# rules:
+#
+#   # Change a threshold. The op is inherited from the shipped rule, so this
+#   # keeps meaning "warn at or above", and only the number moves.
+#   - metric: swap_used_pct
+#     severity: warn
+#     threshold: { op: ">=", value: 40 }
+#
+#   # Switch a shipped rule off on this host. It stops firing, and anything it
+#   # left firing is retired on the next reload.
+#   - metric: peer_count
+#     severity: warn
+#     enabled: false
+#
+#   # A rule of your own. A metric + severity the shipped set does not have
+#   # inherits nothing, so it needs the whole threshold, op included.
+#   - metric: peer_count
+#     severity: critical
+#     threshold: { op: "<", value: 2 }
+#     duration: 300s
+#     channels: [email]
+#     action: This validator peers with a fixed set. Two left means one is gone.
+#
+# Fields an entry may set: threshold (op, value), duration, channels, action,
+# action_command. Everything else about a rule comes from the shipped one.
+#
+# Apply changes without a restart:
+#     sudo systemctl reload aperire-server
+#
+# The Insights tab's Rules card names both files and how many rules this one
+# changed, added or switched off, and the journal says the same on every load:
+#     journalctl -u aperire-server | grep 'rules.yaml parsed'

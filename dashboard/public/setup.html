@@ -1,0 +1,442 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Set up Aperire One</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon.ico" sizes="32x32">
+<!-- Referrer policy matches login.html: nothing about this host leaks to a
+     subresource or a click-out, and this page is reachable before sign-in. -->
+<meta name="referrer" content="no-referrer">
+<!-- The theme, decided before anything paints. Identical to every other
+     page; see public/theme-toggle.js for the half that writes the value. -->
+<script>(function(){var t='dark';try{if(localStorage.getItem('aperire-theme')==='light')t='light';}catch(e){}document.documentElement.setAttribute('data-theme',t);})();</script>
+<link rel="stylesheet" href="/theme.css">
+<style>
+  /* First-run claim, #135 / #585.
+   *
+   * This page used to be a five-step wizard: claim the box, then add a
+   * node, register it, add the Advisor, and land on a summary. #585 moved
+   * everything after the claim into Settings & Updates (dashboard/public/
+   * add-node.js), because "add a node" is fleet configuration and Settings
+   * is where fleet configuration lives once there is an operator to sign
+   * in as. What is left here cannot move: a box with nobody to sign in as
+   * has no Settings to open, so claiming it is the one thing this page
+   * still does.
+   *
+   * requireAuthGate (auth.ts) decides who ever sees this markup at all: a
+   * box with an operator already redirects a signed-in administrator to
+   * Settings & Updates and everyone else to sign-in, so by the time this
+   * script runs, the window is open in every case but one: a race where a
+   * second tab claimed the box between the request that served this page
+   * and this page's own read of /auth/setup/state. That race is the only
+   * reason the "already claimed" branch below still exists. */
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; min-height: 100dvh; }
+  body {
+    background: var(--bg); color: var(--text); font-family: var(--sans);
+    display: grid; place-items: start center; padding: 24px 16px;
+  }
+  /* A quiet wash so the card reads as raised without a heavy shadow in
+     light, where a dark shadow would be the loudest thing on the page. */
+  .bg {
+    position: fixed; inset: 0; z-index: -1;
+    background:
+      radial-gradient(60% 50% at 50% 0%, rgba(var(--blue-rgb), 0.10), transparent 70%),
+      radial-gradient(50% 40% at 50% 100%, rgba(var(--green-rgb), 0.07), transparent 70%);
+  }
+  .theme-toggle-solo { display: flex; align-items: center; gap: 8px; }
+
+  .wizard {
+    width: 100%; max-width: clamp(560px, 46vw, 680px); background: var(--surface);
+    border: 1px solid var(--border); border-radius: var(--radius);
+    overflow: hidden;
+  }
+  .whead { padding: 18px 20px 0; }
+  .brandline { display: flex; align-items: center; gap: 9px; margin-bottom: 14px; }
+  .brandline img { width: 24px; height: 24px; }
+  .brandline .nm {
+    font-weight: 800; letter-spacing: .12em; font-size: 15px;
+    text-transform: uppercase; white-space: nowrap;
+  }
+  .brandline .nm .one { color: var(--text-dim); font-weight: 400; }
+  .eyebrow {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--text-muted);
+    display: flex; justify-content: space-between; gap: 8px;
+  }
+  .eyebrow span:last-child { text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  h1 { font-size: 19px; margin: 6px 0 16px; letter-spacing: .01em; text-wrap: balance; }
+
+  .wbody { padding: 4px 20px 20px; display: grid; gap: 14px; }
+  .lead { color: var(--text-dim); font-size: 14px; line-height: 1.55; margin: 0; max-width: 58ch; }
+  .lead b { color: var(--text); font-weight: 600; }
+
+  label.f { display: grid; gap: 6px; font-size: 12px; color: var(--text-dim); }
+  label.f input {
+    /* 16px, not 14. Under 16px iOS zooms the page the moment the field takes
+       focus and shoves the rest of the card off screen. test/unit/ios-zoom.ts
+       enforces this product-wide and caught this page on its first run. */
+    width: 100%; padding: 10px 12px; font: inherit; font-size: 16px;
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: var(--radius-sm);
+  }
+  label.f input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-color: var(--accent); }
+
+  .btn {
+    width: 100%; padding: 11px 16px; font: inherit; font-size: 14px; font-weight: 600;
+    background: var(--accent); color: var(--on-accent);
+    border: 1px solid var(--accent-strong); border-radius: var(--radius-sm);
+    cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px;
+    transition: background .15s, border-color .15s;
+  }
+  .btn:hover:not(:disabled) { background: var(--accent-strong); border-color: var(--accent-strong); }
+  .btn:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 2px; }
+  .btn:disabled { opacity: .55; cursor: not-allowed; }
+  .btn svg { width: 14px; height: 14px; }
+
+  .msg { font-size: 13px; line-height: 1.5; min-height: 1em; }
+  .msg.fail { color: var(--red); }
+  .msg.ok   { color: var(--green); }
+  .msg.work { color: var(--text-dim); }
+
+  .stepnote { font-size: 12px; color: var(--text-muted); line-height: 1.6; margin: 0; }
+  .stepnote code { font-family: var(--mono); font-size: 11.5px; }
+
+  /* The window's own state, in the operator's sight the whole time. */
+  .window-state {
+    margin: 0; padding: 10px 20px; font-size: 12.5px; line-height: 1.55;
+    background: var(--bg-soft); border-bottom: 1px solid var(--border); color: var(--text-dim);
+  }
+  .window-state b { color: var(--text); font-weight: 600; }
+
+  @media (max-width: 460px) {
+    body { padding: 12px 10px; }
+    .whead, .wbody, .window-state { padding-left: 14px; padding-right: 14px; }
+  }
+</style>
+<script src="/theme-toggle.js" defer></script>
+<!-- WebAuthn browser helper, vendored locally, same build login.html uses.
+     startRegistration() owns the base64url encoding of the ceremony, so this
+     page does not hand-roll it and cannot get it subtly wrong. -->
+<script src="/vendor/simplewebauthn-browser-13.3.0.umd.min.js"
+        integrity="sha384-DnjEgzmDuatj/e2GTxbXmPijf7QyPvp8oAnvlWOqOqfMGekoIyImmgeJ+CxrALC7"></script>
+</head>
+<body>
+
+<div class="bg"></div>
+<!-- No header on this page, so the theme switch gets its own corner, the
+     same mount login.html uses. -->
+<div class="theme-toggle-solo" id="themeToggleMount"></div>
+
+<main class="wizard">
+  <div class="whead">
+    <div class="brandline">
+      <img src="/aperire-mark.svg" alt="" aria-hidden="true">
+      <span class="nm">Aperire <span class="one">One</span></span>
+    </div>
+    <div class="eyebrow"><span>Set up</span><span id="hostTag"></span></div>
+    <h1>Secure this dashboard</h1>
+  </div>
+
+  <!-- The window, in words, from the server's answer. Ships as the
+       conservative sentence: a page whose state read failed says it does not
+       know, and never that setup is open. -->
+  <p class="window-state" id="windowState" role="status">
+    Checking whether this dashboard has an operator yet...
+  </p>
+
+  <div class="wbody">
+    <p class="lead" id="secureLead">
+      Take this dashboard now, before anyone else who can reach it does. The first
+      account is an <b>administrator</b>, and it is created here once. Sign-in is a
+      <b>passkey</b> on this device, so no password is stored or transmitted.
+    </p>
+
+    <form id="form" autocomplete="off">
+      <label class="f" for="username">Your email, which is how you sign in
+        <input type="email" id="username" name="username" placeholder="you@example.com"
+               autocomplete="username webauthn email" autocapitalize="none"
+               autocorrect="off" spellcheck="false" inputmode="email" required>
+      </label>
+      <div style="margin-top:12px">
+        <button type="submit" class="btn" id="submit">
+          <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 1a3 3 0 0 0-3 3v3H4a2 2 0 0 0-2 2v5a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-1V4a3 3 0 0 0-3-3zm0 1a2 2 0 0 1 2 2v3H6V4a2 2 0 0 1 2-2zM4 8h8a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/></svg>
+          <span id="submitLabel">Create administrator and enroll passkey</span>
+        </button>
+      </div>
+    </form>
+
+    <div class="msg" id="msg" role="status" aria-live="polite"></div>
+
+    <p class="stepnote" id="secureNote">
+      Creating this account closes the setup window for good, and nothing reopens it.
+      Adding a node from here is a Settings & Updates job from then on. If you ever
+      remove every operator, the way back in is
+      <code>aperire-auth add</code> in a shell on this machine, which is the point:
+      recovering this box needs the box, not the network.
+    </p>
+
+    <!-- The one race this page still has to answer for: a second tab, or a
+         second visitor, claimed the box between the request that served this
+         markup and this script's own read of the window. Nothing else shows
+         this block. -->
+    <div id="secureDone" hidden>
+      <div class="msg ok" id="secureWho"></div>
+      <p class="stepnote">Sign in instead, or add a node from Settings & Updates once you have.</p>
+      <div style="margin-top:12px">
+        <a class="btn" href="/login.html" id="secureSignIn" style="text-decoration:none">Go to sign-in</a>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+(function () {
+  'use strict';
+
+  var $ = function (id) { return document.getElementById(id); };
+
+  function getJson(url) {
+    return fetch(url, { credentials: 'same-origin', cache: 'no-store' }).then(function (r) {
+      return r.json().then(
+        function (b) { return { status: r.status, ok: r.ok, body: b }; },
+        function () { return { status: r.status, ok: r.ok, body: null }; });
+    });
+  }
+  function postJson(url, body) {
+    return fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'X-Aperire-CSRF': '1' },
+      credentials: 'same-origin',
+      body: JSON.stringify(body || {})
+    }).then(function (r) {
+      return r.json().then(
+        function (b) { return { status: r.status, ok: r.ok, body: b }; },
+        function () { return { status: r.status, ok: r.ok, body: null }; });
+    });
+  }
+
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  // ── What the server says about the window ────────────────────────
+  //
+  // WINDOW_OPEN starts null, which is "not read yet", and the banner says
+  // exactly that. It is never assumed in either direction: a page that
+  // guessed "open" would invite somebody to claim a box that already has an
+  // owner, and one that guessed "closed" would strand a fresh install.
+  var WINDOW_OPEN = null;
+
+  function stateSentence(s) {
+    if (!s || typeof s.state !== 'string') {
+      return 'This page could not read whether setup is still open. Reload it, and if that keeps '
+        + 'happening the dashboard is not answering.';
+    }
+    if (s.state === 'open') {
+      return '<b>Setup is open because this dashboard has never had an operator.</b> Creating the first '
+        + 'one closes it for good: after that, adding a node is a Settings & Updates job, and this page '
+        + 'can never hand the dashboard to somebody new, not after a restart and not if every operator '
+        + 'is later removed.';
+    }
+    var when = typeof s.closed_at === 'number'
+      ? new Date(s.closed_at * 1000).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })
+      : null;
+    var how = s.closed_why === 'observed_operator'
+      ? ', when this dashboard first recorded an operator on this box'
+      : (s.closed_why === 'first_admin_created' ? ', when this dashboard got its first operator' : '');
+    return '<b>Setup closed' + (when ? ' on ' + esc(when) : '') + how + '.</b> This dashboard already has '
+      + 'an administrator, so there is nothing to claim here. It cannot reopen: if this box is ever left '
+      + 'with no operators, the way back in is <code>aperire-auth add</code> in a shell on the machine '
+      + 'itself.';
+  }
+
+  function readWindow() {
+    return getJson('/auth/setup/state').then(function (r) {
+      var s = r.ok ? r.body : null;
+      $('windowState').innerHTML = stateSentence(s);
+      WINDOW_OPEN = s && s.state === 'open' ? true : (s && s.state === 'closed' ? false : null);
+      return WINDOW_OPEN;
+    }, function () {
+      $('windowState').innerHTML = stateSentence(null);
+      WINDOW_OPEN = null;
+      return null;
+    });
+  }
+
+  // ── What this box reports, for the completion banner on the other side ──
+  //
+  // /healthz is readable without a session (server.ts answers it above the
+  // auth gate). A co-located install already has its relay wired before the
+  // browser is ever opened, and the landing notice on '/' must not tell that
+  // operator to go and install one.
+  var RELAY_FRESH_MS = 60000;   // rules.yaml calls relay_feed_age_s >= 60 critical
+  function readHealth() {
+    return getJson('/healthz').then(function (r) {
+      var h = r.body;
+      if (!h || typeof h !== 'object') return null;
+      var age = typeof h.relay_last_push_ms === 'number' ? h.relay_last_push_ms : null;
+      return {
+        relayLive: age !== null && age >= 0 && age < RELAY_FRESH_MS,
+        nodeConnected: h.rippled_connected === true,
+      };
+    }, function () { return null; });
+  }
+  function pickDoneToken() {
+    return readHealth().then(function (h) {
+      return h && h.relayLive && h.nodeConnected ? 'colocated' : 'fresh';
+    }, function () { return 'fresh'; });
+  }
+
+  // ── Claim the box ────────────────────────────────────────────────
+
+  var form = $('form');
+  var input = $('username');
+  var submit = $('submit');
+  var submitLabel = $('submitLabel');
+  var msg = $('msg');
+  var CREATE_LABEL = 'Create administrator and enroll passkey';
+
+  $('hostTag').textContent = location.host;
+
+  function say(text, kind) {
+    msg.textContent = text || '';
+    msg.className = 'msg' + (kind ? ' ' + kind : '');
+  }
+
+  // This page always registers a brand-new administrator with zero existing
+  // credentials, so the excludeCredentials cap (#388) can never fire here in
+  // practice. Kept anyway, matching login.html's enrollment path, so nobody
+  // reads this catch block later and assumes a raw WebAuthn error is the
+  // only thing it could ever show.
+  function passkeyLimitMessage(err) {
+    var text = String((err && err.message) || err || '');
+    if (/excludeCredentials/i.test(text) && /exceed|maximum/i.test(text)) {
+      return 'This account already has as many passkeys as a browser will list in ' +
+        'one enrollment. Revoke an old one from Settings → Operator passkey ' +
+        'enrollment, then try again.';
+    }
+    return null;
+  }
+  // Exposed so a walk can prove this function runs and matches correctly
+  // against the browser's real wording, matching login.html.
+  window.__aperirePasskeyLimitMessage = passkeyLimitMessage;
+
+  if (!window.SimpleWebAuthnBrowser) {
+    say('The WebAuthn helper did not load. Check /vendor/simplewebauthn-browser-* in the network tab.', 'fail');
+    submit.disabled = true;
+  }
+
+  // Once the claim has been made, this form is done for good, whichever way
+  // it ended. HALTED is what stops a second click re-running it: clearing
+  // form.onsubmit does not remove the listener below, and the button is now
+  // a link to the sign-in page.
+  var HALTED = false;
+  function toSignIn(label) {
+    HALTED = true;
+    submitLabel.textContent = label || 'Go to sign-in';
+    submit.disabled = false;
+    submit.onclick = function () { window.location.href = '/login.html'; };
+  }
+
+  function showAlreadyClaimed() {
+    HALTED = true;
+    $('form').hidden = true;
+    $('msg').hidden = true;
+    $('secureNote').hidden = true;
+    $('secureDone').hidden = false;
+  }
+
+  form.addEventListener('submit', async function (ev) {
+    ev.preventDefault();
+    if (HALTED) return;
+    var username = (input.value || '').trim();
+    if (!username) { say('Enter the email you want to sign in with.', 'fail'); input.focus(); return; }
+
+    submit.disabled = true;
+    // Every wait on this page names the step it is on.
+    say('Claiming this dashboard...', 'work');
+    submitLabel.textContent = 'Working...';
+
+    var begin;
+    try {
+      begin = await postJson('/auth/setup/begin', { username: username });
+    } catch (err) {
+      say('Could not reach the dashboard. Is it still running?', 'fail');
+      submit.disabled = false; submitLabel.textContent = CREATE_LABEL;
+      return;
+    }
+
+    if (begin.status === 409) {
+      // Somebody else got here first, or an operator was created by the CLI
+      // while this page was open. Not an error to argue with: the box has an
+      // owner now, and the honest next move is to sign in.
+      say((begin.body && begin.body.message) || 'An administrator already exists. Sign in instead.', 'fail');
+      readWindow();
+      toSignIn();
+      return;
+    }
+    if (begin.status !== 200) {
+      say((begin.body && begin.body.message) || (begin.body && begin.body.error) || 'Could not start setup.', 'fail');
+      submit.disabled = false; submitLabel.textContent = CREATE_LABEL;
+      return;
+    }
+
+    say('Waiting for your passkey...', 'work');
+    submitLabel.textContent = 'Waiting for your passkey...';
+    var attResp;
+    try {
+      attResp = await window.SimpleWebAuthnBrowser.startRegistration({ optionsJSON: begin.body.options });
+    } catch (err) {
+      // The account exists from here on, because /auth/setup/begin created
+      // it. Say so, rather than implying they can start over as somebody
+      // else: the window is already closed and the way back in is the
+      // enrollment link.
+      var limit = passkeyLimitMessage(err);
+      say((limit || ('The passkey step was cancelled or failed: ' + (err.message || err))) +
+          '. The administrator account was created, so finish enrolling from the sign-in page.', 'fail');
+      readWindow();
+      toSignIn();
+      return;
+    }
+
+    say('Enrolling...', 'work');
+    var finish = await postJson('/auth/register/finish', { response: attResp });
+    if (finish.status !== 200) {
+      say((finish.body && finish.body.error) || 'Enrolling the passkey failed.', 'fail');
+      readWindow();
+      toSignIn();
+      return;
+    }
+
+    // register/finish issues the session in the same response, so there is
+    // one biometric prompt for the whole flow. The window is closed and the
+    // job here is done: land on the dashboard, same as the rest of this
+    // product's sign-in flows, carrying a one-shot token so the landing can
+    // say so once.
+    HALTED = true;
+    say('You are the administrator. The window is closed.', 'ok');
+    var token = await pickDoneToken();
+    try { sessionStorage.setItem('aperire-setup-done', token); } catch (e) { /* not fatal */ }
+    window.location.href = '/';
+  });
+
+  // ── Boot ─────────────────────────────────────────────────────────
+
+  readWindow().then(function (open) {
+    if (open === false) {
+      // The race: claimed by another tab or another visitor between the
+      // request that served this page and this read.
+      showAlreadyClaimed();
+    } else {
+      input.focus();
+    }
+  });
+})();
+</script>
+</body>
+</html>

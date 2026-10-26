@@ -1,0 +1,120 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="780" viewBox="0 0 1400 780" font-family="Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="ah" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#333"/>
+    </marker>
+    <marker id="ahs" markerWidth="10" markerHeight="10" refX="1" refY="5" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M10,0 L0,5 L10,10 z" fill="#333"/>
+    </marker>
+    <style>
+      .zone { fill: #fff; stroke: #9a9a9a; stroke-width: 1.5; stroke-dasharray: 7 5; rx: 6; }
+      .zlbl { font-size: 20px; fill: #333; }
+      .box  { fill: #fff; stroke-width: 2.5; }
+      .purple { stroke: #8e44ad; } .orange { stroke: #e67e22; } .cyan { stroke: #17a2b8; } .navy { stroke: #1f3a5f; }
+      .t  { font-size: 20px; fill: #222; text-anchor: middle; }
+      .ts { font-size: 15px; fill: #444; text-anchor: middle; }
+      .l  { font-size: 14.5px; fill: #555; }
+      .lc { font-size: 14.5px; fill: #555; text-anchor: middle; }
+      .a  { fill: none; stroke: #333; stroke-width: 1.6; marker-end: url(#ah); }
+      .a2 { fill: none; stroke: #333; stroke-width: 1.6; marker-end: url(#ah); marker-start: url(#ahs); }
+      .foot { font-size: 14px; fill: #666; text-anchor: middle; }
+    </style>
+  </defs>
+  <rect width="1400" height="780" fill="#fff"/>
+
+  <!-- Cloud zone -->
+  <rect class="zone" x="20" y="16" width="1260" height="176"/>
+  <text class="zlbl" x="32" y="44">Cloud</text>
+  <rect class="box purple" x="44" y="76" width="224" height="84" rx="12"/>
+  <text class="t" x="156" y="110">Browser</text><text class="ts" x="156" y="134">(public Internet URL)</text>
+  <rect class="box orange" x="526" y="76" width="254" height="84" rx="12"/>
+  <text class="t" x="653" y="108">Cloudflare Zero Trust</text><text class="t" x="653" y="134">tunnel + edge</text>
+  <rect class="box navy" x="1026" y="76" width="234" height="84" rx="12"/>
+  <text class="t" x="1143" y="124">node peers</text>
+  <line class="a" x1="270" y1="118" x2="524" y2="118"/>
+  <text class="lc" x="397" y="108">:443 wss</text>
+
+  <!-- Node host zone -->
+  <rect class="zone" x="304" y="248" width="976" height="488"/>
+  <text class="zlbl" x="316" y="276">Node host</text>
+  <text class="zlbl" x="316" y="302">(Shape A, co-located)</text>
+
+  <!-- cloudflared -->
+  <rect class="box orange" x="536" y="282" width="256" height="54" rx="12"/>
+  <text class="t" x="664" y="316">cloudflared (optional)</text>
+  <line class="a" x1="630" y1="280" x2="630" y2="164"/>
+  <text class="l" x="640" y="212">:443 outbound QUIC</text><text class="l" x="640" y="232">(no inbound ports)</text>
+
+  <!-- aperire-server -->
+  <rect class="box cyan" x="470" y="398" width="320" height="130" rx="14"/>
+  <text class="t" x="630" y="444">aperire-server</text>
+  <text class="ts" x="630" y="468">Node.js + SQLite :7800</text>
+  <text class="ts" x="630" y="490">(UI, read API, history)</text>
+  <line class="a" x1="630" y1="338" x2="630" y2="396"/>
+  <text class="l" x="640" y="372">:7800 loopback</text>
+
+  <!-- rippled (right, level with server) -->
+  <rect class="box navy" x="1000" y="398" width="260" height="90" rx="12"/>
+  <text class="t" x="1130" y="436">rippled</text><text class="ts" x="1130" y="460">(validator or stock node)</text>
+  <!-- rippled -> server, :6006 admin WS -->
+  <path class="a" d="M998,440 L792,440"/>
+  <text class="lc" x="895" y="362">:6006 admin WS:</text>
+  <text class="lc" x="895" y="382">server_info, ledgers,</text>
+  <text class="lc" x="895" y="402">validations, peers,</text>
+  <text class="lc" x="895" y="422">get_counts</text>
+  <!-- rippled <-> node peers, far right -->
+  <line class="a" x1="1206" y1="396" x2="1206" y2="164"/>
+  <line class="a" x1="1240" y1="164" x2="1240" y2="396"/>
+  <text class="l" x="1108" y="212" style="text-anchor:end">:51235 peer</text><text class="l" x="1108" y="232" style="text-anchor:end">protocol</text>
+
+  <!-- aperire-relay (upper right, beside cloudflared) -->
+  <rect class="box cyan" x="1000" y="512" width="180" height="76" rx="12"/>
+  <text class="t" x="1090" y="542">aperire-relay</text><text class="ts" x="1090" y="566">(Go, /proc + rippled.cfg)</text>
+  <!-- relay -> server, :7800 /ingest -->
+  <path class="a" d="M998,520 L792,520"/>
+  <text class="lc" x="895" y="546">:7800 /ingest, bearer token:</text>
+  <text class="lc" x="895" y="566">system + network frames, 5 s</text>
+
+  <!-- Advisor zone -->
+  <rect class="zone" x="430" y="600" width="622" height="116"/>
+  <text class="zlbl" x="444" y="652">Advisor</text><text class="zlbl" x="444" y="678">(optional)</text>
+  <rect class="box cyan" x="536" y="618" width="226" height="80" rx="12"/>
+  <text class="t" x="649" y="650">aperire-advisord</text><text class="ts" x="649" y="674">:7810 loopback, own account</text>
+  <rect class="box cyan" x="780" y="618" width="258" height="80" rx="12"/>
+  <text class="t" x="909" y="650">aperire-executor</text><text class="ts" x="909" y="674">(privilege wrapper, root socket)</text>
+  <line class="a2" x1="649" y1="530" x2="649" y2="616"/>
+  <text class="l" x="660" y="576">loopback + token</text>
+  <!-- executor -> rippled -->
+  <path class="a" d="M1040,658 L1250,658 L1250,490"/>
+  <text class="l" x="1060" y="682">approved upgrade steps</text><text class="l" x="1060" y="702">(code + passkey)</text>
+
+  <!-- Operator -->
+  <g stroke="#222" stroke-width="2" fill="none">
+    <circle cx="1330" cy="530" r="12"/>
+    <line x1="1330" y1="542" x2="1330" y2="584"/>
+    <line x1="1306" y1="558" x2="1354" y2="558"/>
+    <line x1="1330" y1="584" x2="1312" y2="616"/><line x1="1330" y1="584" x2="1348" y2="616"/>
+  </g>
+  <text class="lc" x="1330" y="638" style="fill:#222;font-size:16px">Operator</text>
+  <line class="a" x1="1310" y1="568" x2="1282" y2="568"/>
+  <text class="l" x="1242" y="560" style="text-anchor:end">:22 ssh</text>
+
+  <!-- LAN browser -->
+  <rect class="box purple" x="44" y="414" width="220" height="80" rx="12"/>
+  <text class="t" x="154" y="446">Browser</text><text class="ts" x="154" y="470">(LAN or SSH tunnel)</text>
+  <line class="a" x1="266" y1="454" x2="468" y2="454"/>
+  <text class="lc" x="366" y="444">:7800 direct</text>
+
+  <!-- Other fleet nodes -->
+  <rect class="zone" x="20" y="550" width="264" height="200"/>
+  <text class="zlbl" x="32" y="580">Other fleet nodes</text>
+  <rect class="box cyan" x="44" y="616" width="220" height="80" rx="12"/>
+  <text class="t" x="154" y="648">aperire-server</text><text class="ts" x="154" y="672">(same stack per node)</text>
+  <path class="a" d="M266,656 L400,656 L400,494 L468,494"/>
+  <text class="lc" x="346" y="574">:790x</text>
+  <text class="lc" x="346" y="594">private tunnel,</text>
+  <text class="lc" x="346" y="614">read-only</text>
+
+  <!-- footer -->
+  <text class="foot" x="700" y="766">Shape B: aperire-server + cloudflared on a separate LAN host; rippled + aperire-relay stay on the validator (:6006 and :7800 over the LAN)</text>
+</svg>

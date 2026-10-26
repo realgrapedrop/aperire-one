@@ -1,0 +1,44 @@
+[Unit]
+# One watched ledger-store rotation window, issue #79.
+#
+# The node is told it may rotate, the rotation is watched from start to
+# finish, and the whole time /run/aperire/node-rotation.lock is held so
+# aperire-node-wrapper.sh cannot stop the node underneath it.
+Description=Aperire: authorise and watch one node store rotation
+Documentation=file:/usr/local/lib/aperire/aperire-can-delete.sh
+After=docker.service network-online.target
+Wants=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/aperire/aperire-can-delete.sh
+
+# Root, and honestly so. It talks to the Docker socket to read the node's log
+# and writes the lock under /run, and both of those are root on a stock host.
+# It is a few hundred lines with one fixed config path and no arguments, for
+# exactly that reason.
+User=root
+
+# Longer than ARM_GRACE + ROTATION_HOLD in /etc/aperire/can-delete.conf
+# (300 + 5400 by default). systemd killing this mid-window is survivable,
+# the script disarms on the way out, but it should not be the normal ending.
+TimeoutStartSec=7200
+
+# The rotation is rippled's I/O, not this script's; this only polls a log.
+Nice=10
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+
+# Nothing routine goes to the journal at notice level, so a run that says
+# WARNING is worth reading. `journalctl -u aperire-can-delete.service` is the
+# record of every window this host has run.
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

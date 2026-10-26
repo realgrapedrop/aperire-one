@@ -1,0 +1,2204 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Aperire One · Governance</title>
+<!-- Embedded-in-shell detection, landing before <header> ever paints — the
+     shell's iframe src carries ?embed=1, read here synchronously before
+     <body> exists. See overview.html's own <head> for the full
+     explanation; identical here. -->
+<script>if(/[?&]embed=1(&|$)/.test(location.search))document.documentElement.setAttribute('data-embedded','');</script>
+<!-- Peer-read fetch helper — D8 slice 3 backend retrofit (see peer-fetch.js's own
+     doc comment). Loaded eagerly, no defer: this page's own top-level boot code
+     calls into it synchronously, before a deferred script would have run. -->
+<script src="/peer-fetch.js"></script>
+<!-- The theme, decided before anything paints.
+     This has to be inline, blocking, and above the stylesheet link below.
+     A deferred file would run after the first frame and the operator would
+     see a flash of the wrong theme on every single load; a file loaded in
+     parallel would race the paint. Six lines in <head> is the price of that
+     never happening. Reading localStorage can throw (private mode, an embed
+     a browser treats as third-party storage), so a failure silently leaves
+     the default, which is dark. Identical on all nine pages; see
+     public/theme-toggle.js for the half that writes the value. -->
+<script>(function(){var t='dark';try{if(localStorage.getItem('aperire-theme')==='light')t='light';}catch(e){}document.documentElement.setAttribute('data-theme',t);})();</script>
+<!-- The palette, both themes, shared by every page. Linked BEFORE this
+     page's own <style> so a page can still override a token, and
+     render-blocking so the first frame is never unstyled. -->
+<link rel="stylesheet" href="/theme.css">
+<style>
+  /* Scrollbars, product-wide. The browser default is a bright white bar
+     that punches through the dark palette — reported from the upgrade
+     transcript pane, where it sat a foot from an amber status line.
+     color-scheme lets the engine render native bars dark; the explicit
+     rules tune the thumb to platinum: visible when sought, quiet when
+     not. Hover brightens so grabbing it stays obvious. */
+  *::-webkit-scrollbar-thumb:hover { background: rgba(178, 190, 204, 0.55); background-clip: padding-box; }
+  *::-webkit-scrollbar-corner { background: transparent; }
+html[data-embedded] header{display:none}
+  /* ── #129. The header cannot overlap itself ──────────────────────────
+   *
+   * Reported on a 390px iPhone: the theme toggle sat on top of the final E
+   * of APERIRE ONE. Measured rather than guessed, on the shell at 390: the
+   * wordmark ran to x=156 and the toggle started at x=152. Four pixels.
+   *
+   * The cause is that .brand sits in an `auto` grid track and carries
+   * white-space: nowrap, so it takes its min-content width and cannot give
+   * any of it back. Add one more control to the right cluster and the two
+   * simply pass through each other: nothing in the layout says they may
+   * not. The shell is where it showed first because only the shell carries
+   * the account pill, 134px of the 374 available.
+   *
+   * Two changes, in this order.
+   *
+   * 1. The wordmark is CLIPPED to its own box. That is the structural half:
+   *    whatever the width, whatever gets added to the right cluster, the
+   *    text can no longer paint outside the space it was given, so an
+   *    overlap is not a thing that can happen. min-width: 0 is what lets
+   *    the track shrink at all (a grid item's automatic minimum size is
+   *    min-content, which for nowrap text is the whole word). The clip
+   *    belongs on .brand-text, which is where the two words are. It was
+   *    on .brand as well until #238, and .brand is what positions the
+   *    hover explainer: a box that hangs entirely BELOW .brand's own
+   *    27px, so clipping there deleted the tip on every page at every
+   *    width and no operator ever saw it. .brand keeps min-width: 0,
+   *    which is the part that was doing the work.
+   *
+   * 2. Below 420px the word ONE steps out, leaving the mark and APERIRE.
+   *    Clipping alone would be honest but ugly, rendering "APERIRE O…".
+   *    Dropping ONE frees 37px where 4 were needed, so the wordmark is
+   *    whole rather than truncated on exactly the phones that were short.
+   *    430px and up keeps the full lockup.
+   *
+   * `header nav.tabs` rather than `nav.tabs` so this outranks each page's
+   * own header rules without depending on where it lands in the file, and
+   * so the seven tab pages and the shell get identical treatment.
+   * theme-walk.mjs asserts no two header boxes intersect, on every page, at
+   * every width, in both themes. */
+  header nav.tabs .brand { min-width: 0; }
+  header nav.tabs .brand-text {
+    min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  }
+  /* ONE steps out only when the row genuinely has no space for it. The
+     420px breakpoint this replaces was a guess calibrated to the longest
+     username, so every operator with a shorter one lost the brand's name
+     for nothing (reported: a wide empty gap between APERIRE and the
+     toggle). theme-toggle.js measures and sets data-fit; this rule is
+     what it toggles. Default is the full lockup, so a browser with no
+     JavaScript keeps the whole wordmark and the clip above stops it
+     overlapping anything. */
+  header nav.tabs .brand[data-fit="short"] .brand-one { display: none; }
+</style>
+<style>
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg); color: var(--text);
+    font-family: var(--sans);
+    font-size: 15px; line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ── Header + tabs (shared pattern) ──────────────────────────────── */
+  /* ══════════════════════════════════════════════════════════════════
+     Header — promoted to every width (decisions.md D5, accepted
+     2026-08-10). See public/index.html's identical header block for the
+     full reasoning; this file carries the same structure so the shell and
+     every standalone page render one consistent chrome.
+     ══════════════════════════════════════════════════════════════════ */
+  header { position: sticky; top: 0; z-index: 50; background: var(--bg); }
+  nav.tabs {
+    display: grid; grid-template-columns: auto 1fr auto;
+    align-items: center; gap: 6px;
+    padding: 8px 4px 8px 8px; border-bottom: 1px solid var(--border);
+    position: relative;
+  }
+  .brand {
+    grid-column: 1; display: flex; align-items: center; gap: 8px;
+    padding: 2px 0; white-space: nowrap; min-width: 0;
+    position: relative; cursor: default;
+    /* No underline and no visited purple on the name: it is a link home,
+       and a browser dresses one by default. The href and the hover tooltip
+       are untouched. See public/overview.html for the full comment; the
+       same two declarations sit on .brand in every tab. */
+    text-decoration: none; color: inherit;
+  }
+  .brand-tip {
+    /* #133. Bounded by the screen as well as by 340px: the box is laid out
+       whether or not it is shown, so a tip wider than the viewport is a page
+       wider than the viewport. Counted against 100vw, which includes a
+       scrollbar, plus the 12px the box starts in at. */
+    position: absolute; top: calc(100% + 4px); left: 4px;
+    width: 340px; max-width: calc(100vw - 32px); white-space: normal;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px 12px;
+    font-size: 12px; line-height: 1.5; color: var(--text-dim);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+    opacity: 0; pointer-events: none; transform: translateY(-4px);
+    transition: opacity 180ms ease 120ms, transform 180ms ease 120ms;
+    z-index: 100;
+  }
+  .brand:hover .brand-tip,
+  .brand:focus-within .brand-tip { opacity: 1; transform: translateY(0); }
+  .brand-tip strong { color: var(--text); font-weight: 700; letter-spacing: 0.01em; }
+  .brand-mark { width: 23px; height: 23px; flex-shrink: 0; object-fit: contain; display: block; }
+  .brand-text {
+    /* The login card's brand treatment, adopted for consistency (operator:
+       "I like the style of the login page"): uppercase, wide tracking,
+       strong white APERIRE, light dim ONE — no gradient fill. */
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text);
+  }
+  .brand-one { color: var(--text); font-weight: 300; opacity: 0.7; }
+  nav.tabs > .tab { display: none; }
+  .tabs-spacer { display: none; }
+  .tab-pubkey { display: none; }
+
+  /* ── Node chip — grid column 2, true center. See public/index.html /
+     public/fleet-chip.js for the full comment; identical here. ───────── */
+  .node-chip-wrap { grid-column: 2; justify-self: center; position: relative; }
+  .node-chip {
+    display: flex; align-items: center; gap: 5px;
+    padding: 4px 8px; border: 1px solid var(--border); border-radius: 999px;
+    background: var(--surface); color: var(--text); font-family: var(--mono);
+    font-size: 11px; cursor: pointer; max-width: 46vw;
+    transition: border-color 140ms ease, background 140ms ease;
+  }
+  .node-chip:hover { border-color: var(--border-hi); background: var(--surface-hi); }
+  .node-chip:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 1px rgba(var(--blue-rgb), 0.4); }
+  .node-chip[aria-expanded="true"] { border-color: var(--accent); background: var(--surface-hi); }
+  .chip-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: var(--text-muted); border: 1px solid rgba(0,0,0,0.3); }
+  .chip-dot.ok   { background: var(--green); box-shadow: 0 0 4px rgba(var(--green-rgb), 0.55); }
+  .chip-dot.warn { background: var(--amber); box-shadow: 0 0 4px rgba(var(--amber-rgb), 0.55); }
+  .chip-name { font-weight: 700; max-width: 128px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chip-sep { color: var(--border-hi); }
+  .chip-roll { display: flex; align-items: center; gap: 4px; color: var(--text-dim); font-weight: 600; }
+  .chip-roll .hs-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-muted); border: 1px solid rgba(0,0,0,0.3); }
+  .chip-roll .hs-dot:not(:first-child) { margin-left: 3px; }
+  .chip-roll .hs-dot.ok   { background: var(--green); box-shadow: 0 0 4px rgba(var(--green-rgb), 0.55); }
+  .chip-roll .hs-dot.warn { background: var(--amber); box-shadow: 0 0 4px rgba(var(--amber-rgb), 0.55); }
+  .chip-roll .hs-dot.crit { background: var(--red);   box-shadow: 0 0 4px rgba(var(--red-rgb), 0.55); }
+  .chip-caret { color: var(--text-muted); font-size: 9px; }
+
+  .node-dd {
+    position: absolute; top: calc(100% + 8px); left: 50%; transform: translateX(-50%);
+    width: 320px; max-width: calc(100vw - 24px);
+    background: var(--surface-hi); border: 1px solid var(--border-hi); border-radius: var(--radius);
+    box-shadow: 0 20px 48px rgba(0,0,0,0.6); z-index: 60; overflow: hidden;
+  }
+  .node-dd[hidden] { display: none; }
+  /* Below 720px the chip has a row of its own and the panel anchors to it
+     (#236, theme.css). The pin that used to live here fixed the panel at
+     top: 54px, which assumed a one-row header and would now land on the
+     chip. */
+  .ndd-head { padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  .ndd-head .title { font-size: 11px; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-dim); font-family: var(--mono); }
+  .node-health-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+  .node-health-summary .total { font-size: 11px; font-weight: 700; color: var(--text-muted); font-family: var(--mono); }
+  .node-health-summary .hs-div { color: var(--border-hi); }
+  .node-health-summary .hs-stat { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 700; color: var(--text-dim); font-family: var(--mono); }
+  .node-health-summary .hs-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); border: 1px solid rgba(0,0,0,0.3); }
+  .node-health-summary .hs-dot.ok   { background: var(--green); box-shadow: 0 0 4px rgba(var(--green-rgb), 0.55); }
+  .node-health-summary .hs-dot.warn { background: var(--amber); box-shadow: 0 0 4px rgba(var(--amber-rgb), 0.55); }
+  .node-health-summary .hs-dot.crit { background: var(--red);   box-shadow: 0 0 4px rgba(var(--red-rgb), 0.55); }
+
+  .ndd-list { list-style: none; margin: 0; padding: 6px; display: flex; flex-direction: column; gap: 4px; }
+  .ndd-row { position: relative; display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); }
+  .ndd-row.warn { border-color: rgba(var(--amber-rgb), 0.4); }
+  .ndd-row.crit { border-color: rgba(var(--red-rgb), 0.5); }
+  .ndd-row.unreach { border-color: var(--border-hi); }
+  .ndd-link {
+    display: grid; grid-template-columns: auto auto 1fr; align-items: center; gap: 9px;
+    padding: 7px 10px; text-decoration: none; color: inherit; min-height: 44px;
+    border-radius: var(--radius-sm);
+  }
+  .ndd-link:hover, .ndd-link:focus-visible { background: var(--surface); outline: none; }
+  button.ndd-link { appearance: none; background: none; border: none; font: inherit; width: 100%; text-align: left; cursor: pointer; color: inherit; }
+  .ndd-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; background: var(--text-muted); border: 1px solid rgba(0,0,0,0.3); }
+  .ndd-dot.ok   { background: var(--green); box-shadow: 0 0 5px rgba(var(--green-rgb), 0.6); }
+  .ndd-dot.warn { background: var(--amber); box-shadow: 0 0 5px rgba(var(--amber-rgb), 0.6); }
+  .ndd-dot.crit { background: var(--red); box-shadow: 0 0 5px rgba(var(--red-rgb), 0.6); }
+  /* The node's role, the same letter and colours as the FLEET panel's .node-role (#1256). */
+  .ndd-role { font-family: var(--mono); font-size: 9px; font-weight: 700; line-height: 1; width: 14px; height: 14px; display: inline-flex; align-items: center; justify-content: center; border-radius: 3px; color: var(--text-muted); background: rgba(139,148,158,0.12); border: 1px solid var(--border-hi); }
+  .ndd-role.validator { color: var(--accent); background: rgba(var(--blue-rgb), 0.14); border-color: rgba(var(--blue-rgb), 0.42); }
+  .ndd-role.node { color: var(--text-dim); }
+  .ndd-role:empty { visibility: hidden; }
+  .ndd-link.ndd-self { grid-template-columns: auto 1fr; }
+  .ndd-body { min-width: 0; }
+  .ndd-name { display: block; font-family: var(--mono); font-size: 12.5px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ndd-state { display: block; font-family: var(--mono); font-size: 11px; color: var(--text-dim); }
+  .ndd-state.warn { color: var(--amber); }
+  .ndd-state.crit { color: var(--red); }
+  .ndd-state.unreach { color: var(--text-muted); }
+  .ndd-cur-tag { font-size: 9px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--accent); background: rgba(var(--blue-rgb), 0.12); border: 1px solid rgba(var(--blue-rgb), 0.4); border-radius: 999px; padding: 1px 6px; margin-left: 6px; }
+  span.ndd-link { cursor: default; }
+  span.ndd-link:hover { background: none; }
+  .ndd-ask {
+    justify-self: end; align-self: center; margin-left: 10px; margin-right: 10px; position: relative;
+    padding: 2px 8px; text-decoration: none; white-space: nowrap;
+    font-size: 10px; font-weight: 700; color: var(--amber);
+    background: var(--amber-soft); border: 1px solid rgba(var(--amber-rgb), 0.45);
+    border-radius: 20px;
+  }
+  /* No leftward bleed: the pseudo-element's own left inset moves INWARD
+     (4px) rather than extending past the ask link's true edge, and the
+     link itself now carries a real margin-left — together these leave a
+     genuine dead zone between the node button and this hit area, instead
+     of the two abutting with zero gap. */
+  .ndd-ask::before { content: ''; position: absolute; inset: -12px -6px -12px 4px; }
+  .ndd-ask:hover, .ndd-ask:focus-visible { background: rgba(var(--amber-rgb), 0.3); outline: none; }
+  .ndd-foot { padding: 8px 14px 10px; border-top: 1px solid var(--border); font-size: 10.5px; color: var(--text-muted); line-height: 1.5; }
+
+  /* ── Right-hand cluster — grid column 3. ─────────────────────────── */
+  .right-group { grid-column: 3; justify-self: end; display: flex; align-items: center; gap: 6px; }
+  .navbg { order: 1; }
+  .audio-toggle { order: 2; width: 26px; height: 26px; flex: 0 0 auto; position: relative; margin: 0; }
+  .audio-toggle::before { content: ''; position: absolute; inset: -9px; }
+  .audio-toggle svg { width: 13px; height: 13px; }
+  .navcur { order: 3; }
+  .hamburger { order: 4; }
+
+  .navbg {
+    display: flex; align-items: center; gap: 4px; flex: 0 0 auto;
+    padding: 4px 6px; border: 1px solid var(--amber); border-radius: 999px;
+    background: var(--amber-soft); font-family: var(--mono); font-size: 10.5px;
+    color: var(--amber); cursor: pointer;
+  }
+  .navbg[hidden] { display: none; }
+  .navbg-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--amber); flex: 0 0 auto; }
+  .navbg.warn { background: rgba(var(--amber-rgb), 0.16); }
+  .navbg.warn .navbg-dot { animation: navbgpulse 2.4s ease-in-out infinite; }
+  .navbg.stale { border-color: var(--text-muted); color: var(--text-muted); background: var(--surface-hi); }
+  .navbg.stale .navbg-dot { background: var(--text-muted); animation: none; }
+  @keyframes navbgpulse {
+    0%, 100% { box-shadow: 0 0 0 0 var(--red-soft); }
+    50%      { box-shadow: 0 0 0 5px rgba(var(--red-rgb), 0); }
+  }
+
+  .navcur {
+    display: inline-block; flex: 0 1 auto; align-self: center;
+    font-size: 13px; font-weight: 600; letter-spacing: 0.04em; color: var(--accent);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    max-width: 140px; line-height: 1; text-align: right;
+  }
+  @media (max-width: 720px) {
+    .navcur { display: none; }
+  }
+
+  .hamburger {
+    display: flex; align-items: center; justify-content: center; flex: 0 0 auto;
+    width: 26px; height: 26px; position: relative;
+    padding: 0; margin: 0; border: none; border-radius: 50%;
+    background: transparent; cursor: pointer; transition: background 0.16s ease;
+  }
+  .hamburger::before { content: ''; position: absolute; top: -9px; bottom: -9px; left: -9px; right: -4px; }
+  .hamburger:active { opacity: 0.6; }
+  .hamburger[aria-expanded="true"] { background: rgba(var(--blue-rgb), 0.14); }
+  .hamburger .bars { position: relative; width: 16px; height: 11px; }
+  .hamburger .bars i {
+    position: absolute; left: 0; right: 0; height: 1.5px; border-radius: 2px;
+    background: var(--text-muted);
+    transition: transform 0.2s ease, opacity 0.2s ease, top 0.2s ease, background 0.2s ease;
+  }
+  .hamburger .bars i:nth-child(1) { top: 0; }
+  .hamburger .bars i:nth-child(2) { top: 4.75px; }
+  .hamburger .bars i:nth-child(3) { top: 9.5px; }
+  .hamburger[aria-expanded="true"] .bars i { background: var(--accent); }
+  .hamburger[aria-expanded="true"] .bars i:nth-child(1) { top: 4.75px; transform: rotate(45deg); }
+  .hamburger[aria-expanded="true"] .bars i:nth-child(2) { opacity: 0; }
+  .hamburger[aria-expanded="true"] .bars i:nth-child(3) { top: 4.75px; transform: rotate(-45deg); }
+
+  .scrim {
+    display: block; position: fixed; inset: 0; background: rgba(var(--bg-rgb), 0.6); z-index: 48;
+    opacity: 0; pointer-events: none; transition: opacity 0.18s ease;
+  }
+  .scrim.on { opacity: 1; pointer-events: auto; }
+
+  .mobmenu {
+    display: block; position: absolute; top: 100%; left: auto; right: 8px; z-index: 49;
+    /* A content-appropriate card on every width, not a full-bleed sheet —
+       the labels are short and edge-to-edge buried the page (operator
+       feedback, 2026-08-12). Fixed width rather than max-content because
+       the foot hint is one long line that would otherwise drag the card
+       back to full width; 280px fits the widest row (title + sub + check)
+       with air, and the hint wraps. Desktop (>=721px) keeps its own
+       fixed-position max-content card via the media block below. */
+    width: min(280px, 100vw - 16px);
+    background: var(--bg-soft); border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+    transform: translateY(-6px); opacity: 0; pointer-events: none;
+    transition: transform 0.2s ease-out, opacity 0.2s ease-out;
+    max-height: calc(100dvh - 120px); overflow-y: auto;
+  }
+  /* Desktop: the menu is a wider card under the hamburger. Full-bleed at
+     1600px curtained the entire dashboard behind a nav list — the operator's
+     first report on the promoted header. The phone's full-width sheet went
+     the same way on 2026-08-12: the labels are short, so .mobmenu above is a
+     280px card at every width, and this block only widens it past 720px and
+     lightens the scrim so the page stays readable while the menu is up. */
+  @media (min-width: 721px) {
+    .mobmenu {
+      position: fixed; left: auto; right: 10px; top: 52px;
+      width: min(340px, calc(100vw - 20px));
+      border: 1px solid var(--border); border-radius: 10px;
+      box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
+    }
+    .scrim { background: rgba(var(--bg-rgb), 0.22); }
+  }
+  .mobmenu.on {
+    transform: translateY(0); opacity: 1; pointer-events: auto;
+    transition: transform 0.14s ease-in, opacity 0.14s ease-in;
+  }
+  .mobmenu ul { list-style: none; margin: 0; padding: 6px; }
+  .mobmenu li + li { border-top: 1px solid var(--border); }
+  .mtab {
+    display: flex; align-items: center; gap: 10px; padding: 11px 16px 11px 14px;
+    text-decoration: none; color: var(--text-dim); min-height: 44px; position: relative;
+  }
+  .mtab:hover, .mtab:focus-visible { background: var(--surface); color: var(--text); }
+  .mtab-body { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+  .mtab-title { font-size: 14.5px; font-weight: 600; color: var(--text); }
+  .mtab-sub { font-size: 11.5px; color: var(--text-muted); }
+  .mtab-check { margin-left: auto; flex: 0 0 auto; width: 16px; height: 16px; color: var(--accent); visibility: hidden; }
+  .mtab.active { background: rgba(var(--blue-rgb), 0.08); }
+  .mtab.active::before {
+    content: ''; position: absolute; left: 0; top: 6px; bottom: 6px; width: 3px;
+    border-radius: 0 3px 3px 0; background: var(--accent);
+  }
+  .mtab.active .mtab-title { color: var(--text); }
+  .mtab.active .mtab-check { visibility: visible; }
+  .mobmenu-foot { padding: 9px 14px; border-top: 1px solid var(--border); font-size: 11px; color: var(--text-muted); }
+  /* ADR 0016. The Advisor nav entry and the pointer row that replaces it are
+     BOTH default-hidden in the markup and revealed when the published fact
+     says so, mirroring #fleetChipWrap. Gating them by hiding after the fetch
+     lands would give a declined-Advisor install a flash of an Advisor tab on
+     every page load, which is the nag the record forbids.
+
+     The !important is load-bearing, not decoration: .mtab sets display:flex,
+     and a class rule beats the user-agent's [hidden] { display: none }. A
+     bare hidden attribute on one of these does nothing at all. */
+  [data-advisor-nav][hidden], [data-advisor-pointer][hidden] { display: none !important; }
+  /* .madd, the menu's secondary rows: styled by mobile-nav.js, which owns them. */
+
+  html.menu-open, body.menu-open { overflow: hidden; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .hamburger .bars i, .scrim, .mobmenu, .node-dd, .node-chip { transition: none; }
+    .navbg.warn .navbg-dot { animation: none; }
+  }
+
+  /* ── Main layout ─────────────────────────────────────────────────── */
+  main {
+    width: 100%;
+    padding: clamp(4px, 0.5vw, 8px) clamp(14px, 1.6vw, 28px) clamp(10px, 1vw, 16px);
+    display: flex; flex-direction: column;
+    gap: clamp(6px, 0.7vw, 10px);
+  }
+
+  /* ── P0 card grid (4 across) ─────────────────────────────────────── */
+  .card-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px;
+  }
+  @media (max-width: 1200px) { .card-grid { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width:  720px) { .card-grid { grid-template-columns: 1fr; } }
+
+  .metric-card {
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--surface);
+    padding: 7px 16px 5px;
+  }
+  .metric-card .card-title {
+    text-align: center;
+    font-size: 13px; font-weight: 700; letter-spacing: 0.18em;
+    color: var(--text-dim); text-transform: uppercase;
+    margin-bottom: 3px; padding-bottom: 4px;
+    border-bottom: 1px solid var(--border);
+  }
+  .metric-card .card-row {
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-family: var(--mono); padding: 2px 0; line-height: 1.3;
+  }
+  .metric-card .card-row .lbl {
+    font-size: 11.5px; color: var(--text-muted); text-transform: uppercase;
+    letter-spacing: 0.08em; font-weight: 500;
+  }
+  .metric-card .card-row .val {
+    font-size: 13px; color: var(--text); font-weight: 600;
+  }
+  .metric-card .card-row .val.ok    { color: var(--green); }
+  .metric-card .card-row .val.warn  { color: var(--amber); }
+  .metric-card .card-row .val.alert { color: var(--red); }
+  .metric-card .card-row .val.dim   { color: var(--text-muted); }
+  /* Truncate long values (e.g., amendment names) with an ellipsis and
+     surface the full value on native-title hover. */
+  .metric-card .card-row .val.truncate {
+    max-width: 70%;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    display: inline-block; vertical-align: bottom;
+  }
+
+  /* Status pill — reused for Amendment Blocked + Refresh Status */
+  .status-pill {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 11.5px; font-weight: 700;
+    letter-spacing: 0.06em;
+    padding: 2px 9px;
+    border-radius: 999px;
+    background: rgba(var(--green-rgb), 0.12);
+    color: var(--green);
+    border: 1px solid rgba(var(--green-rgb), 0.35);
+  }
+  .status-pill.warn   { background: rgba(var(--amber-rgb), 0.14); color: var(--amber); border-color: rgba(var(--amber-rgb), 0.38); }
+  .status-pill.alert  { background: rgba(var(--red-rgb), 0.16);  color: var(--red);    border-color: rgba(var(--red-rgb), 0.42); }
+
+  /* ── Detail tables (Amendments on the Ballot, Publishers) ──────── */
+  .band-card {
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--surface); padding: 10px 14px 12px;
+  }
+  .band-card h2 {
+    margin: 0 0 8px;
+    font-size: 12px; font-weight: 700; letter-spacing: 0.16em;
+    color: var(--text-dim); text-transform: uppercase;
+    display: flex; align-items: baseline; gap: 10px;
+    /* The ballot header carries a pager as well as its count and its
+       outbound link. On a phone the three do not fit on one line, and a
+       header that overflows takes the card's right edge off screen. */
+    flex-wrap: wrap; row-gap: 6px;
+  }
+  .band-card .band-count {
+    font-family: var(--mono); font-size: 10.5px; color: var(--text-muted);
+    font-weight: 500; letter-spacing: 0.04em;
+  }
+  /* Header-right outbound link (e.g., "Full list on xrpscan ↗"). Pushed
+     to the right edge of the row, dim by default, accent on hover. */
+  .band-card .band-link {
+    margin-left: auto;
+    font-family: var(--mono); font-size: 10.5px;
+    font-weight: 500; letter-spacing: 0.04em;
+    color: var(--text-muted); text-decoration: none;
+    text-transform: none;
+  }
+  .band-card .band-link:hover { color: var(--accent); }
+
+  /* Head pager, `‹ 1-5 of 12 ›` at the right end of a card's own <h2>. The
+     same control Insights and Overview carry (.head-pager there, copied
+     rather than shared: these pages have no common stylesheet), down to the
+     21px buttons and the ‹/› glyphs, so every pager in the product reads as
+     one control. The h2 aligns on the baseline for its text, which is the
+     wrong line for a 21px button, so the pager centres itself instead. */
+  .band-card .head-pager {
+    display: flex; align-items: center; gap: 5px;
+    flex-shrink: 0; align-self: center;
+  }
+  .band-card .head-pager[hidden] { display: none; }
+  .band-card .head-pager .page-ind {
+    font-family: var(--mono);
+    font-size: 10.5px; font-weight: 700; color: var(--text-muted);
+    letter-spacing: 0.04em; min-width: 26px; text-align: center;
+    text-transform: none; user-select: none;
+  }
+  .band-card .head-pager .pg-btn {
+    appearance: none; cursor: pointer;
+    width: 21px; height: 21px; flex-shrink: 0;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-family: var(--mono); font-size: 14px; line-height: 1;
+    background: var(--bg); color: var(--text-dim);
+    border: 1px solid var(--border); border-radius: var(--radius-sm);
+    transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+  }
+  .band-card .head-pager .pg-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  .band-card .head-pager .pg-btn:focus-visible { outline: none; border-color: var(--accent); color: var(--accent); box-shadow: 0 0 0 1px rgba(var(--blue-rgb), 0.4); }
+  .band-card .head-pager .pg-btn:disabled { color: var(--border-hi); border-color: var(--border); opacity: 0.5; cursor: default; }
+  .detail-table {
+    width: 100%; border-collapse: collapse;
+    font-family: var(--mono); font-size: 12px;
+  }
+  .detail-table th {
+    text-align: left;
+    font-size: 10.5px; font-weight: 600; letter-spacing: 0.08em;
+    color: var(--text-muted); text-transform: uppercase;
+    padding: 5px 10px 5px 0; border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  .detail-table td {
+    padding: 6px 10px 6px 0;
+    border-bottom: 1px solid rgba(var(--wash-rgb), 0.04);
+    color: var(--text-dim);
+    vertical-align: middle;
+  }
+  .detail-table tbody tr:last-child td { border-bottom: none; }
+  .detail-table td.num, .detail-table th.num { text-align: right; }
+  .detail-table td .name { color: var(--text); font-weight: 600; }
+  /* Hash now lives in its own column (was previously a stacked sub-line under
+     .name). Styled inline so each row is a single line tall — saves the
+     vertical real estate that was pushing P2 diagnostics off-screen. */
+  .detail-table td .hash {
+    font-family: var(--mono); font-size: 11px;
+    color: var(--text-muted); letter-spacing: 0.02em;
+  }
+  .detail-empty {
+    display: flex; align-items: center; justify-content: center;
+    min-height: 60px;
+    color: var(--text-muted);
+    font-family: var(--mono); font-size: 11.5px;
+  }
+
+  /* Mobile-only / desktop-only header labels. Shorter copy on narrow
+     screens so the table fits in the viewport without horizontal
+     scrolling. */
+  .d-only { display: inline; }
+  .m-only { display: none; }
+  @media (max-width: 720px) {
+    .d-only { display: none; }
+    .m-only { display: inline; }
+    /* Tighter table padding + type on mobile so every column fits. */
+    .band-card { padding: 8px 10px 10px; }
+    .detail-table { font-size: 11px; }
+    .detail-table th {
+      padding: 4px 6px 4px 0;
+      font-size: 9.5px;
+      letter-spacing: 0.05em;
+    }
+    .detail-table td {
+      padding: 5px 6px 5px 0;
+    }
+    /* Columns marked `hide-mobile` drop off entirely on narrow screens. */
+    .detail-table .hide-mobile { display: none; }
+    .detail-table td .hash { font-size: 9px; }
+    .support-bar { width: 36px; }
+    /* Long site URLs and amendment names get ellipsis-truncated so the
+       rest of the row still fits. */
+    .detail-table td .name {
+      max-width: 130px;
+      display: inline-block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      vertical-align: bottom;
+    }
+    /* Shrink the pills slightly on narrow screens so they stay on one
+       line even in the tight Progress / Vote columns. */
+    .progress-pill, .vote-pill {
+      font-size: 9px;
+      letter-spacing: 0.05em;
+      padding: 1px 6px;
+    }
+  }
+
+  /* Bar next to a percentage (amendment support %) */
+  .support-bar {
+    position: relative;
+    display: inline-block;
+    width: 64px; height: 4px;
+    background: rgba(var(--wash-rgb), 0.06);
+    border-radius: 2px;
+    vertical-align: middle;
+    margin-right: 7px;
+  }
+  .support-bar .fill {
+    position: absolute; left: 0; top: 0;
+    height: 100%; border-radius: 2px;
+    background: var(--amber);
+  }
+  .support-bar .fill.ok    { background: var(--green); }
+  .support-bar .fill.alert { background: var(--red); }
+
+  /* Small pill for our-vote in the amendments table */
+  .vote-pill {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 10px; font-weight: 700;
+    letter-spacing: 0.08em; text-transform: uppercase;
+    padding: 1px 7px;
+    border-radius: 999px;
+    background: rgba(var(--blue-rgb), 0.14);
+    color: var(--accent);
+    border: 1px solid rgba(var(--blue-rgb), 0.38);
+    white-space: nowrap;
+  }
+  .vote-pill.yes     { background: rgba(var(--green-rgb), 0.14); color: var(--green); border-color: rgba(var(--green-rgb), 0.38); }
+  .vote-pill.no      { background: rgba(var(--red-rgb), 0.16); color: var(--red);   border-color: rgba(var(--red-rgb), 0.42); }
+  .vote-pill.default  { background: rgba(139, 148, 158, 0.10); color: var(--text-dim); border-color: var(--border-hi); }
+  .vote-pill.obsolete { background: rgba(139, 148, 158, 0.10); color: var(--text-muted); border-color: var(--border-hi); opacity: 0.8; }
+  /* Amendment defined on the network but not in this rippled binary —
+     operator can see it exists but can't vote until they upgrade. */
+  .vote-pill.unsupported { background: rgba(var(--amber-rgb), 0.16); color: var(--amber); border-color: rgba(var(--amber-rgb), 0.42); }
+
+  /* Amendment-name cell with a hoverable description popover. Same
+     mechanic as the .info-tip pattern but anchored on the name itself
+     so operators don't need a separate `i` icon to get context. The
+     popover is hoverable (pointer-events:auto when visible) so the
+     operator can move into it and click the "Read XLS spec" link. */
+  .amendment-name {
+    position: relative;
+    display: inline-block;
+    color: var(--text);
+    font-weight: 600;
+    cursor: help;
+    border-bottom: 1px dotted rgba(139, 148, 158, 0.45);
+    outline: none;
+  }
+  .amendment-name:hover,
+  .amendment-name:focus,
+  .amendment-name:focus-within { border-bottom-color: var(--accent); }
+  .amendment-popover {
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    width: max-content;
+    min-width: 240px;
+    max-width: 360px;
+    /* #502: a folded description can run up to 1500 characters, tall enough
+       on a phone viewport to run past the bottom edge with nothing to say
+       there was more (a mouse-hover popover disappears the moment the
+       cursor leaves it, so relying on the page scrolling underneath is not
+       reliable). Capping the height and scrolling inside the box keeps the
+       whole thing reachable regardless of where the row sits on the page. */
+    max-height: clamp(140px, 48dvh, 420px);
+    overflow-y: auto;
+    padding: 10px 12px;
+    background: var(--surface-hi);
+    border: 1px solid var(--border-hi);
+    border-radius: 7px;
+    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.55);
+    font-family: var(--sans);
+    font-size: 11.5px;
+    line-height: 1.5;
+    color: var(--text-dim);
+    text-align: left;
+    text-transform: none;
+    letter-spacing: 0;
+    white-space: normal;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 140ms ease 60ms;
+    z-index: 60;
+  }
+  .amendment-name:hover .amendment-popover,
+  .amendment-name:focus .amendment-popover,
+  .amendment-name:focus-within .amendment-popover {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  /* Support cell that names a state instead of showing a percentage
+     ("Majority", "Not reported"). Same popover mechanic as the amendment
+     name, anchored to the right edge because this column is the narrow
+     right-aligned one and a left-anchored popover would run off the card. */
+  .support-note {
+    position: relative;
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.04em;
+    color: var(--text-dim);
+    cursor: help;
+    border-bottom: 1px dotted rgba(139, 148, 158, 0.45);
+    outline: none;
+  }
+  .support-note:hover,
+  .support-note:focus,
+  .support-note:focus-within { color: var(--text); border-bottom-color: var(--accent); }
+  .support-note:hover .amendment-popover,
+  .support-note:focus .amendment-popover,
+  .support-note:focus-within .amendment-popover { opacity: 1; pointer-events: auto; }
+  .amendment-popover.align-right { left: auto; right: 0; }
+  /* A percentage the dashboard counted itself rather than read off the
+     node: the number is the note, and a small word beside it says so on
+     the row, not only in the popover. */
+  .support-note.counted { font-size: inherit; letter-spacing: 0; color: var(--text); }
+  .counted-tag {
+    display: inline-block;
+    margin-left: 5px;
+    font-family: var(--mono);
+    font-size: 9px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+    vertical-align: middle;
+  }
+  /* The narrow column has room for the number or the word, not both; the
+     number keeps its note, so the source is still one tap away. */
+  @media (max-width: 720px) { .counted-tag { display: none; } }
+
+  .amendment-popover p { margin: 0 0 8px; }
+  .amendment-popover p:last-child { margin: 0; }
+  .amendment-popover a {
+    color: var(--accent);
+    text-decoration: none;
+    border-bottom: 1px solid rgba(var(--blue-rgb), 0.45);
+  }
+  .amendment-popover a:hover { border-bottom-color: var(--accent); }
+
+  /* XLS-NN tag next to the amendment name. Sourced from xrpscan's
+     public amendment metadata; lets operators correlate the ballot row
+     with xrpscan/XLS spec links at a glance. */
+  .xls-pill {
+    display: inline-block;
+    margin-left: 6px;
+    font-family: var(--mono);
+    font-size: 9px; font-weight: 700;
+    letter-spacing: 0.06em; text-transform: uppercase;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: rgba(var(--blue-rgb), 0.10);
+    color: var(--accent);
+    border: 1px solid rgba(var(--blue-rgb), 0.28);
+    vertical-align: 1px;
+    white-space: nowrap;
+  }
+
+  /* Progress pill: green for "Pending" (past threshold), amber for
+     "Needs N" (still gathering). Same shape as the vote pill. */
+  .progress-pill {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 10px; font-weight: 700;
+    letter-spacing: 0.08em; text-transform: uppercase;
+    padding: 1px 7px; border-radius: 999px;
+    border: 1px solid var(--border-hi);
+    white-space: nowrap;
+  }
+  .progress-pill.pending { background: rgba(var(--green-rgb), 0.14); color: var(--green); border-color: rgba(var(--green-rgb), 0.38); }
+  .progress-pill.needs   { background: rgba(var(--amber-rgb), 0.14); color: var(--amber); border-color: rgba(var(--amber-rgb), 0.38); }
+
+  /* ── P2 accordion ────────────────────────────────────────────────── */
+  details.accordion {
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--surface); padding: 0;
+  }
+  details.accordion summary {
+    cursor: pointer;
+    padding: 10px 16px;
+    font-size: 12px; font-weight: 700; letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--text-dim);
+    list-style: none;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  details.accordion summary::-webkit-details-marker { display: none; }
+  details.accordion summary::after {
+    content: '›';
+    font-weight: 400; color: var(--text-muted);
+    transition: transform 180ms ease;
+  }
+  details.accordion[open] summary::after { transform: rotate(90deg); }
+  details.accordion .accordion-body {
+    padding: 10px 16px 14px;
+    border-top: 1px dashed var(--border);
+  }
+  .accordion-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+  }
+  @media (max-width: 1100px) { .accordion-grid { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width:  720px) { .accordion-grid { grid-template-columns: 1fr; } }
+
+  /* Desktop bump (≥1400px) — Governance is text/tables, no chart heights to
+     scale, so the desktop pattern from RESPONSIVE-STANDARDS.md is applied as
+     padding + font growth. Cards, tables, and diagnostic cells breathe so
+     the page fills more of a 1080p+ viewport. */
+  @media (min-width: 1400px) {
+    .metric-card { padding: 10px 18px 8px; }
+    .band-card { padding: 14px 18px 16px; }
+    .band-card h2 { margin-bottom: 12px; font-size: 13px; }
+    .detail-table { font-size: 13px; }
+    .detail-table th { padding: 7px 12px 7px 0; font-size: 11px; }
+    .detail-table td { padding: 9px 12px 9px 0; }
+    .accordion-cell { padding: 9px 14px; }
+    .accordion-cell .av { font-size: 16px; }
+    details.accordion summary { padding: 14px 18px; font-size: 13px; }
+    details.accordion .accordion-body { padding: 14px 18px 18px; }
+  }
+  /* Single-line cells: label on the left, value on the right via flex
+     space-between. Halves the panel's vertical footprint vs the previous
+     stacked (label-on-top, value-below) layout. */
+  .accordion-cell {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 10px;
+    border: 1px solid var(--border); border-radius: var(--radius-sm);
+    background: var(--bg); padding: 6px 12px;
+  }
+  .accordion-cell .al {
+    font-size: 10.5px; color: var(--text-muted); letter-spacing: 0.08em;
+    text-transform: uppercase; font-family: var(--mono);
+  }
+  .accordion-cell .av {
+    font-family: var(--mono); font-size: 15px; font-weight: 600; color: var(--text);
+    text-align: right;
+  }
+
+  /* Per-metric info icon — same pattern as Network / Consensus / Overview */
+  .info-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 13px; height: 13px;
+    margin-left: 6px;
+    border-radius: 50%;
+    border: 1px solid var(--text-muted);
+    color: var(--text-muted);
+    font-family: Georgia, 'Times New Roman', serif;
+    font-style: italic;
+    font-weight: 700;
+    font-size: 9px;
+    line-height: 1;
+    cursor: help;
+    position: relative;
+    vertical-align: middle;
+    text-transform: none;
+    letter-spacing: 0;
+    transition: color 120ms ease, border-color 120ms ease;
+  }
+  .info-icon::before { content: 'i'; position: relative; top: -0.5px; }
+  .info-icon:hover, .info-icon:focus, .info-icon:focus-within {
+    color: var(--accent);
+    border-color: var(--accent);
+    outline: none;
+  }
+  .info-tip {
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    /* Resting position, which nobody ever sees: -100% keeps the tip's right
+       edge at the icon's centre, so it can never stretch the page rightward.
+       An invisible popover still occupies scroll width — resting a 280px tip
+       centred under a right-side icon is a sideways-scrolling page.
+       positionInfoTip() sets the real, clamped position inline the moment the
+       icon is hovered or focused, so this value only has to be harmless, not
+       centred. Left overflow adds no scroll extent.
+       The same holds vertically. `top:100%` rests the tip BELOW its icon, so
+       an icon near the bottom of the page rests a ~290px invisible box past
+       the fold and hands the document that much scrollable area — a page-wide
+       scrollbar with nothing in it. This tab's icons all sit high (the metric
+       cards), so the box lands well above the fold and costs nothing today;
+       lifting it by its own height means a card added lower down cannot bring
+       the scrollbar back. Upward overflow adds no scroll extent either, and
+       positionInfoTip() overwrites `transform` outright on hover and focus,
+       so the shown tip is unaffected. */
+    transform: translate(-100%, -100%);
+    width: max-content;
+    min-width: 200px;
+    max-width: 280px;
+    padding: 14px 11px 10px;
+    background: var(--surface-hi);
+    border: 1px solid var(--border-hi);
+    border-radius: 7px;
+    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.55);
+    font-family: var(--sans);
+    font-size: 11.5px;
+    line-height: 1.5;
+    color: var(--text-dim);
+    text-align: left;
+    text-transform: none;
+    letter-spacing: 0;
+    white-space: normal;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 160ms ease 80ms;
+    z-index: 60;
+  }
+  .info-icon:hover .info-tip,
+  .info-icon:focus .info-tip,
+  .info-icon:focus-within .info-tip {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .info-tip .info-title {
+    display: block; font-weight: 700; color: var(--text);
+    margin-bottom: 4px; font-size: 12px;
+  }
+  .info-tip p { margin: 0 0 5px; }
+  .info-tip p:last-child { margin-bottom: 0; }
+  .info-tip ul { margin: 5px 0 0; padding-left: 16px; }
+  .info-tip li { margin: 1px 0; }
+
+  footer {
+    padding: 10px 18px 16px;
+    color: var(--text-muted);
+    font-size: 11px;
+    font-family: var(--mono);
+    display: flex; justify-content: space-between;
+    border-top: 1px solid var(--border);
+    margin-top: 6px;
+  }
+  /* The status footer is a desktop nicety — on a phone or an iPad it is the
+     last thing on every page, saying nothing the header does not, at the
+     cost of a scroll. Tablet tops out at 1199 in the breakpoint table. */
+  @media (max-width: 1199px) { footer { display: none; } }
+
+
+  /* Audio toggle */
+  .audio-toggle {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    padding: 3px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-dim);
+    transition: color 0.15s, border-color 0.15s;
+    width: 28px;
+    height: 28px;
+    flex-shrink: 0;
+    align-self: center;
+    margin: 0 0 0 14px;
+  }
+  .audio-toggle:hover { color: var(--text); border-color: var(--text-muted); }
+  .audio-toggle.playing { color: var(--green); border-color: var(--green); }
+  .audio-toggle svg { width: 16px; height: 16px; }
+
+  /* D8 slice 3 backend retrofit — viewing a fleet peer in place. Same
+     styling as consensus.html's own copy — see that file's comment for the
+     reasoning (no `display` set here on purpose; [hidden] must stay the
+     thing that hides these). */
+  .peer-view-banner {
+    text-align: center;
+    font-size: 11px; font-weight: 600; letter-spacing: 0.04em;
+    color: var(--amber);
+    padding: 0 0 8px;
+  }
+  .peer-unavailable-note {
+    font-size: 11px; color: var(--text-muted); padding: 6px 2px 0; text-align: center;
+  }
+</style>
+<script src="/theme-toggle.js" defer></script>
+</head>
+<body>
+
+<header>
+  <nav class="tabs" data-tabname="Governance">
+    <a class="brand" href="/" aria-label="Aperire — back to the dashboard">
+      <img class="brand-mark" src="/aperire-mark.svg" alt="Aperire One" />
+      <span class="brand-text">Aperire <span class="brand-one">One</span></span>
+      <span class="brand-tip" role="tooltip"><strong>Aperire One</strong>, from the Latin &ldquo;to open&rdquo; or &ldquo;to reveal&rdquo; — an XRPL validator and node dashboard that brings a whole fleet into one view.</span>
+    </a>
+
+    <!-- Fleet node picker — decisions.md D5, task step C. See
+         public/index.html for the full comment; identical markup here. -->
+    <div class="node-chip-wrap" id="fleetChipWrap" hidden>
+      <button type="button" class="node-chip" id="fleetChip" aria-expanded="false" aria-controls="fleetDD">
+        <span class="chip-dot" id="fleetChipDot" aria-hidden="true"></span>
+        <span class="chip-name" id="fleetChipName">&mdash;</span>
+        <span class="chip-sep" id="fleetChipSep" aria-hidden="true">&middot;</span>
+        <span class="chip-roll" id="fleetChipRoll"></span>
+        <span class="chip-caret" aria-hidden="true">&#9662;</span>
+      </button>
+      <div class="node-dd" id="fleetDD" aria-label="Fleet nodes" hidden>
+        <div class="ndd-head">
+          <div class="title">Fleet</div>
+          <div class="node-health-summary" id="fleetDDSummary"></div>
+        </div>
+        <ul class="ndd-list" id="fleetDDList"></ul>
+        <div class="ndd-foot">Switches this dashboard to that node. No second sign-in, no leaving this dashboard.</div>
+      </div>
+    </div>
+
+    <div class="tabs-spacer"></div>
+    <div class="tab-pubkey"><span class="lbl">Pubkey</span><span class="val" id="pubkeyVal">—</span></div>
+    <span class="right-group">
+    <button class="audio-toggle" id="audio-toggle" title="Toggle ambient audio">
+      <svg class="audio-icon-off" viewBox="0 0 16 16" fill="currentColor" style="display:none"><path d="M6.717 3.55A.5.5 0 0 1 7 4v8a.5.5 0 0 1-.812.39L3.825 10.5H1.5A.5.5 0 0 1 1 10V6a.5.5 0 0 1 .5-.5h2.325l2.363-1.89a.5.5 0 0 1 .529-.06zM6 5.04 4.312 6.39A.5.5 0 0 1 4 6.5H2v3h2a.5.5 0 0 1 .312.11L6 10.96V5.04zm3.05.05a.5.5 0 0 1 .707 0c.652.652.978 1.486.978 2.41s-.326 1.758-.978 2.41a.5.5 0 1 1-.707-.707c.476-.476.685-1.073.685-1.703s-.21-1.227-.685-1.703a.5.5 0 0 1 0-.707z"/><path d="M1.5 14.5l13-13" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+      <svg class="audio-icon-on" viewBox="0 0 16 16" fill="currentColor"><path d="M6.717 3.55A.5.5 0 0 1 7 4v8a.5.5 0 0 1-.812.39L3.825 10.5H1.5A.5.5 0 0 1 1 10V6a.5.5 0 0 1 .5-.5h2.325l2.363-1.89a.5.5 0 0 1 .529-.06zM6 5.04 4.312 6.39A.5.5 0 0 1 4 6.5H2v3h2a.5.5 0 0 1 .312.11L6 10.96V5.04zm3.05.05a.5.5 0 0 1 .707 0c.652.652.978 1.486.978 2.41s-.326 1.758-.978 2.41a.5.5 0 1 1-.707-.707c.476-.476.685-1.073.685-1.703s-.21-1.227-.685-1.703a.5.5 0 0 1 0-.707zm2.122-2.12a.5.5 0 0 1 .707 0C13.26 4.352 14 5.985 14 7.5c0 1.515-.74 3.148-2.12 4.53a.5.5 0 0 1-.708-.708C12.37 10.124 13 8.763 13 7.5c0-1.263-.63-2.624-1.828-3.822a.5.5 0 0 1 0-.707z"/></svg>
+    </button>
+
+    <button type="button" class="navbg" id="navBg" hidden aria-label="Break glass open">
+      <span class="navbg-dot" aria-hidden="true"></span>
+      <span id="navBgText">12m</span>
+    </button>
+    <span class="navcur" aria-hidden="true">Governance</span>
+    <button type="button" class="hamburger" id="hamburgerBtn" aria-expanded="false" aria-controls="mobMenu" aria-label="Open navigation menu">
+      <span class="bars" aria-hidden="true"><i></i><i></i><i></i></span>
+    </button>
+    </span>
+  </nav>
+
+  <div class="scrim" id="scrim"></div>
+
+  <nav class="mobmenu" id="mobMenu" aria-label="Dashboard sections">
+    <ul>
+      <li><a class="mtab" href="/#/overview">
+        <span class="mtab-body"><span class="mtab-title">Overview</span><span class="mtab-sub">Health at a glance</span></span>
+        <svg class="mtab-check" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M13.7 3.7 6 11.4 2.3 7.7 3.7 6.3 6 8.6l6.3-6.3z"/></svg>
+      </a></li>
+      <li><a class="mtab" href="/#/consensus">
+        <span class="mtab-body"><span class="mtab-title">Consensus</span><span class="mtab-sub">Voting on new ledgers</span></span>
+        <svg class="mtab-check" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M13.7 3.7 6 11.4 2.3 7.7 3.7 6.3 6 8.6l6.3-6.3z"/></svg>
+      </a></li>
+      <li><a class="mtab" href="/#/network">
+        <span class="mtab-body"><span class="mtab-title">Network</span><span class="mtab-sub">Peers &amp; connections</span></span>
+        <svg class="mtab-check" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M13.7 3.7 6 11.4 2.3 7.7 3.7 6.3 6 8.6l6.3-6.3z"/></svg>
+      </a></li>
+      <li><a class="mtab" href="/#/system">
+        <span class="mtab-body"><span class="mtab-title">System</span><span class="mtab-sub">Compute health</span></span>
+        <svg class="mtab-check" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M13.7 3.7 6 11.4 2.3 7.7 3.7 6.3 6 8.6l6.3-6.3z"/></svg>
+      </a></li>
+      <li><a class="mtab active" href="/#/governance" aria-current="page">
+        <span class="mtab-body"><span class="mtab-title">Governance</span><span class="mtab-sub">Rules &amp; votes</span></span>
+        <svg class="mtab-check" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M13.7 3.7 6 11.4 2.3 7.7 3.7 6.3 6 8.6l6.3-6.3z"/></svg>
+      </a></li>
+      <li><a class="mtab" href="/#/insights">
+        <span class="mtab-body"><span class="mtab-title">Insights</span><span class="mtab-sub">Alerts &amp; audit</span></span>
+        <svg class="mtab-check" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M13.7 3.7 6 11.4 2.3 7.7 3.7 6.3 6 8.6l6.3-6.3z"/></svg>
+      </a></li>
+      <li hidden data-advisor-nav><a class="mtab" href="/#/advisor">
+        <span class="mtab-body"><span class="mtab-title">Advisor</span><span class="mtab-sub">Diagnosis &amp; guidance</span></span>
+        <svg class="mtab-check" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M13.7 3.7 6 11.4 2.3 7.7 3.7 6.3 6 8.6l6.3-6.3z"/></svg>
+      </a></li>
+    </ul>
+    <!-- ADR 0016 decision 6. When `any` is false the Advisor tab is not
+         rendered, and this one quiet row takes its place at the BOTTOM of the
+         menu, below the tab list and styled as a secondary item rather than
+         as a tab. It is the only invitation anywhere in the product: not a
+         banner, not a toast, not a badge, and it appears on no other tab.
+         Reached only by deliberate navigation. -->
+    <a class="madd" href="/advisor.html" hidden data-advisor-pointer>
+      <span class="madd-title">Add the Advisor</span>
+      <span class="madd-sub">Optional. One command.</span>
+    </a>
+    <div class="mobmenu-foot">Tap a section to switch. Press Esc or tap outside to close.</div>
+  </nav>
+</header>
+
+<main>
+
+  <!-- D8 slice 3 backend retrofit — "viewing X · as of Ns ago"
+       (security-review-d8-fetchthrough.md P1-030 — a peer's data must never
+       present as live). Same shape as consensus.html's own banner; populated
+       by renderPeerBanner() below. -->
+  <div class="peer-view-banner" id="peerViewBanner" role="status" hidden></div>
+
+  <!-- ═══ P0 — 4 cards across ═══ -->
+  <div class="card-grid">
+
+    <!-- Card 1: Amendment Status -->
+    <div class="metric-card">
+      <div class="card-title">Amendment Status</div>
+      <div class="card-row"><span class="lbl">Amendment Blocked</span><span class="val"><span class="status-pill" id="amendmentBlocked">—</span></span></div>
+      <div class="card-row"><span class="lbl">Approaching Threshold</span><span class="val" id="approachingThreshold">—</span></div>
+      <div class="card-row"><span class="lbl">Threshold Met</span><span class="val" id="thresholdMet">—</span></div>
+      <div class="card-row"><span class="lbl">Pending</span><span class="val" id="pendingCount">—</span></div>
+      <div class="card-row"><span class="lbl">Supported by Build</span><span class="val dim" id="supportedCount">—</span></div>
+      <div class="card-row"><span class="lbl">Build Version</span><span class="val" id="buildVersion">—</span></div>
+    </div>
+
+    <!-- Card 2: Our Vote Stance -->
+    <div class="metric-card">
+      <div class="card-title">Our Vote Stance</div>
+      <div class="card-row"><span class="lbl">Yes Votes</span><span class="val ok" id="votesYes">—</span></div>
+      <div class="card-row"><span class="lbl">No / Veto Votes</span><span class="val" id="votesNo">—</span></div>
+      <div class="card-row"><span class="lbl">Default Votes</span><span class="val dim" id="votesDefault">—</span></div>
+      <div class="card-row"><span class="lbl">Signalling Match</span><span class="val dim" id="signallingMatch">—</span></div>
+      <div class="card-row"><span class="lbl">Next Activation</span><span class="val" id="nextActivationStatus">—</span></div>
+      <div class="card-row"><span class="lbl">Next Amendment</span><span class="val truncate" id="nextAmendment" title="">—</span></div>
+    </div>
+
+    <!-- Card 3: UNL Trust -->
+    <div class="metric-card">
+      <div class="card-title">UNL Trust</div>
+      <div class="card-row"><span class="lbl">UNL Size</span><span class="val" id="unlSize">—</span></div>
+      <div class="card-row"><span class="lbl">UNL Active 1h</span><span class="val" id="unlActive1h">—</span></div>
+      <div class="card-row"><span class="lbl">UNL Offline</span><span class="val" id="unlOffline">—</span></div>
+      <div class="card-row"><span class="lbl">Expected Quorum</span><span class="val" id="expectedQuorum">—</span></div>
+      <div class="card-row"><span class="lbl">Rotations 24h</span><span class="val dim" id="rotations24h">—</span></div>
+      <div class="card-row"><span class="lbl">UNL Churn 7d</span><span class="val dim" id="unlChurn7d">—</span></div>
+    </div>
+
+    <!-- Card 4: Publisher Health -->
+    <div class="metric-card">
+      <div class="card-title">Publisher Health</div>
+      <div class="card-row"><span class="lbl">Publisher Sites</span><span class="val" id="publisherSites">—</span></div>
+      <div class="card-row"><span class="lbl">Refresh Status</span><span class="val"><span class="status-pill" id="refreshStatus">—</span></span></div>
+      <div class="card-row"><span class="lbl">Refresh Age</span><span class="val" id="refreshAge">—</span></div>
+      <div class="card-row"><span class="lbl">List Expiry</span><span class="val" id="listExpiry">—</span></div>
+      <div class="card-row"><span class="lbl">Cert Expiry</span><span class="val" id="certExpiry">—</span></div>
+      <div class="card-row"><span class="lbl">List Sequence</span><span class="val dim" id="listSequence">—</span></div>
+    </div>
+
+  </div>
+
+  <!-- ═══ Amendments on the Ballot ═══ -->
+  <div class="band-card">
+    <h2>Amendments on the Ballot <span class="band-count" id="amendmentsCount">—</span><span class="band-count" id="amendmentsLibraryAge">—</span><a class="band-link" href="https://xrpscan.com/amendments" target="_blank" rel="noopener noreferrer">Full list on xrpscan&nbsp;↗</a><span class="head-pager" id="ballotPager" hidden>
+        <button class="pg-btn" type="button" id="ballotPagerPrev" aria-label="Previous page" disabled>&lsaquo;</button>
+        <span class="page-ind" id="ballotPagerRange">1-5 of 5</span>
+        <button class="pg-btn" type="button" id="ballotPagerNext" aria-label="Next page" disabled>&rsaquo;</button>
+      </span></h2>
+    <table class="detail-table" id="amendmentsTable">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th class="hide-mobile">Hash</th>
+          <th class="num"><span class="d-only">Support %</span><span class="m-only">Support</span></th>
+          <th class="num"><span class="d-only">Progress</span><span class="m-only">Progress</span></th>
+          <th><span class="d-only">Our Vote</span><span class="m-only">Vote</span></th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+    <div class="detail-empty" id="amendmentsEmpty" style="display:none">No amendments currently on the ballot.</div>
+    <!-- D8 slice 3 backend retrofit — no route serves the PER-AMENDMENT
+         ballot list (only the aggregate AmendmentCounts a peer's node-status
+         carries); confirmed, not built this slice — see the developer's own
+         report. Dimmed (not blanked) rather than emptied so a peer switch
+         mid-view doesn't briefly claim "no amendments on the ballot". -->
+    <div class="peer-unavailable-note" id="peerAmendmentsNote" hidden>This node&rsquo;s dashboard doesn&rsquo;t serve the per-amendment ballot — only the aggregate counts above.</div>
+  </div>
+
+  <!-- ═══ Publishers ═══ -->
+  <div class="band-card">
+    <h2>Publishers <span class="band-count" id="publishersCount">—</span></h2>
+    <table class="detail-table" id="publishersTable">
+      <thead>
+        <tr>
+          <th>Site</th>
+          <th>Status</th>
+          <th class="num"><span class="d-only">Refresh Age</span><span class="m-only">Age</span></th>
+          <th class="num"><span class="d-only">List Expiry</span><span class="m-only">List</span></th>
+          <th class="num"><span class="d-only">Cert Expiry</span><span class="m-only">Cert</span></th>
+          <th class="hide-mobile">Sequence</th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+    <div class="detail-empty" id="publishersEmpty" style="display:none">No publishers configured.</div>
+    <div class="peer-unavailable-note" id="peerPublishersNote" hidden>This node&rsquo;s dashboard doesn&rsquo;t serve publisher list health.</div>
+  </div>
+
+  <!-- ═══ P2 Diagnostics — expanded by default (collapsible by click) ═══ -->
+  <details class="accordion" id="p2Accordion" open>
+    <summary>Governance Diagnostics</summary>
+    <div class="accordion-body">
+      <div class="accordion-grid">
+        <div class="accordion-cell"><span class="al">Enabled Amendments</span><span class="av" id="p2Enabled">—</span></div>
+        <div class="accordion-cell"><span class="al">Supported by Build</span><span class="av" id="p2Supported">—</span></div>
+        <div class="accordion-cell"><span class="al">Vetoed</span><span class="av" id="p2Vetoed">—</span></div>
+        <div class="accordion-cell"><span class="al">Network Majority Version</span><span class="av" id="p2MajorityVersion">—</span></div>
+        <div class="accordion-cell"><span class="al">Manifest Rotations 24h</span><span class="av" id="p2Rotations">—</span></div>
+        <div class="accordion-cell"><span class="al">UNL Churn 7d</span><span class="av" id="p2Churn">—</span></div>
+      </div>
+    </div>
+  </details>
+
+</main>
+
+
+<script>
+(function () {
+  'use strict';
+
+  const setText = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
+  const fmtInt = (n) => (n == null || !Number.isFinite(n)) ? '—' : Number(n).toLocaleString('en-US');
+
+  function fmtDays(n) {
+    if (n == null || !Number.isFinite(n)) return '—';
+    if (n < 1)      return '< 1d';
+    if (n < 30)     return Math.round(n) + 'd';
+    if (n < 365)    return (n / 30).toFixed(1) + ' mo';
+    return (n / 365).toFixed(1) + ' yr';
+  }
+  function fmtAge(seconds) {
+    if (seconds == null || !Number.isFinite(seconds)) return '—';
+    if (seconds < 60)      return Math.round(seconds) + 's';
+    if (seconds < 3600)    return Math.round(seconds / 60) + 'm';
+    if (seconds < 86400)   return (seconds / 3600).toFixed(1) + 'h';
+    return (seconds / 86400).toFixed(1) + 'd';
+  }
+
+  function escHtml(s) {
+    return String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  }
+
+  // UTC, always. An amendment majority is a network-wide moment and every
+  // operator comparing it against xrpscan or a peer's page is reading UTC.
+  function fmtUtc(ms) {
+    if (ms == null || !Number.isFinite(Number(ms))) return '—';
+    const d = new Date(Number(ms));
+    const p = (n) => String(n).padStart(2, '0');
+    return d.getUTCFullYear() + '-' + p(d.getUTCMonth() + 1) + '-' + p(d.getUTCDate())
+      + ' ' + p(d.getUTCHours()) + ':' + p(d.getUTCMinutes()) + ' UTC';
+  }
+
+  // Why a ballot row can carry no percentage. Written once: it is the same
+  // reason for the "Majority" row and the "Not reported" one, and it is the
+  // sentence an operator needs when the column that used to hold a number
+  // holds a word instead.
+  const NO_TALLY_REASON =
+    '<p>The per-validator tally comes from the flag-ledger amendment vote. Only a validating node runs that vote, and only once it has seen a flag ledger since it started, so a node that tracks the network without validating reports no tally at all.</p>'
+    + '<p>This node is reporting none, so there is no percentage to compute here, and none for the progress column either. The dashboard counts the votes itself from the validations it sees, once the first voting ledger has passed since it started, up to 15 minutes.</p>'
+    + '<p><a href="https://xrpscan.com/amendments" target="_blank" rel="noopener noreferrer">Network-wide figures on xrpscan ↗</a></p>';
+
+  // Where a counted percentage came from. The node reported no tally; the
+  // dashboard read the trusted validators' votes off the validations stream
+  // on the last voting ledger and counted them. Said in the popover with the
+  // ledger and the moment, so the figure can be checked against a validator
+  // or xrpscan for the same round.
+  function countedReason(c) {
+    const ledger = Number(c.ledger_index);
+    return [
+      `<p>Counted by this dashboard, not reported by the node. On voting ledger ${escHtml(fmtInt(ledger))} (the one before flag ledger ${escHtml(fmtInt(ledger + 1))}), ${escHtml(fmtInt(c.count))} of the ${escHtml(fmtInt(c.validations))} trusted validators that validated it listed this amendment. Read at ${escHtml(fmtUtc(c.at_ms))}.</p>`,
+      '<p>A validator counts the same validations for its own tally, but keeps each validator&rsquo;s last vote for 24 hours, so its figure can differ from this one by a validator or two.</p>',
+      '<p><a href="https://xrpscan.com/amendments" target="_blank" rel="noopener noreferrer">Network-wide figures on xrpscan ↗</a></p>',
+    ];
+  }
+
+  // The project's hoverable popover, anchored on the support cell. Never a
+  // native title=…: it is slow to appear and vanishes the moment the cursor
+  // moves towards it, and this one carries a link.
+  function supportNote(label, parts) {
+    return `<span class="support-note" tabindex="0">${escHtml(label)}`
+      + `<span class="amendment-popover align-right" role="tooltip">${parts.join('')}</span></span>`;
+  }
+
+  // ── Card renderers, shared by the local payload and the peer route ───
+  // One definition each. The peer path used to have no renderer at all (it
+  // wrote "n/a for a peer" into these fields); giving it a second copy of
+  // the class-toggling logic is how the two views of one node drift apart.
+
+  function renderAmendmentBlocked(blocked) {
+    const el = document.getElementById('amendmentBlocked');
+    if (!el) return;
+    el.classList.remove('warn', 'alert');
+    if (blocked) {
+      el.textContent = 'Blocked';
+      el.classList.add('alert');
+    } else {
+      el.textContent = 'No';
+    }
+  }
+
+  function renderVoteStance(votes, thresholdMetCount) {
+    const v = votes || {};
+    setText('votesYes',     fmtInt(v.yes));
+    setText('votesNo',      fmtInt(v.no));
+    setText('votesDefault', fmtInt(v.default));
+    setText('thresholdMet', fmtInt(thresholdMetCount));
+  }
+
+  // Next Activation status. A state, not a countdown: the activation period
+  // is a network setting this dashboard does not read, so naming a number of
+  // days here would be a claim nothing on this box can back. "Pending" when
+  // an amendment is at or above the bar or already holding the majority,
+  // "Gathering" when support is accumulating but nothing has reached it, and
+  // "—" when the ballot is empty or nothing on it can be ranked at all.
+  function renderNextActivation(status, name) {
+    const nasEl = document.getElementById('nextActivationStatus');
+    if (nasEl) {
+      nasEl.classList.remove('ok', 'warn', 'alert', 'dim');
+      if (status === 'pending') {
+        nasEl.textContent = 'Pending';
+        nasEl.classList.add('ok');
+      } else if (status === 'gathering') {
+        nasEl.textContent = 'Gathering';
+        nasEl.classList.add('warn');
+      } else {
+        nasEl.textContent = '—';
+        nasEl.classList.add('dim');
+      }
+    }
+    const nextEl = document.getElementById('nextAmendment');
+    if (nextEl) {
+      const label = name || '';
+      nextEl.textContent = label || '—';
+      nextEl.setAttribute('title', label || '');    // full name in native tooltip
+    }
+  }
+
+  // #542: the amendment descriptions/xls_url the table's popovers show come
+  // from knowledge/amendments.yaml, refreshed on its own clock (startup,
+  // daily, or opportunistically off an xrpscan diff). Not this card's own
+  // 60s sampler. Without this line the file always looked current, deploy
+  // or no deploy, refresh or no refresh.
+  function renderLibraryAge(libraryAgeMs) {
+    const ms = (typeof libraryAgeMs === 'number' && Number.isFinite(libraryAgeMs)) ? libraryAgeMs : null;
+    setText('amendmentsLibraryAge', ms === null ? '—' : ('descriptions ' + fmtAge(ms / 1000) + ' ago'));
+  }
+
+  function renderPublisherHealth(pubs) {
+    const p = pubs || {};
+    setText('publisherSites', fmtInt(p.site_count));
+    const rs = document.getElementById('refreshStatus');
+    if (rs) {
+      rs.classList.remove('warn', 'alert');
+      const status = p.refresh_status || '—';
+      rs.textContent = status;
+      const healthy = status === 'ok' || status === 'accepted' || status === 'same_sequence';
+      if (!healthy && status !== '—') rs.classList.add('warn');
+    }
+    setText('refreshAge',   fmtAge(p.refresh_age_s));
+    setText('listExpiry',   fmtDays(p.list_expiry_days));
+    setText('certExpiry',   fmtDays(p.cert_expiry_days));
+    const firstSeq = (p.sites && p.sites[0]) ? p.sites[0].sequence : null;
+    setText('listSequence', firstSeq != null ? String(firstSeq) : '—');
+    renderPublishersTable(p.sites || []);
+    setText('publishersCount', (p.site_count != null) ? ('(' + fmtInt(p.site_count) + ')') : '—');
+  }
+
+  // The last governance payload this node broadcast about ITSELF. Kept so
+  // leaving a peer view repaints the local page immediately: the governance
+  // broadcast is on a 60-second interval, so waiting for the next one would
+  // leave every field on this tab dashed for up to a minute after the
+  // operator switched back — indistinguishable from a broken page. Same
+  // snapshot-and-restore pattern consensus.html uses for state.lastServerInfo.
+  let lastLocalGovernance = null;
+
+  // ── Apply incoming governance payload ─────────────────────────────
+  function applyGovernance(g) {
+    if (!g) return;
+    lastLocalGovernance = g;
+
+    renderAmendmentBlocked(g.amendment_blocked);
+
+    const a = g.amendments || {};
+    setText('approachingThreshold', fmtInt(a.approaching_threshold_count));
+    setText('pendingCount',         fmtInt(a.pending_count));
+    setText('enabledCount',         fmtInt(a.enabled_count));
+    setText('supportedCount',       fmtInt(a.supported_count));
+
+    renderVoteStance(a.our_votes, a.threshold_met_count);
+    renderNextActivation(a.next_activation_status, a.next_activation_name);
+    setBuildVersion(g.build_version || '—', '');
+
+    // UNL card
+    const unl = g.unl || {};
+    setText('unlSize',        fmtInt(unl.size));
+    setText('unlActive1h',    fmtInt(unl.active_1h));
+    setText('unlOffline',     fmtInt(unl.offline));
+    setText('expectedQuorum', fmtInt(unl.expected_quorum));
+
+    // Publisher card + table
+    renderPublisherHealth(g.publishers);
+
+    // Amendments table
+    renderAmendmentsTable(a.pending || []);
+    setText('amendmentsCount', (a.pending_count != null) ? ('(' + fmtInt(a.pending_count) + ')') : '—');
+    renderLibraryAge(a.library_age_ms);
+
+    // P2 accordion stats
+    setText('p2Enabled',         fmtInt(a.enabled_count));
+    setText('p2Supported',       fmtInt(a.supported_count));
+    setText('p2Vetoed',          fmtInt(a.vetoed_count));
+    // Network Majority Version / Manifest Rotations 24h / UNL Churn 7d have
+    // no producer: nothing in this dashboard writes majority_build_version,
+    // unl.rotations_24h or unl.churn_7d, so these three have always rendered
+    // a dash here. They are left reading the same absent keys deliberately —
+    // the day something computes them, this line starts telling the truth
+    // without further edits — and the peer view now shows the same dash
+    // rather than "n/a for a peer", which would claim the local view has
+    // something it does not.
+    setText('p2MajorityVersion', g.majority_build_version || '—');
+    setText('p2Rotations',       fmtInt(unl.rotations_24h));
+    setText('p2Churn',           fmtInt(unl.churn_7d));
+
+    setText('lastUpdate', new Date().toLocaleTimeString());
+  }
+
+  // ── The ballot pager ──────────────────────────────────────────────
+  // Five rows at a time. Ten amendments pushed GOVERNANCE DIAGNOSTICS off
+  // the bottom of the page, and the tab is an iframe with no visible
+  // scrollbar, so nothing said there was more below.
+  //
+  // The page survives a repaint. The table redraws on every governance
+  // broadcast and on every peer poll tick, and an operator reading page two
+  // would be thrown back to the top every 60 seconds. So the page moves for
+  // exactly one reason: the operator pressed a button. A ballot that got
+  // shorter is clamped to the last page that still exists, and an empty one
+  // starts over. Nothing else touches it.
+  const BALLOT_PAGE_SIZE = 5;
+  let ballotPage = 0;
+  let ballotTotal = 0;
+
+  function renderBallotPager(total) {
+    const pager = document.getElementById('ballotPager');
+    const prev  = document.getElementById('ballotPagerPrev');
+    const next  = document.getElementById('ballotPagerNext');
+    const ind   = document.getElementById('ballotPagerRange');
+    if (!pager || !prev || !next || !ind) return;
+    ballotTotal = total;
+    const pageCount = Math.max(1, Math.ceil(total / BALLOT_PAGE_SIZE));
+    // Clamp rather than reset: a ballot that shrank under the operator's
+    // feet lands them on the last page that still exists, not back at the
+    // top of a list they were already reading.
+    if (ballotPage > pageCount - 1) ballotPage = pageCount - 1;
+    if (ballotPage < 0) ballotPage = 0;
+    const start = ballotPage * BALLOT_PAGE_SIZE;
+    const end = Math.min(start + BALLOT_PAGE_SIZE, total);
+    document.querySelectorAll('#amendmentsTable tbody tr').forEach((row, i) => {
+      row.style.display = (i >= start && i < end) ? '' : 'none';
+    });
+    ind.textContent = total === 0 ? '0-0 of 0' : (start + 1) + '-' + end + ' of ' + total;
+    prev.disabled = ballotPage === 0;
+    next.disabled = ballotPage >= pageCount - 1;
+    // Nothing to page through is nothing to show a control for.
+    pager.hidden = total <= BALLOT_PAGE_SIZE;
+  }
+
+  (function bindBallotPager() {
+    const prev = document.getElementById('ballotPagerPrev');
+    const next = document.getElementById('ballotPagerNext');
+    if (prev) prev.addEventListener('click', () => { if (ballotPage > 0) { ballotPage--; renderBallotPager(ballotTotal); } });
+    if (next) next.addEventListener('click', () => { ballotPage++; renderBallotPager(ballotTotal); });
+  })();
+
+  function renderAmendmentsTable(pending) {
+    const tbody = document.querySelector('#amendmentsTable tbody');
+    const empty = document.getElementById('amendmentsEmpty');
+    if (!tbody || !empty) return;
+    if (!pending || pending.length === 0) {
+      tbody.innerHTML = '';
+      empty.style.display = 'flex';
+      ballotPage = 0;
+      renderBallotPager(0);
+      return;
+    }
+    empty.style.display = 'none';
+    tbody.innerHTML = pending.map(p => {
+      // A node that does not run the flag-ledger amendment vote reports no
+      // tally at all, and the builder passes that through as null. Rendering
+      // it as 0.0% with a red bar would claim the network rejected the
+      // amendment when the truth is that this node has no reading. A bare
+      // dash was not much better: it says nothing at all, which is what an
+      // operator saw across every row on a tracking node. So the column
+      // names the state it is in, and the popover says why.
+      const servedPct = (p.support_pct == null || !Number.isFinite(Number(p.support_pct)))
+        ? null : Number(p.support_pct);
+      // A peer running a dashboard older than support_state also computed
+      // support_pct the old way, count/threshold, which reads above 100% for
+      // an amendment past the bar. Its row still carries the two numbers the
+      // share is made of, so recompute rather than echo: a fleet mid-upgrade
+      // should not show one node at 103.6% beside another at 80.6% for the
+      // same amendment on the same network.
+      const localPct = (p.support_state == null && p.count != null && p.validations)
+        ? (Number(p.count) / Number(p.validations)) * 100
+        : null;
+      const rawPct = localPct !== null && Number.isFinite(localPct) ? localPct : servedPct;
+      const majorityMs = (p.majority_at_ms != null && Number.isFinite(Number(p.majority_at_ms)))
+        ? Number(p.majority_at_ms) : null;
+      // support_state is served by the builder. Derived here too, so a peer
+      // running a dashboard older than the field still renders three states
+      // rather than falling back to the dash this fixed.
+      const supportState = p.support_state
+        || (rawPct !== null ? 'tallied' : majorityMs !== null ? 'majority' : 'unreported');
+      // A counted row keeps the node's own count/threshold null and carries
+      // the dashboard's under `counted`; the bar and its colour read from
+      // whichever the row has.
+      const counted = (supportState === 'counted' && p.counted && p.counted.validations) ? p.counted : null;
+      const tallyCount = counted ? counted.count : p.count;
+      const tallyThreshold = counted ? counted.threshold : p.threshold;
+      const barWidth = rawPct === null ? 0 : Math.max(0, Math.min(100, rawPct));  // visual cap
+      // Colour is threshold-relative even though the number is not: what an
+      // operator wants at a glance is "past the bar or not", and the bar is
+      // `threshold`, not 100%.
+      const barRatio = (tallyCount != null && tallyThreshold) ? Number(tallyCount) / Number(tallyThreshold) : null;
+      const pctClass = barRatio === null ? '' : barRatio >= 1 ? 'ok' : barRatio >= 0.75 ? '' : 'alert';
+      let supportCell;
+      if (supportState === 'tallied' && rawPct !== null) {
+        supportCell = `<span class="support-bar"><span class="fill ${pctClass}" style="width:${barWidth.toFixed(0)}%"></span></span>
+          ${rawPct.toFixed(1)}%`;
+      } else if (counted && rawPct !== null) {
+        // The same bar and number as a tallied row, with the number itself
+        // as the note and a word beside it, so the source is on the row.
+        supportCell = `<span class="support-bar"><span class="fill ${pctClass}" style="width:${barWidth.toFixed(0)}%"></span></span>`
+          + `<span class="support-note counted" tabindex="0">${rawPct.toFixed(1)}%`
+          + `<span class="amendment-popover align-right" role="tooltip">${countedReason(counted).join('')}</span></span>`
+          + '<span class="counted-tag">counted</span>';
+      } else if (supportState === 'majority') {
+        supportCell = supportNote('Majority', [
+          `<p>This node reports no per-validator tally, so there is no percentage to show. It does report that this amendment has held the network&rsquo;s majority since ${escHtml(fmtUtc(majorityMs))}.</p>`,
+          NO_TALLY_REASON,
+        ]);
+      } else {
+        supportCell = supportNote('Not reported', [NO_TALLY_REASON]);
+      }
+      // Progress cell: "Majority" once the network's majority is held,
+      // otherwise "Pending" (at/above threshold) or "Needs N" (N validators
+      // short of it). A row with no tally leaves it blank on purpose, and
+      // the support popover beside it says why.
+      let progressHtml;
+      if (majorityMs !== null) {
+        progressHtml = '<span class="progress-pill pending">Majority</span>';
+      } else if (p.progress_state === 'pending') {
+        progressHtml = '<span class="progress-pill pending">Pending</span>';
+      } else if (p.progress_state === 'needs' && p.needed_count != null) {
+        progressHtml = `<span class="progress-pill needs">Needs ${fmtInt(p.needed_count)}</span>`;
+      } else {
+        progressHtml = '—';
+      }
+      // If rippled doesn't recognize this amendment as supported, that's
+      // a stronger signal than the operator-vote default — surface it as
+      // 'unsupported' so the operator immediately sees they need a build
+      // upgrade to participate (rather than thinking they intentionally
+      // chose to abstain).
+      const vote = (p.supported === false)
+        ? 'unsupported'
+        : (p.our_vote || 'default').toLowerCase();
+      const hashPrefix = (p.hash || '').slice(0, 12);
+      const xlsPill = p.xls ? `<span class="xls-pill">${escHtml(p.xls)}</span>` : '';
+      // Custom hoverable popover — instant, hoverable, and supports the
+      // "Read XLS spec" link inside. Native title=… was too slow and
+      // disappeared when the cursor moved towards it.
+      const hasPopover = Boolean(p.description || p.xls_url);
+      const popoverInner = hasPopover ? (() => {
+        const parts = [];
+        if (p.description) parts.push(`<p>${escHtml(p.description)}</p>`);
+        if (p.xls_url) {
+          const linkLabel = p.xls ? `Read the ${escHtml(p.xls)} spec ↗` : 'Read the XLS spec ↗';
+          parts.push(`<p><a href="${escHtml(p.xls_url)}" target="_blank" rel="noopener noreferrer">${linkLabel}</a></p>`);
+        }
+        return `<span class="amendment-popover" role="tooltip">${parts.join('')}</span>`;
+      })() : '';
+      const nameCell = hasPopover
+        ? `<span class="amendment-name has-popover" tabindex="0">${escHtml(p.name || '—')}${popoverInner}</span>`
+        : `<span class="name">${escHtml(p.name || '—')}</span>`;
+      return `<tr>
+        <td>${nameCell}${xlsPill}</td>
+        <td class="hide-mobile"><span class="hash">${escHtml(hashPrefix)}${(p.hash || '').length > 12 ? '…' : ''}</span></td>
+        <td class="num">${supportCell}</td>
+        <td class="num">${progressHtml}</td>
+        <td><span class="vote-pill ${vote}" title="${vote === 'unsupported' ? 'This rippled build does not recognize this amendment — upgrade to participate in the vote.' : ''}">${vote}</span></td>
+      </tr>`;
+    }).join('');
+    renderBallotPager(pending.length);
+  }
+
+  function renderPublishersTable(sites) {
+    const tbody = document.querySelector('#publishersTable tbody');
+    const empty = document.getElementById('publishersEmpty');
+    if (!tbody || !empty) return;
+    if (!sites || sites.length === 0) {
+      tbody.innerHTML = '';
+      empty.style.display = 'flex';
+      return;
+    }
+    empty.style.display = 'none';
+    tbody.innerHTML = sites.map(s => {
+      const healthy = s.status === 'ok' || s.status === 'accepted' || s.status === 'same_sequence';
+      const statusCls = healthy ? 'ok' : 'warn';
+      return `<tr>
+        <td><span class="name">${escHtml(s.site || '—')}</span></td>
+        <td><span class="status-pill ${statusCls === 'ok' ? '' : 'warn'}">${escHtml(s.status || '—')}</span></td>
+        <td class="num">${escHtml(fmtAge(s.refresh_age_s))}</td>
+        <td class="num">${escHtml(fmtDays(s.list_expiry_days))}</td>
+        <td class="num">${escHtml(fmtDays(s.cert_expiry_days))}</td>
+        <td class="hide-mobile">${s.sequence != null ? escHtml(String(s.sequence)) : '—'}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  function applyServerInfo(info) {
+    if (!info) return;
+    if (info.pubkey_validator) setText('pubkeyVal', info.pubkey_validator);
+  }
+
+  // ═══════════════════════════════════════════════════════════
+  // D8 slice 3 backend retrofit — viewing a fleet peer in place
+  // (advisor-enhancement/d8-aggregator-build-plan.md,
+  // security-review-d8-fetchthrough.md). Uses the SAME
+  // /api/node/:label/overview fetch-through Overview and Consensus already
+  // poll (D8 slice 2/4) — NOT the generic read-route proxy peer-fetch.js
+  // adds this slice — because every field this retrofit can fill
+  // (node_status.amendments, node_status.build_version,
+  // node_status.pubkey_validator, validation_summary.unl_total/
+  // unl_active_1h) is already carried in that one bundled fetch.
+  // peer-fetch.js is loaded on this page only for its hash-reading helpers
+  // (isPeerActive/activePeerLabel), reused rather than a fourth copy of the
+  // same regex.
+  //
+  // What this fills, and what stays local-only: AmendmentCounts' five
+  // aggregate fields (enabled/supported/vetoed/pending/approaching) and
+  // the two UNL numbers the fetch-through's validation_summary already
+  // carries — both fetched every poll tick alongside the per-amendment
+  // ballot table below, which now has its OWN route
+  // (`amendment-ballot`, fetched by fetchPeerAmendmentBallotOnce). The
+  // publishers table, our_votes, next_activation_*, amendment_blocked,
+  // majority_build_version, and UNL rotations/churn still have no route —
+  // a documented, narrower remaining gap (see AmendmentBallotResponse's own
+  // doc comment in read-contract.ts) — and stay "n/a for a peer" rather
+  // than silently showing this box's own numbers under the peer's label.
+  //
+  // One more divergence worth naming here, not just in the #4 fix's own
+  // comment in server.ts: node_status.amendments.pending (this route) still
+  // counts a zero-support amendment as pending (onTheBallot alone,
+  // unchanged) — so a peer's #pendingCount can read HIGHER than what its
+  // OWN Governance tab would show for itself once the #4 ballot filter also
+  // applies there. Both numbers are individually correct for what they
+  // measure; they are simply not the same measurement.
+  const peerView = {
+    label: null, pollTimer: null, fetchSeq: 0,
+    lastGood: null, lastError: null, // 'unreachable' | 'integrity' | null
+  };
+
+  // Nothing on this page says "n/a for a peer" any more. Every field that
+  // once did is now served by a route (`governance`, this slice) — and the
+  // four that are NOT (Signalling Match, Network Majority Version, Manifest
+  // Rotations 24h, UNL Churn 7d) are not served LOCALLY either: no code in
+  // this dashboard produces them, so the local view renders the same dash.
+  // "n/a for a peer" on those four claimed a local capability that has never
+  // existed, which is a worse answer than the honest dash both views show.
+  // Kept, empty, deliberately: this is where a field would go that IS shown
+  // for your own node and genuinely cannot be served for a peer. There is no
+  // such field on this tab today.
+  const PEER_UNAVAILABLE_TEXT_FIELD_IDS = [];
+  const PEER_UNPRODUCED_FIELD_IDS = [
+    'signallingMatch', 'p2MajorityVersion', 'p2Rotations', 'p2Churn',
+  ];
+  // The one copy of what an operator does about a refusal lives in
+  // fleet-chip.js (loaded, deferred, on every page that renders these rows).
+  // Read through this accessor so a page that somehow lacks it still says
+  // the short true thing rather than throwing inside a render — the same
+  // wrapper overview.html uses, for the same defer-ordering reason.
+  function refusedTipText(label) {
+    return window.__fleetRefusedTip
+      ? window.__fleetRefusedTip(label)
+      : String(label) + ' rejected this dashboard\u2019s read token.';
+  }
+  // Build Version is this page's error surface, the way #stateValue is
+  // Consensus's. ONE writer, so the tip is cleared by every other write —
+  // a recovered poll must never leave a refusal's sentence hanging off a
+  // real version string.
+  function setBuildVersion(text, tip) {
+    const el = document.getElementById('buildVersion');
+    if (!el) return;
+    el.textContent = text;
+    if (tip) el.title = tip; else el.removeAttribute('title');
+  }
+  function blankParameterizedFields() {
+    PEER_UNAVAILABLE_TEXT_FIELD_IDS.forEach((id) => setText(id, 'n/a for a peer'));
+    ['approachingThreshold', 'pendingCount', 'supportedCount', 'buildVersion',
+     'unlSize', 'unlActive1h', 'unlOffline', 'expectedQuorum', 'p2Enabled', 'p2Supported', 'p2Vetoed',
+     'amendmentBlocked', 'thresholdMet', 'votesYes', 'votesNo', 'votesDefault',
+     'nextActivationStatus', 'nextAmendment',
+     'publisherSites', 'refreshStatus', 'refreshAge', 'listExpiry', 'certExpiry', 'listSequence']
+      .concat(PEER_UNPRODUCED_FIELD_IDS)
+      .forEach((id) => setText(id, '—'));
+    setBuildVersion('—', '');
+    // setText writes only the text. Three of those fields also carry a state
+    // CLASS from whatever was last rendered — a red "Blocked" or a green
+    // "Pending" left behind would colour the dash that replaces it, and the
+    // dash would read as a verdict about the peer.
+    ['amendmentBlocked', 'nextActivationStatus', 'refreshStatus'].forEach((id) => {
+      const el = document.getElementById(id);
+      if (el) el.classList.remove('ok', 'warn', 'alert');
+    });
+    const amNote = document.getElementById('peerAmendmentsNote');
+    if (amNote) amNote.hidden = false;
+    const amTable = document.getElementById('amendmentsTable');
+    if (amTable) amTable.style.opacity = '0.25';
+    const amEmpty = document.getElementById('amendmentsEmpty');
+    if (amEmpty) amEmpty.style.display = 'none';
+    setText('amendmentsCount', '—');
+    setText('amendmentsLibraryAge', '—');
+    const pubNote = document.getElementById('peerPublishersNote');
+    if (pubNote) pubNote.hidden = false;
+    const pubTable = document.getElementById('publishersTable');
+    if (pubTable) pubTable.style.opacity = '0.25';
+    const pubEmpty = document.getElementById('publishersEmpty');
+    if (pubEmpty) pubEmpty.style.display = 'none';
+    setText('publishersCount', '—');
+  }
+  function restoreLocalTableAvailability() {
+    const amNote = document.getElementById('peerAmendmentsNote'); if (amNote) amNote.hidden = true;
+    const amTable = document.getElementById('amendmentsTable'); if (amTable) amTable.style.opacity = '';
+    const pubNote = document.getElementById('peerPublishersNote'); if (pubNote) pubNote.hidden = true;
+    const pubTable = document.getElementById('publishersTable'); if (pubTable) pubTable.style.opacity = '';
+  }
+
+  function applyPeerGovernance(ns, valSummary) {
+    setBuildVersion(ns.build_version || '—', '');
+    if (ns.pubkey_validator) setText('pubkeyVal', ns.pubkey_validator);
+    const am = ns.amendments;
+    if (am) {
+      setText('approachingThreshold', fmtInt(am.approaching));
+      setText('pendingCount',         fmtInt(am.pending));
+      setText('supportedCount',       fmtInt(am.supported));
+      setText('p2Enabled',            fmtInt(am.enabled));
+      setText('p2Supported',          fmtInt(am.supported));
+      setText('p2Vetoed',             fmtInt(am.vetoed));
+    } else {
+      ['approachingThreshold', 'pendingCount', 'supportedCount', 'p2Enabled', 'p2Supported', 'p2Vetoed']
+        .forEach((id) => setText(id, '—'));
+    }
+    if (valSummary && valSummary.ok) {
+      const total  = valSummary.data.unl_total || 0;
+      const active = valSummary.data.unl_active_1h || 0;
+      setText('unlSize', fmtInt(total));
+      setText('unlActive1h', fmtInt(active));
+      setText('unlOffline', fmtInt(Math.max(0, total - active)));
+      setText('expectedQuorum', fmtInt(Math.ceil(total * 0.8)));
+    } else {
+      ['unlSize', 'unlActive1h', 'unlOffline', 'expectedQuorum'].forEach((id) => setText(id, '—'));
+    }
+    setText('lastUpdate', new Date().toLocaleTimeString());
+  }
+
+  function fmtPeerAge(ms) {
+    const s = Math.max(0, Math.round(ms / 1000));
+    if (s < 60) return s + 's ago';
+    return Math.round(s / 60) + 'm ago';
+  }
+  function renderPeerBanner() {
+    // Banner removed per operator request (feedback #16): the fleet chip/card
+    // already names the active node and the "as of Ns ago" line read as noise
+    // and bounced. The HARD stale guard is unaffected — an unreachable/unverified
+    // peer still surfaces in the STATE pill via renderPeerErrorState.
+    const el = document.getElementById('peerViewBanner');
+    if (el) el.hidden = true;
+  }
+  renderPeerBanner();
+
+  // kind: 'integrity' | 'refused' | 'unreachable'. Three different facts,
+  // three different words — they all need attention, and the work each one
+  // needs is different (#268: a 401 rendered as UNREACHABLE sent the
+  // operator to check a network path that was fine).
+  function renderPeerErrorState(kind) {
+    peerView.lastError = kind;
+    peerView.lastGood = null;
+    blankParameterizedFields();
+    setBuildVersion(
+      kind === 'integrity' ? 'NOT VERIFIED' : kind === 'refused' ? 'REFUSED' : 'UNREACHABLE',
+      kind === 'refused' ? refusedTipText(peerView.label) : '');
+    renderPeerBanner();
+  }
+
+  const PEER_POLL_MS = 2000; // server positive TTL is 1.5s (fleet-fetch-through.ts) — lands inside a fresh window most ticks
+  function fetchPeerOverviewOnce(label) {
+    return fetch('/api/node/' + encodeURIComponent(label) + '/overview', { credentials: 'same-origin' })
+      .then((r) => r.json().catch(() => null).then((body) => ({ status: r.status, body })))
+      .catch(() => ({ status: 0, body: null }));
+  }
+  // The per-amendment ballot table's own route — fetched alongside the
+  // overview bundle every poll tick, not on its own cadence (the same
+  // "fold every peer data source into one poll tick" rule consensus.html's
+  // own fetch loop follows, so this page's single banner age reflects the
+  // worse of both sources rather than one looking fresher than the other).
+  function fetchPeerAmendmentBallotOnce() {
+    return window.aperirePeerFetch.readFetch('amendment-ballot', {})
+      .then((r) => r.json().catch(() => null).then((body) => ({ status: r.status, body })))
+      .catch(() => ({ status: 0, body: null }));
+  }
+  // The rest of the tab — vote stance, publisher health, the publishers
+  // table, the amendment-blocked pill. Same poll tick as the other two
+  // fetches, for the same reason: one banner age must reflect the worst of
+  // every source on screen, not whichever happened to land last.
+  function fetchPeerGovernanceOnce() {
+    return window.aperirePeerFetch.readFetch('governance', {})
+      .then((r) => r.json().catch(() => null).then((body) => ({ status: r.status, body })))
+      .catch(() => ({ status: 0, body: null }));
+  }
+  // A mixed-version fleet can legitimately 404 here (an un-upgraded peer's
+  // own read API doesn't know this route yet) — that is NOT the same fact
+  // as the peer being unreachable, so a failure here leaves the existing
+  // "isn't served for a peer view yet" note showing (blankParameterizedFields
+  // already set it on entry/error) rather than flipping the whole view to
+  // UNREACHABLE.
+  function handlePeerAmendmentBallotResponse(status, body) {
+    if (status !== 200 || !body || !Array.isArray(body.rows)) return;
+    // renderAmendmentsTable already knows this exact row shape — it's the
+    // SAME shape server.ts's local sampleGovernance() builds for its own
+    // amendments.pending array (lib/amendments.ts's buildAmendmentBallotRows,
+    // the "one definition" shared by both), so the peer branch needs no
+    // rendering logic of its own.
+    renderAmendmentsTable(body.rows);
+    setText('amendmentsCount', '(' + fmtInt(body.rows.length) + ')');
+    renderLibraryAge(body.library_age_ms);
+    const amNote = document.getElementById('peerAmendmentsNote'); if (amNote) amNote.hidden = true;
+    const amTable = document.getElementById('amendmentsTable'); if (amTable) amTable.style.opacity = '';
+    if (peerView.lastGood) {
+      peerView.lastGood.ballotAgeMsAtFetch = typeof body.feature_age_ms === 'number' ? body.feature_age_ms : null;
+    }
+  }
+  // Same mixed-version rule as the ballot above: a peer whose read API
+  // predates this route answers `unknown_read_path`, which is not the same
+  // fact as the peer being unreachable. A failure here leaves the dashes
+  // blankParameterizedFields already wrote, rather than flipping the whole
+  // view to UNREACHABLE over a route the peer simply doesn't serve yet.
+  function handlePeerGovernanceResponse(status, body) {
+    if (status !== 200 || !body || typeof body !== 'object') return;
+    renderAmendmentBlocked(body.amendment_blocked);
+    renderVoteStance(body.our_votes, body.threshold_met_count);
+    renderNextActivation(body.next_activation_status, body.next_activation_name);
+    renderPublisherHealth(body.publishers);
+    // The publishers table is now real peer data — drop the "not served for
+    // a peer" note and the dimming the same way the ballot table does.
+    const pubNote = document.getElementById('peerPublishersNote'); if (pubNote) pubNote.hidden = true;
+    const pubTable = document.getElementById('publishersTable'); if (pubTable) pubTable.style.opacity = '';
+    if (peerView.lastGood) {
+      // The worse of this route's two clocks — a fresh feature poll must not
+      // make a stale publisher block look current.
+      const f = typeof body.feature_age_ms === 'number' ? body.feature_age_ms : null;
+      const s = typeof body.sites_age_ms === 'number' ? body.sites_age_ms : null;
+      peerView.lastGood.governanceAgeMsAtFetch =
+        (f === null || s === null) ? (f === null ? s : f) : Math.max(f, s);
+    }
+  }
+  // A minimal local clearer, not a reuse of window.__aperireSetActiveNode —
+  // that global only exists inside overview.html's/consensus.html's OWN
+  // iframe window (each tab is its own document when embedded by the
+  // shell), never reachable from a sibling tab's window like this one.
+  function clearActiveNodeInHash() {
+    let topWin;
+    try { topWin = window.top; } catch { topWin = window; }
+    let h = (topWin.location.hash || '').replace(/^#/, '');
+    h = h.replace(/(^|[?&])node=[a-z0-9-]{1,32}/, (_m, sep) => (sep === '&' ? '&' : ''));
+    h = h.replace(/[?&]$/, '');
+    topWin.location.hash = h;
+  }
+  function handlePeerOverviewResponse(label, status, body) {
+    if (status === 404 && body && body.error === 'peer_unknown') {
+      exitPeerMode();
+      clearActiveNodeInHash();
+      return;
+    }
+    if (status === 409 || (body && body.error === 'peer_integrity_mismatch')) { renderPeerErrorState('integrity'); return; }
+    // The peer answered and rejected this dashboard's read token (#268).
+    // Checked before the catch-all below, which would otherwise call a box
+    // that is up and answering unreachable — the same branch, in the same
+    // order, Overview already has.
+    if (body && body.error === 'peer_refused') { renderPeerErrorState('refused'); return; }
+    if (!body || body.ok === false || typeof body.node_status !== 'object' || body.node_status === null) { renderPeerErrorState('unreachable'); return; }
+    peerView.lastError = null;
+    const ns = body.node_status;
+    peerView.lastGood = {
+      receivedAtClientMs: Date.now(),
+      serverInfoAgeMsAtFetch: typeof ns.server_info_age_ms === 'number' ? ns.server_info_age_ms : null,
+      reachOk: !(ns.node_reach && ns.node_reach.ok === false),
+    };
+    applyPeerGovernance(ns, body.validation_summary);
+    renderPeerBanner();
+  }
+  function schedulePeerPoll() {
+    if (peerView.pollTimer) { clearTimeout(peerView.pollTimer); peerView.pollTimer = null; }
+    if (!peerView.label) return;
+    peerView.pollTimer = setTimeout(pollPeerOnce, PEER_POLL_MS);
+  }
+  async function pollPeerOnce() {
+    if (peerView.pollTimer) { clearTimeout(peerView.pollTimer); peerView.pollTimer = null; }
+    if (!peerView.label) return;
+    if (document.hidden) { schedulePeerPoll(); return; }
+    const label = peerView.label;
+    const seq = ++peerView.fetchSeq;
+    const [overviewResult, ballotResult, governanceResult] = await Promise.all([
+      fetchPeerOverviewOnce(label),
+      fetchPeerAmendmentBallotOnce(),
+      fetchPeerGovernanceOnce(),
+    ]);
+    if (seq !== peerView.fetchSeq || peerView.label !== label) return;
+    handlePeerOverviewResponse(label, overviewResult.status, overviewResult.body);
+    // Only paint the ballot table from a genuinely current overview poll —
+    // if that one failed or the peer turned out unknown,
+    // handlePeerOverviewResponse already blanked/exited, and painting
+    // stale ballot rows over that afterward would be the same P1-030
+    // defect consensus.html's own fetch loop guards against.
+    if (peerView.label === label && !peerView.lastError) {
+      handlePeerAmendmentBallotResponse(ballotResult.status, ballotResult.body);
+      handlePeerGovernanceResponse(governanceResult.status, governanceResult.body);
+    }
+    schedulePeerPoll();
+  }
+
+  function enterPeerMode(label) {
+    if (peerView.label === label) return;
+    peerView.label = label;
+    peerView.lastGood = null;
+    peerView.lastError = null;
+    peerView.fetchSeq++;
+    blankParameterizedFields();
+    renderPeerBanner();
+    pollPeerOnce();
+  }
+  function exitPeerMode() {
+    if (!peerView.label) return;
+    peerView.label = null;
+    peerView.fetchSeq++;
+    if (peerView.pollTimer) { clearTimeout(peerView.pollTimer); peerView.pollTimer = null; }
+    peerView.lastGood = null;
+    peerView.lastError = null;
+    restoreLocalTableAvailability();
+    renderPeerBanner();
+    // Repaint this node's own last known governance immediately. The WS gate
+    // below resumes on the next broadcast, but that interval is 60 seconds —
+    // long enough that a dashed page after switching back would read as a
+    // failure rather than a wait.
+    if (lastLocalGovernance) applyGovernance(lastLocalGovernance);
+  }
+  function syncActiveNodeFromHash() {
+    const label = window.aperirePeerFetch ? window.aperirePeerFetch.activePeerLabel() : null;
+    if (label) enterPeerMode(label);
+    else exitPeerMode();
+  }
+  let topWinForHash;
+  try { topWinForHash = window.top; } catch { topWinForHash = window; }
+  topWinForHash.addEventListener('hashchange', syncActiveNodeFromHash);
+  window.addEventListener('pagehide', () => {
+    try { topWinForHash.removeEventListener('hashchange', syncActiveNodeFromHash); } catch { /* already gone */ }
+    if (peerView.pollTimer) clearTimeout(peerView.pollTimer);
+  });
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && peerView.label) pollPeerOnce();
+  });
+
+  // ── WebSocket to the bridge ────────────────────────────────────────
+  function connectWS() {
+    const url = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws';
+    const ws = new WebSocket(url);
+    ws.addEventListener('open',  () => console.log('[ws] live'));
+    ws.addEventListener('close', () => { console.log('[ws] closed, reconnect in 2s'); setTimeout(connectWS, 2000); });
+    ws.addEventListener('error', (e) => console.warn('[ws] error', e));
+    ws.addEventListener('message', (e) => {
+      if (peerView.label) return; // a peer is on screen — the local WS stream must never repaint over it
+      let msg; try { msg = JSON.parse(e.data); } catch { return; }
+      switch (msg.type) {
+        case 'snapshot':
+          if (msg.data.server_info) applyServerInfo(msg.data.server_info);
+          if (msg.data.governance)  applyGovernance(msg.data.governance);
+          break;
+        case 'server_info': applyServerInfo(msg.data); break;
+        case 'governance':  applyGovernance(msg.data); break;
+      }
+    });
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  // Per-metric info icons — same pattern as other tabs. Content pulled
+  // from docs/dashboard-layout.md §Governance.
+  // ═══════════════════════════════════════════════════════════════════
+
+  const INFO_TOOLTIPS = {
+    // Card 1: Amendment Status
+    'Amendment Blocked': {
+      title: 'Amendment Blocked',
+      body: 'Is this node frozen pending an upgrade? "Blocked" means a new amendment has activated that our rippled build doesn\'t support — upgrade to re-enable consensus participation.',
+    },
+    'Approaching Threshold': {
+      title: 'Approaching Threshold',
+      body: 'Count of pending amendments that have three quarters or more of the votes they need to activate, and are not there yet. The bar itself is roughly 80% of the validations this node saw, so this is the early warning that the ballot is moving. A node that reports no vote tally cannot count them, and shows a dash rather than a zero.',
+    },
+    'Threshold Met': {
+      title: 'Threshold Met',
+      body: 'Amendments whose current vote count is at or above the bar to activate. Crossing the bar is not activation: the network requires an amendment to hold that majority for a set period first, and the ballot\'s Progress column says which ones already are. If this is >0, check that the build supports them or expect an upcoming amendment block.',
+    },
+    'Pending': {
+      title: 'Pending Amendments',
+      body: 'Amendments currently on the ballot — known to the build but not yet enabled. The Amendments on the Ballot table below lists them individually.',
+    },
+    'Enabled': {
+      title: 'Enabled Amendments',
+      body: 'Amendments currently active on the network. Informational — operators track this to sanity-check that their build is in sync.',
+    },
+    'Supported by Build': {
+      title: 'Supported by Build',
+      body: 'Count of amendments the local rippled binary recognizes (enabled or not). Gaps vs. the network total mean the binary is behind.',
+    },
+
+    // Card 2: Our Vote Stance
+    'Yes Votes': {
+      title: 'Yes Votes',
+      body: 'Pending amendments this validator is signalling support for (supported by the build and not explicitly vetoed).',
+    },
+    'No / Veto Votes': {
+      title: 'No / Veto Votes',
+      body: 'Pending amendments this validator is explicitly voting against (set via operator policy in rippled config).',
+    },
+    'Default Votes': {
+      title: 'Default Votes',
+      body: 'Amendments the build doesn\'t recognize — can\'t meaningfully vote on them. If this is sustained >0 while others are activating, upgrade the binary.',
+    },
+    'Signalling Match': {
+      title: 'Signalling Match',
+      body: 'Does our published validations actually reflect our intended vote? Drift here (intent ≠ signal) would be a misconfiguration.',
+    },
+    'Next Activation': {
+      title: 'Next Activation',
+      body: 'Where the ballot stands for the amendment closest to activating.',
+      bullets: [
+        'Pending: at least one amendment is at or above the bar, or is already holding the network majority, and is waiting out the activation period',
+        'Gathering: amendments are accumulating support but none has reached the bar yet',
+        '—: nothing on the ballot, and nothing this node can rank',
+      ],
+    },
+    'Next Amendment': {
+      title: 'Next Amendment',
+      body: 'Name of the pending amendment with the highest current signal count — the one most likely to activate next. Pairs with Next Activation to answer "what\'s coming, and where is it in the pipeline."',
+    },
+    'Build Version': {
+      title: 'Build Version',
+      body: 'Binary version of the local rippled process. Keep current for security fixes and amendment compatibility.',
+    },
+
+    // Card 3: UNL Trust
+    'UNL Size': {
+      title: 'UNL Size',
+      body: 'Number of validators in this node\'s trusted Unique Node List. Usually derived from the configured publisher(s).',
+    },
+    'UNL Active 1h': {
+      title: 'UNL Active (1h)',
+      body: 'Trusted validators observed signing at least one validation in the last hour. Should approximate UNL Size — a gap indicates some trusted validators are silent.',
+    },
+    'UNL Offline': {
+      title: 'UNL Offline',
+      body: 'Trusted validators NOT seen in the last hour. Persistent non-zero is worth investigating (network, key-rotation, or validator outage).',
+    },
+    'Expected Quorum': {
+      title: 'Expected Quorum',
+      body: 'Derived quorum size — ~80% of the UNL rounded up. Should match rippled\'s internal validation_quorum; a mismatch signals a UNL-versus-config drift.',
+    },
+    'Rotations 24h': {
+      title: 'Manifest Rotations 24h',
+      body: 'Count of validator manifest-sequence bumps observed in the last 24 hours. Spikes can signal a UNL operator rotating a compromised signing key.',
+    },
+    'UNL Churn 7d': {
+      title: 'UNL Churn (7d)',
+      body: 'How much the trusted set has changed over the last week. Elevated churn warrants a look at publisher signing activity.',
+    },
+
+    // Card 4: Publisher Health
+    'Publisher Sites': {
+      title: 'Publisher Sites',
+      body: 'Number of UNL publisher sites configured on this node. dUNL-grade setups typically run 2-3 for redundancy; defaults often have 1.',
+    },
+    'Refresh Status': {
+      title: 'Refresh Status',
+      body: 'Status of the most recent list refresh across all configured publishers. "accepted" / "same_sequence" are healthy. Anything else means at least one publisher failed to return a valid list on the last try.',
+    },
+    'Refresh Age': {
+      title: 'Refresh Age',
+      body: 'Oldest "last successful refresh" among configured publishers. Publishers typically serve lists that refresh every few hours; an age spike signals a network or publisher problem.',
+    },
+    'List Expiry': {
+      title: 'List Expiry',
+      body: 'Soonest signed-list expiration across configured publishers. Once expired, the UNL falls back to defaults — keep this well above zero.',
+    },
+    'Cert Expiry': {
+      title: 'Cert Expiry',
+      body: 'Soonest TLS certificate expiry across configured publisher HTTPS endpoints. A short value means the publisher\'s infra needs renewal; nodes will stop fetching when the cert expires.',
+    },
+    'List Sequence': {
+      title: 'List Sequence',
+      body: 'Sequence number of the most recently accepted publisher list. Increments each time the publisher publishes a new list.',
+    },
+  };
+
+  function buildInfoIconElement(info) {
+    const icon = document.createElement('span');
+    icon.className = 'info-icon';
+    icon.tabIndex = 0;
+    icon.setAttribute('role', 'button');
+    icon.setAttribute('aria-label', info.title + ' info');
+    const parts = [`<span class="info-title">${escHtml(info.title)}</span>`];
+    if (info.body) parts.push(`<p>${escHtml(info.body)}</p>`);
+    if (info.bullets && info.bullets.length) {
+      parts.push('<ul>' + info.bullets.map(b => `<li>${escHtml(b)}</li>`).join('') + '</ul>');
+    }
+    icon.innerHTML = `<span class="info-tip">${parts.join('')}</span>`;
+    return icon;
+  }
+
+  function installInfoIcons() {
+    document.querySelectorAll('.metric-card .card-row .lbl').forEach(lbl => {
+      if (lbl.querySelector('.info-icon')) return;
+      const key = lbl.textContent.trim();
+      const info = INFO_TOOLTIPS[key];
+      if (!info) return;
+      lbl.appendChild(buildInfoIconElement(info));
+    });
+  }
+
+  function positionInfoTip(icon) {
+    const tip = icon.querySelector('.info-tip');
+    if (!tip) return;
+    const iconRect = icon.getBoundingClientRect();
+    const iconCenter = iconRect.left + iconRect.width / 2;
+    const tipWidth = tip.offsetWidth;
+    const vw = window.innerWidth;
+    const margin = 8;
+    const leftEdge  = iconCenter - tipWidth / 2;
+    const rightEdge = iconCenter + tipWidth / 2;
+    let shift = 0;
+    if (leftEdge  < margin)           shift = margin - leftEdge;
+    else if (rightEdge > vw - margin) shift = (vw - margin) - rightEdge;
+    tip.style.transform = (shift !== 0)
+      ? `translateX(calc(-50% + ${shift.toFixed(1)}px))`
+      : 'translateX(-50%)';
+    // Vertical: the tip rests below its icon. On the bottom row of a card
+    // near the fold that puts it under the viewport edge, clipped (operator,
+    // 2026-08-18: READ BPS, JOB QUEUE on System). Flip it above the icon
+    // when there is no room below and there is room above; the tab pages
+    // are iframes, so the viewport here is the frame's own height, which is
+    // exactly the box the tip has to fit in.
+    const tipHeight = tip.offsetHeight;
+    const vh = (window.visualViewport && window.visualViewport.height) || window.innerHeight;
+    const roomBelow = vh - iconRect.bottom;
+    const roomAbove = iconRect.top;
+    if (roomBelow < tipHeight + margin && roomAbove > roomBelow) {
+      tip.style.top = 'auto';
+      tip.style.bottom = '100%';
+    } else {
+      tip.style.top = '';
+      tip.style.bottom = '';
+    }
+  }
+
+  // Same clamp, for the popovers anchored on a table cell rather than on an
+  // info icon. The support column is the narrow right-hand one, so its
+  // popover is anchored to the cell's right edge, which on a phone puts its
+  // left edge off the screen. Measured unshifted, then nudged back inside.
+  function positionCellPopover(anchor) {
+    const pop = anchor.querySelector('.amendment-popover');
+    if (!pop) return;
+    pop.style.transform = '';
+    const r = pop.getBoundingClientRect();
+    const margin = 8;
+    const vw = window.innerWidth;
+    let shift = 0;
+    if (r.left < margin)            shift = margin - r.left;
+    else if (r.right > vw - margin) shift = (vw - margin) - r.right;
+    pop.style.transform = shift !== 0 ? `translateX(${shift.toFixed(1)}px)` : '';
+  }
+
+  document.addEventListener('mouseover', (e) => {
+    const anchor = e.target.closest?.('.support-note, .amendment-name');
+    if (anchor && !e.target.closest('.amendment-popover')) positionCellPopover(anchor);
+    const icon = e.target.closest?.('.info-icon');
+    if (!icon) return;
+    if (e.target.closest('.info-tip')) return;
+    positionInfoTip(icon);
+  });
+  document.addEventListener('focusin', (e) => {
+    const anchor = e.target.closest?.('.support-note, .amendment-name');
+    if (anchor) positionCellPopover(anchor);
+    const icon = e.target.closest?.('.info-icon');
+    if (icon) positionInfoTip(icon);
+  });
+  document.addEventListener('click', (e) => {
+    const active = document.activeElement;
+    if (!active || !active.classList || !active.classList.contains('info-icon')) return;
+    if (!active.contains(e.target)) active.blur();
+  });
+
+  // Boot
+  installInfoIcons();
+  connectWS();
+  // The hash may already name a peer on first load (a reload while viewing
+  // one, or a direct deep link into #node=label) — same pattern
+  // overview.html's/consensus.html's own peer-view modules use at boot.
+  syncActiveNodeFromHash();
+})();
+
+</script>
+<script src="/audio-toggle.js" data-key="aperire-audio" data-default="on" defer></script>
+
+<script src="/mobile-nav.js" defer></script>
+<script src="/fleet-chip.js" defer></script>
+<script src="/advisor-presence.js" defer></script>
+<script src="/idle-tracker.js" defer></script>
+</body>
+</html>

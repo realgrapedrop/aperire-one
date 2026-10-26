@@ -1,0 +1,420 @@
+/* Aperire One — the palette, in one place, in two themes.
+ *
+ * Every page used to carry its own copy of this token block. Nine copies of
+ * the same thirty-nine declarations, which was survivable while there was one
+ * theme and fatal the moment there were two: a light value added to eight
+ * copies and missed on the ninth is a page that renders dark text on a dark
+ * ground, and nothing would have said so. They are here now, once, and
+ * test/unit/theme-tokens.test.ts fails if a page grows a local copy back.
+ *
+ * Dark is the default and the product's identity. It lives on :root with no
+ * qualifier, so a page that somehow never learns about themes still gets it.
+ * Light is an override keyed on an attribute the toggle writes to <html>.
+ *
+ * The light palette is GitHub-light, the same family the dark one has always
+ * borrowed from, so the two are siblings rather than one being an inversion
+ * of the other. Inverting is what breaks alert colours: #f85149 is a red that
+ * was chosen to carry on near-black, and on white it reads as pink.
+ *
+ * Load order matters. This file is linked in <head> BEFORE each page's own
+ * <style>, so a page can still override a token for its own reasons, and a
+ * browser will not paint until it has arrived (a stylesheet in <head> is
+ * render-blocking), which is what keeps the first frame from being unstyled.
+ * The attribute itself is set by an inline script even earlier, before the
+ * parser reaches this link, so there is no frame of dark before light either.
+ */
+
+:root {
+  /* ── Ground and structure ─────────────────────────────────────────── */
+  --bg:            #0d1117;
+  --bg-soft:       #10151c;
+  --surface:       #161b22;
+  --surface-hi:    #1c2330;
+  --border:        #30363d;
+  --border-hi:     #444c56;
+
+  /* ── Type ─────────────────────────────────────────────────────────── */
+  --text:          #e6edf3;
+  --text-dim:      #8b949e;
+  --text-muted:    #838a95;
+
+  /* ── Semantic. Load-bearing: an operator reads state from these before
+     they read a word of it, so the three must stay instantly separable in
+     both themes. The -soft fills are the tints behind badges and rows. ── */
+  --green:         #3fb950;
+  --green-soft:    rgba(63, 185, 80, 0.15);
+  --amber:         #d29922;
+  --amber-soft:    rgba(210, 153, 34, 0.18);
+  --red:           #f85149;
+  --red-soft:      rgba(248, 81, 73, 0.18);
+
+  /* ── Accents ──────────────────────────────────────────────────────── */
+  --blue:          #58a6ff;
+  --accent:        #58a6ff;
+  --purple:        #a371f7;
+  --purple-hi:     #b98cf9;
+  --purple-soft:   rgba(163, 113, 247, 0.14);
+  /* A deeper shade of the accent, for the edge and the pressed state of a
+     filled primary button. GitHub's own next step down in both themes. */
+  --accent-strong: #1f6feb;
+
+  /* Direction of travel, on the peer and traffic charts. */
+  --outbound:      #d29922;
+  --inbound:       #a371f7;
+
+  /* Transaction families, on Overview's ledger shapes. */
+  --fam-money:     #3fb950;
+  --fam-market:    #4c9fff;
+  --fam-nft:       #ff4d4f;
+  --fam-accts:     #ff9f43;
+
+  /* Provenance, on the Advisor. Where a claim came from, and the discipline
+     the whole tab rests on: measured, documented, external, unexplained. */
+  --prov-measured:        #58a6ff;
+  --prov-measured-soft:   rgba(88, 166, 255, 0.12);
+  --prov-documented:      #3fb950;
+  --prov-documented-soft: rgba(63, 185, 80, 0.12);
+  --prov-external:        #a371f7;
+  --prov-external-soft:   rgba(163, 113, 247, 0.14);
+  --prov-unexplained:     #d29922;
+  --prov-unexplained-soft:rgba(210, 153, 34, 0.12);
+
+  /* ── Chart ink ────────────────────────────────────────────────────────
+     Named separately from the accents above because a chart series is drawn
+     from JavaScript, and a JS-held '#58a6ff' does not follow a theme. These
+     exist so the chart definitions can hold var(--chart-*) instead. */
+  --chart-blue:    var(--blue);
+  --chart-purple:  var(--purple);
+  --chart-green:   var(--green);
+  --chart-amber:   var(--amber);
+  --chart-red:     var(--red);
+  /* Cyan has no semantic twin above, so it is a literal in both themes
+     rather than an alias: the System tab's page-cache series needs a sixth
+     ink that reads as neither a state nor an accent. GitHub's own cyan
+     family, the dark one on near-black and the dark-cyan on white. */
+  --chart-cyan:    #39c5cf;
+
+  /* ── Scrollbar. Flips with the theme: a platinum thumb tuned for a
+     near-black page is close to invisible on a white one. ── */
+
+  /* ── The same colours as RGB triples ──────────────────────────────────
+     Roughly four hundred rules across the pages needed one of these at some
+     other alpha: rgba(63, 185, 80, 0.55) for a hover border, 0.35 for a
+     glow, 0.12 for a wash. Each of those spelled the DARK green out in
+     full, so each was a colour that could not follow a theme. Composed from
+     a triple they all follow at once, and the alpha stays where it was
+     written, next to the rule that needed it. */
+  --green-rgb:   63, 185, 80;
+  --amber-rgb:   210, 153, 34;
+  --red-rgb:     248, 81, 73;
+  --blue-rgb:    88, 166, 255;
+  --purple-rgb:  163, 113, 247;
+  /* The ground, for the fades and scrims drawn over it. */
+  --bg-rgb:      13, 17, 23;
+  /* A wash lifts a surface off the ground. White on a dark page, black on a
+     light one: the same job needs the opposite ink. */
+  --wash-rgb:    255, 255, 255;
+
+
+  /* ── Ink that sits ON a filled swatch ─────────────────────────────────
+     A button filled with --accent or --amber needs text that carries on
+     THAT colour, not on the page. In dark those fills are bright, so the
+     ink is near-black; in light the same fills are dark, so the ink is
+     white. This is the exact failure the sweep exists to prevent: a
+     near-black label was written as a literal, and on a light theme it
+     would have sat unreadable on a dark blue button. */
+  --on-accent:   #04101f;
+  --on-amber:    #241a00;
+  /* No consumer today: nothing fills a button with green or red. Kept for
+     symmetry so a future filled button has an answer instead of inventing
+     a literal, but unrendered, so treat these two as untested. */
+  --on-green:    #04140a;
+  --on-red:      #200404;
+  /* A recess: a panel pushed BELOW the page, darker than --bg in dark and
+     lighter than the surface in light. Inverting a hardcoded #0a0d12 is
+     what would otherwise put a black well in the middle of a white page. */
+  --bg-inset:    #0a0d12;
+
+  --scrollbar-thumb: rgba(158, 170, 184, 0.32);
+
+  /* ── Non-colour tokens. Identical in both themes, declared once. ── */
+  --radius:        10px;
+  --radius-sm:     6px;
+  --radius-lg:     14px;
+  --mono:          'SF Mono', Menlo, Consolas, ui-monospace, monospace;
+  --sans:          -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, system-ui, sans-serif;
+}
+
+:root[data-theme="light"] {
+  /* Ground. White page, then a recession ladder into it: --surface for a
+     card, --bg-soft for a well inside one, --surface-hi for the deepest.
+     The four values stay four distinct values. Giving --surface and
+     --bg-soft the same grey read fine on most pages, where a card carries
+     a border and the boundary comes from that, and would have erased the
+     edge on the handful of borderless wells (advisor's transcript panes,
+     the login field) where dark separates them by tone alone. */
+  --bg:            #ffffff;
+  --bg-soft:       #eef1f4;
+  --surface:       #f6f8fa;
+  --surface-hi:    #eaeef2;
+  --border:        #d1d9e0;
+  --border-hi:     #b7bfc7;
+
+  --text:          #1f2328;
+  --text-dim:      #59636e;
+  --text-muted:    #6e7781;
+
+  /* The semantic three, darkened until they carry on white. The dark
+     palette's #3fb950 on #ffffff is about 2:1 against the ground and fails
+     to read as a state at all; #1a7f37 is GitHub's own answer and clears
+     4.5:1. Amber is the hardest: there is no legible yellow on white, so
+     light uses GitHub's dark-yellow #9a6700, which reads as amber in
+     context beside the other two and is legible on its own. */
+  --green:         #1a7f37;
+  --green-soft:    rgba(26, 127, 55, 0.10);
+  --amber:         #9a6700;
+  --amber-soft:    rgba(154, 103, 0, 0.10);
+  --red:           #cf222e;
+  --red-soft:      rgba(207, 34, 46, 0.10);
+
+  /* The -soft alphas drop from 0.15/0.18 to 0.10. They are not the same
+     job in the two themes: on near-black a tint has to be strong enough to
+     lift off the ground, and on white the same alpha is a slab of colour
+     that overpowers the text sitting on it. */
+
+  --blue:          #0969da;
+  --accent:        #0969da;
+  --purple:        #8250df;
+  --purple-hi:     #6639ba;
+  --purple-soft:   rgba(130, 80, 223, 0.10);
+  --accent-strong: #0550ae;
+
+  --outbound:      #9a6700;
+  --inbound:       #8250df;
+
+  --fam-money:     #1a7f37;
+  --fam-market:    #0969da;
+  --fam-nft:       #cf222e;
+  --fam-accts:     #bc4c00;
+
+  --prov-measured:        #0969da;
+  --prov-measured-soft:   rgba(9, 105, 218, 0.10);
+  --prov-documented:      #1a7f37;
+  --prov-documented-soft: rgba(26, 127, 55, 0.10);
+  --prov-external:        #8250df;
+  --prov-external-soft:   rgba(130, 80, 223, 0.10);
+  --prov-unexplained:     #9a6700;
+  --prov-unexplained-soft:rgba(154, 103, 0, 0.10);
+
+
+  --chart-cyan:    #0e7490;
+
+  --green-rgb:   26, 127, 55;
+  --amber-rgb:   154, 103, 0;
+  --red-rgb:     207, 34, 46;
+  --blue-rgb:    9, 105, 218;
+  --purple-rgb:  130, 80, 223;
+  --bg-rgb:      255, 255, 255;
+  --wash-rgb:    31, 35, 40;
+
+
+  --on-accent:   #ffffff;
+  --on-amber:    #ffffff;
+  --on-green:    #ffffff;
+  --on-red:      #ffffff;
+  --bg-inset:    #f0f3f6;
+
+  --scrollbar-thumb: rgba(87, 96, 106, 0.35);
+}
+
+/* color-scheme tells the engine which way to render the things CSS does not
+   own: form controls, the native scrollbar, a date picker. Without it a
+   light page still gets dark-rendered widgets. */
+:root                    { color-scheme: dark; }
+:root[data-theme="light"]{ color-scheme: light; }
+
+/* Scrollbars, product-wide. The browser default is a bright bar that punches
+   through the dark palette; these were duplicated on all nine pages and are
+   now one rule reading one token. */
+* { scrollbar-color: var(--scrollbar-thumb) transparent; }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+/* ── The light/dark switch ──────────────────────────────────────────────
+ *
+ * Deliberately a copy of .audio-toggle's box rather than a shared class with
+ * it: the two buttons sit side by side and must match, but the music toggle
+ * is defined per page and this one is defined here, so binding them together
+ * would mean this file could silently restyle a page's header. Same numbers,
+ * stated once. If the music toggle's box ever changes, this needs the same
+ * change, and the walk asserts the two boxes are equal so it will say so.
+ *
+ * `order: 1` puts it left of the music toggle (order 2), which is where the
+ * operator asked for it. .navbg also claims order 1 and is hidden except
+ * during a break-glass window; source order settles the tie and puts this
+ * one first, so the switch does not move when a window opens.
+ */
+.theme-toggle {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  padding: 3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim);
+  transition: color 0.15s, border-color 0.15s;
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+  align-self: center;
+  margin: 0;
+  order: 1;
+}
+.theme-toggle:hover { color: var(--text); border-color: var(--text-muted); }
+.theme-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.theme-toggle svg { width: 16px; height: 16px; display: block; }
+
+/* Login has no header to sit in, so it gets a fixed corner of its own. */
+.theme-toggle-solo {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 30;
+}
+
+/* The narrow header drops the music toggle's left margin and tightens the
+   gap; this button inherits that by living in the same flex row, and only
+   needs its own hit area on a touch screen. */
+@media (max-width: 720px) {
+  .theme-toggle { width: 26px; height: 26px; }
+  .theme-toggle svg { width: 13px; height: 13px; }
+  /* The visible button shrinks to match the music toggle beside it, and
+     the thing a thumb has to hit does not. Same trick .audio-toggle
+     already uses: an invisible box bled 9px past every edge, which turns
+     a 26px control into a 44px target without moving a pixel of layout.
+     Without it this button was the only 26px tap target in the header. */
+  .theme-toggle { position: relative; }
+  .theme-toggle::before { content: ''; position: absolute; inset: -9px; }
+}
+
+/* ── The phone header is two rows ───────────────────────────────────────
+ *
+ * #236. Below 720px the row carrying the wordmark also carried the fleet
+ * chip, and the chip won. Measured on a tab page at 375 with one node in
+ * the registry: the chip took 145px and the right-hand controls 106, which
+ * left 69px for a word that needs 75. The wordmark rendered as "Aperir" —
+ * ONE had already stepped out and what remained still did not fit. At 320
+ * the row had 14px left and the brand was a single letter.
+ *
+ * So the chip gets its own row. Row 1 is the brand and the right-hand
+ * controls; row 2 is the chip, full width, where a node name competes with
+ * nothing. The shell has shipped exactly this since 2026-08-13 (reported
+ * on a real iPhone: one row "crushed the brand to APE…" once the fleet
+ * chip and the account pill both had something to say) and the seven tab
+ * pages never got it.
+ *
+ * Stated here rather than in each page because eight copies of a layout
+ * rule is how the shell and the tabs came to disagree in the first place.
+ * `header nav.tabs` outranks each page's own `.node-chip-wrap` and
+ * `.right-group` (0-2-1 against 0-1-0), which is what lets one copy win
+ * from a stylesheet that is linked BEFORE every page's own <style>.
+ *
+ * Nothing here applies above 720px, so the fold and desktop layouts are
+ * the same boxes to the pixel. theme-walk.mjs proves that rather than
+ * asserting it: it serves the pages with this block cut out of the bytes
+ * and compares every header box at 768, 1024 and 1280.
+ *
+ * Inside the shell a tab page's own header is hidden (html[data-embedded]
+ * header { display: none }), so none of this reaches the embedded view.
+ * It is the standalone page (what a phone gets when it opens a tab
+ * directly), and the shell's OWN header, index.html's nav.tabs, that
+ * changes: `header nav.tabs` matches there too, and index.html keeps its
+ * own data-tabname current on every switch (#578) so the shell gets the
+ * same three rows the seven standalone pages do. What is unique to the
+ * shell (the account pill; no other page carries one) is placed in
+ * index.html's own stylesheet, layered on after this one, rather than
+ * here.
+ */
+/* #578. A phone-only twin of .navcur (each page's own "you are here" label,
+ * already hidden below 720px because row one has no room for it: the
+ * account pill alone is 134px, and #236/#557 above already spend the row's
+ * whole budget keeping APERIRE ONE whole against that pill). Reusing that
+ * box is not an option without either reflowing .right-group's flex order
+ * (a different fight, on the desktop-identical controls #129 already tuned)
+ * or moving it out of the DOM per page. This instead reads a new
+ * `data-tabname` attribute straight off nav.tabs itself with a generated
+ * box, so no page needs anything beyond that one attribute (the same
+ * convention .navcur's own literal text already follows: the string lives
+ * on the page, the layout lives here). Default hidden outside the phone
+ * block below, and no page's own stylesheet mentions this selector, so
+ * there is nothing above 720px for it to conflict with, so the desktop and
+ * tablet headers are unchanged.
+ */
+header nav.tabs::after { content: none; }
+
+@media (max-width: 720px) {
+  header nav.tabs {
+    grid-template-columns: auto 1fr;
+    grid-template-rows: auto auto auto;
+    /* The chip's row runs edge to edge, so both insets match. */
+    padding-right: 8px;
+    /* The row's whole separation rides the wrap's margin below, so a header
+       with no chip in it is not 6px taller than it was. `gap: 6px` on the
+       base rule is a row gap as well as a column one, and a grid still lays
+       out the gap between a populated row and an empty one: on a single-node
+       install, where fleet-chip.js leaves the wrap hidden, that was 6px of
+       nothing under the wordmark. Measured on settings at 320: 44px before,
+       50px with the gap, 44px again with this. */
+    row-gap: 0;
+  }
+  header nav.tabs .brand       { grid-column: 1; grid-row: 1; }
+  header nav.tabs .right-group { grid-column: 2; grid-row: 1; }
+  /* The tab-name row. Always present: settings.html carries no chip at
+     all, and a single-node install leaves the chip wrap `hidden`, so this
+     cannot ride the chip's own row the way the account pill rides
+     .right-group. Its own row instead, between the wordmark and wherever
+     the chip lands, so an operator who has never named a second node still
+     sees which tab is open. */
+  header nav.tabs::after {
+    content: attr(data-tabname);
+    grid-column: 1 / -1; grid-row: 2;
+    /* A flex box, so the name centres in the row's height. The shell gives
+       this row the account pill's height (index.html) and sets the pill
+       beside it; as a plain block the name sat at the top of that band, a
+       line above the pill's own text. */
+    display: flex; align-items: center; justify-content: flex-end;
+    margin-top: 10px;
+    font-size: 13px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--text-dim); font-family: var(--mono);
+  }
+  /* On a single-node install fleet-chip.js leaves this wrapper `hidden`,
+     the third row has nothing in it, and the header ends after the
+     tab-name row: the margin rides the wrap, so there is no stray gap. */
+  header nav.tabs .node-chip-wrap {
+    grid-column: 1 / -1; grid-row: 3;
+    justify-self: stretch;
+    margin-top: 8px;
+  }
+  header nav.tabs .node-chip { width: 100%; max-width: none; justify-content: center; }
+  /* max-width: none on its own would let a long node name push the chip
+     past the row: a flex item's automatic minimum size is its min-content,
+     and the name is nowrap. min-width: 0 is what leaves the ellipsis in
+     charge of a name too long for the row. */
+  header nav.tabs .chip-name { min-width: 0; max-width: none; }
+  /* The wrap spans the row, so the panel anchors to it directly and lands
+     just under the chip whatever the header's height. This replaces the
+     fixed `top: 54px` pin the tab pages carried, which assumed a one-row
+     header and would now drop the panel on top of the chip. */
+  header nav.tabs .node-dd {
+    position: absolute; top: calc(100% + 6px); left: 0; right: 0;
+    transform: none; width: auto; max-width: none;
+  }
+}

@@ -1,0 +1,93 @@
+# aperire-relay configuration. Place at /etc/aperire/relay.conf and set
+# ownership to the relay's system user with mode 640:
+#
+#   sudo install -m 640 -o root -g aperire-relay relay.conf.example /etc/aperire/relay.conf
+#
+
+# Where to dial. ws:// is fine over loopback (a co-located dashboard, or your
+# end of a tunnel). Across the network it is not: the auth_token below and
+# every telemetry frame would cross readable, so a dashboard bound off-loopback
+# refuses a plain ws push and the dial fails with 403. Either tunnel the hop
+# (WireGuard/SSH) and point this at ws://127.0.0.1:7800/ingest, or terminate
+# TLS in front of the dashboard and use wss://.
+# See docs/RELAY-REFERENCE.md, "Securing a remote relay link".
+#
+# Empty is a valid value and means "this host is installed and not registered
+# with a dashboard yet". The relay starts, says so once, and pushes nothing.
+# That is what the installer writes on a split install, so the service can be
+# enabled and running before anyone knows which dashboard collects from here.
+dashboard_url = "wss://aperire.example.com/ingest"
+
+# Per-validator shared secret. Generate with `openssl rand -hex 32` and add
+# the same string to the dashboard's RELAY_TOKENS allow-list. Rotate by
+# listing both old and new on the dashboard, swapping the relay, then
+# removing the old. Zero downtime.
+auth_token = "REPLACE_WITH_LONG_RANDOM_STRING"
+
+# Human-readable identifier for this node. One relay feeds one dashboard
+# (ADR 0009): if a second relay pushes a different label to the same
+# dashboard it is refused and logged, not merged in. A deliberate rename is
+# a config edit plus a dashboard restart.
+node_label = "validator-fra-01"
+
+# Primary network interface. "auto" picks the default-route NIC on every
+# push tick (handles failover). Set an explicit name like "eth0" if the
+# host has multi-homed / VPN-first topology that confuses auto-discovery.
+interface = "auto"
+
+# Path the relay runs statfs() on. The result travels in the System frame
+# and fills the Disk row on the dashboard's System tab and Overview. Point
+# it at the volume rippled's database lives on if that's separate from `/`.
+data_mount = "/"
+
+# ── Rippled integration ───────────────────────────────────────────────
+# The System tab's NuDB Size / Growth / Mount Free Days rows are read by
+# the DASHBOARD process, not the relay: set RIPPLED_DATA_PATH in the
+# dashboard's env file (the installer auto-detects it). The relay has no
+# rippled_data_path key; anything you put here under that name is ignored.
+
+# Rippled PID file. OPTIONAL — if blank, the relay falls back to
+# `pgrep -x rippled`, which works for both native and Docker installs
+# (container processes are visible in the host's /proc).
+#
+#   Native typical:  /var/run/rippled/rippled.pid
+#   Docker:          (leave blank)
+#
+rippled_pid_file = ""
+
+# ── Admin port connection counts ──────────────────────────────────────
+# The Network tab shows concurrent ESTABLISHED TCP connections on
+# rippled's admin HTTP-RPC port and Admin WebSocket port. Source:
+# /proc/net/tcp + /proc/net/tcp6, filtered by local port.
+#
+# AUTO-DETECT (preferred): Point `rippled_cfg_path` at rippled's config
+# file. At startup the relay parses the `[port_*]` sections, picks the
+# first admin-enabled section whose `protocol` contains "http"
+# (→ HTTP RPC) and "ws" (→ Admin WS), and logs the resolved values.
+#
+# If blank, the relay probes these well-known locations in order:
+#   /etc/opt/ripple/rippled.cfg
+#   /opt/ripple/etc/rippled.cfg
+#   /etc/ripple/rippled.cfg
+#
+rippled_cfg_path = "/opt/ripple/etc/rippled.cfg"
+
+# EXPLICIT OVERRIDES. Set any to a non-zero port to bypass auto-
+# detection for that side. Zero = "use auto-detected or well-known
+# default (5005 HTTP RPC, 6006 Admin WS, 6005 WS Public, 51235 Peer).
+#http_rpc_port  = 5005
+#admin_ws_port  = 6006
+#ws_public_port = 6005
+#peer_port      = 51235
+
+# Push cadence in seconds. Minimum 1, maximum 300. 5 matches node_exporter
+# and is the dashboard's design baseline.
+interval_seconds = 5
+
+# Hosting-provider monthly egress cap in bytes. 0 or absent = "no cap" and
+# the dashboard will show the used total without a percentage. Pure
+# monitoring — the relay does not throttle.
+#   1 TB  = 1_000_000_000_000
+#   5 TB  = 5_000_000_000_000
+#  10 TB  = 10_000_000_000_000
+monthly_budget_bytes = 5_000_000_000_000

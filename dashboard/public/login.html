@@ -1,0 +1,649 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<title>Aperire One · Sign in</title>
+<!-- The magic-link enrollment token rides in ?token=; never leak it as a
+     Referer to subresources (flag CDN, vendor bundle) or any click-out. -->
+<meta name="referrer" content="no-referrer">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon.ico" sizes="32x32">
+<!-- The theme, decided before anything paints.
+     This has to be inline, blocking, and above the stylesheet link below.
+     A deferred file would run after the first frame and the operator would
+     see a flash of the wrong theme on every single load; a file loaded in
+     parallel would race the paint. Six lines in <head> is the price of that
+     never happening. Reading localStorage can throw (private mode, an embed
+     a browser treats as third-party storage), so a failure silently leaves
+     the default, which is dark. Identical on all nine pages; see
+     public/theme-toggle.js for the half that writes the value. -->
+<script>(function(){var t='dark';try{if(localStorage.getItem('aperire-theme')==='light')t='light';}catch(e){}document.documentElement.setAttribute('data-theme',t);})();</script>
+<!-- The palette, both themes, shared by every page. Linked BEFORE this
+     page's own <style> so a page can still override a token, and
+     render-blocking so the first frame is never unstyled. -->
+<link rel="stylesheet" href="/theme.css">
+<style>
+  /* Scrollbars, product-wide. The browser default is a bright white bar
+     that punches through the dark palette — reported from the upgrade
+     transcript pane, where it sat a foot from an amber status line.
+     color-scheme lets the engine render native bars dark; the explicit
+     rules tune the thumb to platinum: visible when sought, quiet when
+     not. Hover brightens so grabbing it stays obvious. */
+  *::-webkit-scrollbar-thumb:hover { background: rgba(178, 190, 204, 0.55); background-clip: padding-box; }
+  *::-webkit-scrollbar-corner { background: transparent; }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg); color: var(--text);
+    font-family: var(--sans);
+    min-height: 100dvh;
+  }
+  body {
+    display: flex; align-items: center; justify-content: center;
+    padding: 24px;
+  }
+  /* Subtle aurora behind the card — same vibe as the iframe shell's
+     bg, just a touch more depth for the focal centerpiece. */
+  .bg {
+    position: fixed; inset: 0;
+    background:
+      radial-gradient(circle at 20% 0%, rgba(var(--blue-rgb), 0.10), transparent 50%),
+      radial-gradient(circle at 80% 100%, rgba(var(--green-rgb), 0.08), transparent 50%);
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .card {
+    position: relative; z-index: 1;
+    width: 100%; max-width: 380px;
+    background: var(--bg-soft);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 32px 28px;
+    box-shadow: 0 24px 48px rgba(0, 0, 0, 0.4);
+  }
+  .brand {
+    display: flex; align-items: center; gap: 10px;
+    margin-bottom: 18px;
+    padding-bottom: 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  .brand img {
+    width: 28px; height: 28px;
+    border-radius: 6px;
+  }
+  .brand .name {
+    font-size: 16px; font-weight: 700; letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text);
+  }
+  /* Right-aligned page title — flips between "Sign in", "Set up a    */
+  /* passkey", "Check your email", etc. as the flow progresses. Same  */
+  /* uppercase rhythm as the brand for visual unity.                  */
+  .brand .title {
+    margin-left: auto;
+    font-size: 13px; font-weight: 600; letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--text-dim);
+  }
+  p.sub {
+    font-size: 13px; color: var(--text-dim);
+    margin: 0 0 22px; line-height: 1.5;
+    /* Plain greedy wrap, by operator ruling (2026-08-13) after touring the
+       alternatives: balance shortened every line, justify stretched word
+       spacing, and Safari's text-wrap:pretty reshapes the WHOLE paragraph
+       (unlike Chrome's last-line-only version), manufacturing exactly the
+       right-side gap it was meant to cure. Measured before concluding: the
+       box is flush with the input's; only the line breaks moved. The rag
+       is governed by the copy's length instead — keep this paragraph near
+       80 characters so it fills two lines at desktop/iPad card widths. */
+  }
+  /* The sign-in state carries no subtitle — the SIGN-IN title, the passkey
+     button and the footer already say what this page is (operator, 2026-08-22).
+     Empty by default, it collapses margin and all; the enrollment states fill
+     it from JS, at which point it is no longer :empty and shows again. */
+  p.sub:empty { display: none; }
+  label {
+    display: block; font-size: 12px; letter-spacing: 0.04em;
+    color: var(--text-muted); text-transform: uppercase; font-weight: 600;
+    margin: 0 0 6px;
+  }
+  input[type="text"], input[type="email"] {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 9px 12px; border-radius: 6px;
+    font-size: 14px; font-family: var(--sans);
+    -webkit-appearance: none;
+  }
+
+  /* iOS Safari zooms the page when a focused control is under 16px, which on
+     the sign-in screen pushes the form out from under the keyboard. */
+  @media (max-width: 720px) {
+    input[type="text"], input[type="email"] { font-size: 16px; }
+  }
+  input[type="text"]:focus, input[type="email"]:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(var(--blue-rgb), 0.15);
+  }
+  input::placeholder { color: var(--text-muted); opacity: 0.55; }
+  /* The page's one primary action, and it has to read as one at arm's
+     length on a phone. Filled with the accent and given a defined edge in
+     a deeper shade of the same colour: the fill alone carries on both
+     grounds, but a filled button with border:0 has no edge of its own, so
+     it softens wherever the card behind it is close in tone.
+     (The operator's "the button looks invisible" was a different fault:
+     the theme stylesheet was behind the auth gate, so on the sign-in page
+     no token resolved and this rule set no colour at all. That is fixed at
+     the gate. The edge and the focus ring below are the part of the report
+     that survives the fix.) */
+  .btn {
+    width: 100%;
+    background: var(--accent);
+    color: var(--on-accent);
+    border: 1px solid var(--accent-strong);
+    padding: 11px 16px; border-radius: 6px;
+    font-size: 14px; font-weight: 600;
+    cursor: pointer;
+    margin-top: 14px;
+    transition: background 0.15s, border-color 0.15s;
+    display: flex; align-items: center; justify-content: center;
+    gap: 8px;
+  }
+  /* Hover deepens rather than fades. The old rule dropped opacity, which
+     made the one thing you are reaching for LESS present as you reached. */
+  .btn:hover:not(:disabled) { background: var(--accent-strong); border-color: var(--accent-strong); }
+  /* There was no focus style at all, so a keyboard or switch user had
+     whatever the browser happened to draw on top of a saturated fill. */
+  .btn:focus-visible {
+    outline: 2px solid var(--accent-strong);
+    outline-offset: 2px;
+  }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn svg { width: 14px; height: 14px; }
+
+  .msg {
+    margin-top: 14px;
+    padding: 9px 11px;
+    border-radius: 6px;
+    font-size: 13px;
+    line-height: 1.5;
+    display: none;
+  }
+  .msg.ok    { background: var(--green-soft); border: 1px solid rgba(var(--green-rgb), 0.3); color: var(--green); display: block; }
+  .msg.warn  { background: var(--amber-soft); border: 1px solid rgba(var(--amber-rgb), 0.3); color: var(--amber); display: block; }
+  .msg.fail  { background: var(--red-soft); border: 1px solid rgba(var(--red-rgb), 0.3); color: var(--red); display: block; }
+
+  /* Mode banner — top of the card. The state of the card changes
+     (sign-in → set-up-passkey → check-email), and label changes
+     alone are too subtle. The banner makes it impossible to miss
+     that the page just transitioned to a new action. */
+  .mode-banner {
+    margin: -8px -8px 18px;
+    padding: 10px 14px;
+    border-radius: 8px;
+    font-size: 13px;
+    line-height: 1.5;
+    display: none;
+  }
+  .mode-banner.action {
+    background: linear-gradient(135deg, rgba(var(--amber-rgb), 0.18), rgba(var(--amber-rgb), 0.08));
+    border: 1px solid rgba(var(--amber-rgb), 0.45);
+    color: var(--amber);
+    display: block;
+  }
+  .mode-banner.success {
+    background: linear-gradient(135deg, rgba(var(--green-rgb), 0.18), rgba(var(--green-rgb), 0.06));
+    border: 1px solid rgba(var(--green-rgb), 0.4);
+    color: var(--green);
+    display: block;
+  }
+  .mode-banner .lbl {
+    display: block;
+    font-size: 10.5px; font-weight: 700; letter-spacing: 0.14em;
+    text-transform: uppercase;
+    margin-bottom: 4px;
+    opacity: 0.85;
+  }
+  .mode-banner .msg-body { color: var(--text); }
+  .mode-banner .email {
+    color: inherit; font-weight: 600;
+    font-family: var(--mono); font-size: 12px;
+    background: rgba(var(--wash-rgb), 0.06);
+    padding: 1px 6px; border-radius: 3px;
+  }
+
+  /* Amber-tinted submit button for the "send enrollment link" action.
+     Pulls the operator's eye to the new affordance once the page has
+     flipped from sign-in mode. */
+  .btn.action {
+    background: var(--amber);
+    color: var(--on-amber);
+    border-color: rgba(var(--amber-rgb), 0.6);
+  }
+
+  /* Sign-in success: the mark pops over the card, settles, then shrinks
+     away as the dashboard takes over — a branded beat, not a delay (the
+     whole sequence is just under two seconds and reduced-motion skips it). */
+  .auth-flash {
+    position: fixed; inset: 0; z-index: 50;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--bg); opacity: 0;
+    transition: opacity 160ms ease-out;
+  }
+  .auth-flash.on { opacity: 1; }
+  .auth-flash svg {
+    width: min(92vmin, 680px); height: min(92vmin, 680px);
+    opacity: 0; transform: scale(0.5);
+  }
+  .auth-flash.on svg { animation: flash-pop 1900ms cubic-bezier(0.22, 0.9, 0.3, 1) forwards; }
+  @keyframes flash-pop {
+    0%   { opacity: 0; transform: scale(0.5); }
+    38%  { opacity: 1; transform: scale(1.08); }
+    55%  { opacity: 1; transform: scale(1.0); }
+    72%  { opacity: 1; transform: scale(1.0); }
+    100% { opacity: 0; transform: scale(0.86); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .auth-flash { display: none; }
+  }
+  .footer {
+    margin-top: 18px;
+    padding-top: 14px;
+    border-top: 1px solid var(--border);
+    font-size: 12px; color: var(--text-muted); line-height: 1.6;
+  }
+  .footer p { margin: 0; text-wrap: pretty; hyphens: auto; }
+  /* Command on its own line, full-width and visually distinct so the
+     operator can copy-paste it without selecting around prose. */
+  .footer .cmd {
+    display: block;
+    margin-top: 10px;
+    padding: 7px 10px;
+    background: rgba(110, 118, 129, 0.12);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--accent);
+    font-family: var(--mono); font-size: 11.5px;
+    text-align: center;
+    white-space: nowrap; overflow-x: auto;
+  }
+</style>
+<script src="/theme-toggle.js" defer></script>
+</head>
+<body>
+
+<!-- The theme switch. Login has no header to put it in, so it gets a fixed
+     corner: this is the first page an operator meets, and a sign-in that
+     could not follow the theme they picked would be the first thing they
+     noticed. theme-toggle.js fills this mount when it finds no music
+     toggle to sit beside. -->
+<div class="theme-toggle-solo" id="themeToggleMount"></div>
+
+<div class="bg"></div>
+
+<div class="card">
+  <div class="brand">
+    <svg viewBox="0 0 240 240" width="28" height="28" aria-hidden="true" style="flex:0 0 auto"><circle cx="120" cy="120" r="86" fill="none" stroke="#1f6feb" stroke-width="9" stroke-linecap="round" stroke-dasharray="435 105" transform="rotate(-52 120 120)"/><circle cx="120" cy="120" r="70" fill="none" stroke="#1f6feb" stroke-width="3" opacity=".45" stroke-linecap="round" stroke-dasharray="330 110" transform="rotate(128 120 120)"/><g fill="none" stroke="#58a6ff" stroke-width="15" stroke-linecap="round"><path d="M88 100 Q120 148 152 100"/><path d="M88 146 Q120 98 152 146"/></g><circle cx="120" cy="122" r="8" fill="#dcefff"/></svg>
+    <span class="name">Aperire <span style="font-weight:300;opacity:.7">One</span></span>
+    <span class="title" id="title">Sign-in</span>
+  </div>
+
+  <div class="mode-banner" id="banner"></div>
+
+  <p class="sub" id="sub"></p>
+
+  <form id="form" autocomplete="off">
+    <label for="username">Username</label>
+    <input type="email" id="username" name="username" placeholder="you@example.com" autocomplete="username webauthn email" autocapitalize="none" autocorrect="off" spellcheck="false" inputmode="email" required>
+    <button type="submit" class="btn" id="submit">
+      <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a3 3 0 0 0-3 3v3H4a2 2 0 0 0-2 2v5a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-1V4a3 3 0 0 0-3-3zm0 1a2 2 0 0 1 2 2v3H6V4a2 2 0 0 1 2-2zM4 8h8a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/></svg>
+      <span id="submit-label">Sign in with passkey</span>
+    </button>
+  </form>
+
+  <div class="msg" id="msg"></div>
+
+  <div class="footer">
+    <p>Biometric passkey-protected. No password is stored or transmitted. Access is by invitation only to be enrolled by the dashboard administrator.</p>
+  </div>
+</div>
+
+<!-- WebAuthn browser helper, vendored locally. The integrity hash is the
+     sha384 of the file in public/vendor: re-vendoring the bundle means
+     recomputing it, and test/unit/login-asset-closure.test.ts derives the
+     hash from the file on disk so a stale one cannot ship. -->
+<script src="/vendor/simplewebauthn-browser-13.3.0.umd.min.js"
+        integrity="sha384-DnjEgzmDuatj/e2GTxbXmPijf7QyPvp8oAnvlWOqOqfMGekoIyImmgeJ+CxrALC7"></script>
+
+<script>
+(function () {
+  'use strict';
+
+  var qs = new URLSearchParams(window.location.search);
+  var nextUrl = qs.get('next') || '/';
+  var enrollToken = qs.get('token');
+
+  // Scrub the query string immediately after capturing the values above.
+  // The single-use enrollment token must not linger in browser history,
+  // be sent as a Referer, or land in any proxy/CDN query-string log.
+  // enrollToken is already in hand here, so the enrollment ceremony below
+  // still works against the captured value.
+  if (window.location.search) {
+    try { history.replaceState(null, '', window.location.pathname); } catch (e) { /* non-fatal */ }
+  }
+
+  var form = document.getElementById('form');
+  var input = document.getElementById('username');
+  var submit = document.getElementById('submit');
+  var submitLabel = document.getElementById('submit-label');
+  var msg = document.getElementById('msg');
+  var titleEl = document.getElementById('title');
+  var subEl = document.getElementById('sub');
+  var banner = document.getElementById('banner');
+
+  function setBanner(kind, label, html) {
+    banner.className = 'mode-banner ' + kind;
+    banner.innerHTML = '<span class="lbl">' + label + '</span><span class="msg-body">' + html + '</span>';
+  }
+  function clearBanner() {
+    banner.className = 'mode-banner';
+    banner.innerHTML = '';
+  }
+
+  function setMessage(text, kind) {
+    msg.textContent = text;
+    msg.className = 'msg ' + (kind || 'warn');
+  }
+  function clearMessage() {
+    msg.textContent = '';
+    msg.className = 'msg';
+  }
+  function safeNext(n) {
+    // Only allow same-origin redirects to prevent open-redirect abuse
+    // through the ?next= parameter.
+    if (!n) return '/';
+    if (n.charAt(0) !== '/') return '/';
+    if (n.indexOf('//') === 0) return '/';
+    return n;
+  }
+
+  // The server caps excludeCredentials at 64 (#388), so this should not fire
+  // on today's paths, belt-and-suspenders for a browser whose own ceiling
+  // differs, or a future registration site that skips the shared helper.
+  // Loosely matched, not on Chromium's exact wording: the WebAuthn spec
+  // leaves the message to the client.
+  function passkeyLimitMessage(err) {
+    var text = String((err && err.message) || err || '');
+    if (/excludeCredentials/i.test(text) && /exceed|maximum/i.test(text)) {
+      return 'This account already has as many passkeys as a browser will list in ' +
+        'one enrollment. Revoke an old one from Settings → Operator passkey ' +
+        'enrollment, then try again.';
+    }
+    return null;
+  }
+  // Exposed so a walk can prove this function runs and matches correctly
+  // against the browser's real wording, rather than trusting it by reading
+  // the source: the IIFE below hides it from a page.evaluate() otherwise.
+  window.__aperirePasskeyLimitMessage = passkeyLimitMessage;
+
+  // The branded beat after a successful sign-in: the mark pops over the
+  // card, settles, shrinks away, and only then does the dashboard load.
+  // Just under two seconds end to end; skipped for reduced motion, and
+  // the navigation itself never depends on the animation completing —
+  // the timer fires whether or not the browser painted a single frame.
+  function celebrateThenGo(url) {
+    var reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    if (reduced) { window.location.href = url; return; }
+    var flash = document.createElement('div');
+    flash.className = 'auth-flash';
+    flash.setAttribute('aria-hidden', 'true');
+    // Clone the card header's own inline mark — /aperire-mark.svg sits
+    // behind the auth gate and a fetch here would race the just-issued
+    // session cookie; the inline copy needs no network at all.
+    var headerMark = document.querySelector('.card-head svg, .head svg, h1 svg, svg[viewBox="0 0 240 240"]');
+    if (!headerMark) { window.location.href = url; return; }
+    var mark = headerMark.cloneNode(true);
+    mark.removeAttribute('width');
+    mark.removeAttribute('height');
+    flash.appendChild(mark);
+    document.body.appendChild(flash);
+    requestAnimationFrame(function () { flash.classList.add('on'); });
+    setTimeout(function () { window.location.href = url; }, 1940);
+  }
+
+  // Hard-fail loudly if the WebAuthn helper didn't load. Without it
+  // every subsequent action would throw silently.
+  if (!window.SimpleWebAuthnBrowser) {
+    setMessage('WebAuthn helper failed to load. Check /vendor/simplewebauthn-browser-* in the network tab.', 'fail');
+    submit.disabled = true;
+  }
+
+  function postJson(url, body) {
+    // Every /auth POST is CSRF-gated server-side, so always send the custom
+    // header. Cross-site JS cannot set it without a preflight the browser
+    // blocks; same-origin requests (this page) carry it freely.
+    var headers = { 'content-type': 'application/json', 'x-aperire-csrf': '1' };
+    return fetch(url, {
+      method: 'POST', headers, body: JSON.stringify(body), credentials: 'include',
+    }).then(function (res) {
+      return res.json().catch(function () { return null; }).then(function (parsed) {
+        return { status: res.status, body: parsed };
+      });
+    });
+  }
+
+  // ── Mode-based form dispatch ───────────────────────────────────
+  // ONE submit handler, branches on `mode`. Earlier the file used a
+  // mix of addEventListener('submit', ...) and form.onsubmit
+  // rebinding, which racing two handlers in parallel after the user
+  // clicked twice. Single handler + a state variable avoids that.
+  var mode = 'signin';                  // 'signin' | 'enroll-send' | 'enroll-finish'
+  var enrollContext = null;             // username + magic-link options when in enroll-finish
+
+  function escHtml(s) {
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return { '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c];
+    });
+  }
+
+  function showEnrollOffer(username, emailHint) {
+    mode = 'enroll-send';
+    titleEl.textContent = 'Set up a passkey';
+    subEl.innerHTML = 'No passkey is registered for <strong>' + escHtml(username) +
+      '</strong> on this device.';
+    setBanner('action', 'New device · enrollment needed',
+      'Press the button below to email an enrollment link to <span class="email">' +
+      escHtml(emailHint) + '</span>.');
+    submitLabel.textContent = 'Send enrollment link to ' + emailHint;
+    submit.classList.add('action');
+    submit.disabled = false;
+    input.value = username;
+    input.readOnly = true;
+    form.style.display = '';
+    clearMessage();
+  }
+  function showEnrollSent(emailHint) {
+    mode = 'final';
+    titleEl.textContent = 'Check your email';
+    subEl.innerHTML = 'Click the link in the message to register a passkey on this device. The link expires in a few minutes.';
+    setBanner('success', 'Enrollment link sent',
+      'Sent to <span class="email">' + escHtml(emailHint) + '</span>. You can close this tab. The link opens the page back here.');
+    submit.classList.remove('action');
+    form.style.display = 'none';
+    clearMessage();
+  }
+  function showEnrollManualHint(username) {
+    // Deliberately reveals no mechanism. A public-facing sign-in page must
+    // not teach an attacker how enrollment works (which script, which host,
+    // which flow) — the operator who runs the dashboard already knows it
+    // from the setup guide. Same generic wording whether the email is known
+    // or not, so this path is not an account-enumeration oracle either.
+    mode = 'final';
+    titleEl.textContent = 'Enrollment needed';
+    subEl.innerHTML = 'This device has no passkey for that account yet.';
+    setBanner('action', 'Enrollment needed',
+      'Access is by invitation only. Contact your dashboard administrator to have this device enrolled.');
+    submit.classList.remove('action');
+    form.style.display = 'none';
+    clearMessage();
+  }
+
+  async function actionSignIn(username) {
+    clearMessage();
+    submit.disabled = true;
+    try {
+      var begin = await postJson('/auth/login/begin', username ? { username: username } : {});
+      if (begin.status === 412 && begin.body && username) {
+        if (begin.body.enrollment_available && begin.body.email_hint) {
+          showEnrollOffer(username, begin.body.email_hint);
+        } else {
+          showEnrollManualHint(username);
+        }
+        return;
+      }
+      if (begin.status !== 200) {
+        setMessage((begin.body && begin.body.error) || 'Sign-in could not start.', 'fail');
+        submit.disabled = false;
+        return;
+      }
+      var asnResp = await window.SimpleWebAuthnBrowser.startAuthentication({ optionsJSON: begin.body });
+      var finish = await postJson('/auth/login/finish', { response: asnResp });
+      if (finish.status !== 200) {
+        setMessage((finish.body && finish.body.error) || 'Sign-in failed.', 'fail');
+        submit.disabled = false;
+        return;
+      }
+      celebrateThenGo(safeNext(nextUrl));
+    } catch (err) {
+      var m = err && err.name === 'NotAllowedError'
+        ? 'Sign-in cancelled or no matching passkey on this device.'
+        : 'Sign-in error: ' + (err.message || err);
+      setMessage(m, 'fail');
+      submit.disabled = false;
+    }
+  }
+
+  async function actionEnrollSend(username) {
+    submit.disabled = true;
+    submitLabel.textContent = 'Sending…';
+    try {
+      var r = await postJson('/auth/enroll/request', { username: username });
+      if (r.status === 429) {
+        setMessage((r.body && r.body.error) || 'Too many requests. Wait a few minutes and try again.', 'warn');
+        submit.disabled = false;
+        submitLabel.textContent = 'Send enrollment link';
+        return;
+      }
+      if (r.status !== 200) {
+        setMessage((r.body && r.body.error) || 'Could not send enrollment link.', 'fail');
+        submit.disabled = false;
+        submitLabel.textContent = 'Send enrollment link';
+        return;
+      }
+      showEnrollSent(r.body && r.body.email_hint || username);
+    } catch (err) {
+      setMessage('Network error sending the enrollment link.', 'fail');
+      submit.disabled = false;
+      submitLabel.textContent = 'Send enrollment link';
+    }
+  }
+
+  async function actionEnrollFinish() {
+    if (!enrollContext) { setMessage('Internal: no enrollment context.', 'fail'); return; }
+    clearMessage();
+    submit.disabled = true;
+    try {
+      var attResp = await window.SimpleWebAuthnBrowser.startRegistration({ optionsJSON: enrollContext.options });
+      var finish = await postJson('/auth/register/finish', { response: attResp });
+      if (finish.status !== 200) {
+        setMessage((finish.body && finish.body.error) || 'Registration failed.', 'fail');
+        submit.disabled = false;
+        return;
+      }
+      setMessage('Passkey enrolled. Opening dashboard…', 'ok');
+      // /auth/register/finish issues a session in the same response,
+      // so we're already signed in. One biometric prompt total.
+      if (finish.body && finish.body.signed_in) {
+        celebrateThenGo(safeNext(nextUrl));
+        return;
+      }
+      window.location.href = '/login.html';
+    } catch (err) {
+      setMessage(passkeyLimitMessage(err) || ('Could not register passkey: ' + (err.message || err)), 'fail');
+      submit.disabled = false;
+    }
+  }
+
+  // Enter in the username field signs in. The form's own implicit submission
+  // does that in a clean browser, but the field invites the browser's autofill
+  // list and a password manager's menu, and while one of those is showing the
+  // first Enter goes to it and the form never hears it: an operator reported
+  // having to click the button every time. The page takes the key itself and
+  // runs the one submit path below (requestSubmit keeps the field's own
+  // validation), inside the same keypress, which is also the user gesture a
+  // passkey prompt wants. Mid-composition Enter belongs to the input method.
+  input.addEventListener('keydown', function (ev) {
+    if (ev.key !== 'Enter' || ev.isComposing || ev.keyCode === 229) return;
+    ev.preventDefault();
+    if (submit.disabled) return;
+    if (typeof form.requestSubmit === 'function') form.requestSubmit(submit);
+    else submit.click();
+  });
+
+  form.addEventListener('submit', function (ev) {
+    ev.preventDefault();
+    if (mode === 'signin') {
+      var u = input.value.trim();
+      if (!u) { setMessage('Username required.', 'warn'); return; }
+      actionSignIn(u);
+    } else if (mode === 'enroll-send') {
+      actionEnrollSend(input.value.trim());
+    } else if (mode === 'enroll-finish') {
+      actionEnrollFinish();
+    }
+  });
+
+  // ── Magic-link redemption (when ?token= present) ───────────────
+  async function startEnrollment(token) {
+    mode = 'enroll-finish';
+    titleEl.textContent = 'Enroll a passkey';
+    subEl.textContent = 'Approve the biometric prompt to register a passkey for this operator.';
+    submitLabel.textContent = 'Register passkey';
+    setMessage('Validating enrollment link…', 'warn');
+    submit.disabled = true;
+    try {
+      var redeem = await postJson('/auth/magic', { token: token });
+      if (redeem.status !== 200) {
+        setMessage((redeem.body && redeem.body.error) || 'Enrollment link is invalid or expired.', 'fail');
+        return;
+      }
+      input.value = redeem.body.username || '';
+      input.readOnly = true;
+      enrollContext = { username: redeem.body.username, options: redeem.body.options };
+      setMessage('Click "Register passkey" and approve the biometric prompt to enroll.', 'ok');
+      submit.disabled = false;
+    } catch (err) {
+      setMessage('Network error redeeming the enrollment link.', 'fail');
+    }
+  }
+
+  if (enrollToken) {
+    startEnrollment(enrollToken);
+  } else {
+    // Pre-flight: if a session already exists, bounce straight to the
+    // dashboard. Avoids re-auth on a refreshed login page.
+    fetch('/auth/session', { credentials: 'include' })
+      .then(function (r) { return r.json(); })
+      .then(function (j) { if (j.authed) window.location.href = safeNext(nextUrl); })
+      .catch(function () {});
+    setTimeout(function () { input.focus(); }, 50);
+  }
+})();
+</script>
+</body>
+</html>

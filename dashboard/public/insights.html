@@ -1,0 +1,3437 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Aperire One · Insights</title>
+<!-- Embedded-in-shell detection, landing before <header> ever paints — the
+     shell's iframe src carries ?embed=1, read here synchronously before
+     <body> exists. See overview.html's own <head> for the full
+     explanation; identical here. -->
+<script>if(/[?&]embed=1(&|$)/.test(location.search))document.documentElement.setAttribute('data-embedded','');</script>
+<!-- Peer-read fetch helper — D8 slice 3 backend retrofit (see peer-fetch.js's own
+     doc comment). Loaded eagerly, no defer: this page's own top-level boot code
+     calls into it synchronously, before a deferred script would have run. -->
+<script src="/peer-fetch.js"></script>
+<!-- The theme, decided before anything paints.
+     This has to be inline, blocking, and above the stylesheet link below.
+     A deferred file would run after the first frame and the operator would
+     see a flash of the wrong theme on every single load; a file loaded in
+     parallel would race the paint. Six lines in <head> is the price of that
+     never happening. Reading localStorage can throw (private mode, an embed
+     a browser treats as third-party storage), so a failure silently leaves
+     the default, which is dark. Identical on all nine pages; see
+     public/theme-toggle.js for the half that writes the value. -->
+<script>(function(){var t='dark';try{if(localStorage.getItem('aperire-theme')==='light')t='light';}catch(e){}document.documentElement.setAttribute('data-theme',t);})();</script>
+<!-- The palette, both themes, shared by every page. Linked BEFORE this
+     page's own <style> so a page can still override a token, and
+     render-blocking so the first frame is never unstyled. -->
+<link rel="stylesheet" href="/theme.css">
+<style>
+  /* Scrollbars, product-wide. The browser default is a bright white bar
+     that punches through the dark palette — reported from the upgrade
+     transcript pane, where it sat a foot from an amber status line.
+     color-scheme lets the engine render native bars dark; the explicit
+     rules tune the thumb to platinum: visible when sought, quiet when
+     not. Hover brightens so grabbing it stays obvious. */
+  *::-webkit-scrollbar-thumb:hover { background: rgba(178, 190, 204, 0.55); background-clip: padding-box; }
+  *::-webkit-scrollbar-corner { background: transparent; }
+html[data-embedded] header{display:none}
+  /* ── #129. The header cannot overlap itself ──────────────────────────
+   *
+   * Reported on a 390px iPhone: the theme toggle sat on top of the final E
+   * of APERIRE ONE. Measured rather than guessed, on the shell at 390: the
+   * wordmark ran to x=156 and the toggle started at x=152. Four pixels.
+   *
+   * The cause is that .brand sits in an `auto` grid track and carries
+   * white-space: nowrap, so it takes its min-content width and cannot give
+   * any of it back. Add one more control to the right cluster and the two
+   * simply pass through each other: nothing in the layout says they may
+   * not. The shell is where it showed first because only the shell carries
+   * the account pill, 134px of the 374 available.
+   *
+   * Two changes, in this order.
+   *
+   * 1. The wordmark is CLIPPED to its own box. That is the structural half:
+   *    whatever the width, whatever gets added to the right cluster, the
+   *    text can no longer paint outside the space it was given, so an
+   *    overlap is not a thing that can happen. min-width: 0 is what lets
+   *    the track shrink at all (a grid item's automatic minimum size is
+   *    min-content, which for nowrap text is the whole word). The clip
+   *    belongs on .brand-text, which is where the two words are. It was
+   *    on .brand as well until #238, and .brand is what positions the
+   *    hover explainer: a box that hangs entirely BELOW .brand's own
+   *    27px, so clipping there deleted the tip on every page at every
+   *    width and no operator ever saw it. .brand keeps min-width: 0,
+   *    which is the part that was doing the work.
+   *
+   * 2. Below 420px the word ONE steps out, leaving the mark and APERIRE.
+   *    Clipping alone would be honest but ugly, rendering "APERIRE O…".
+   *    Dropping ONE frees 37px where 4 were needed, so the wordmark is
+   *    whole rather than truncated on exactly the phones that were short.
+   *    430px and up keeps the full lockup.
+   *
+   * `header nav.tabs` rather than `nav.tabs` so this outranks each page's
+   * own header rules without depending on where it lands in the file, and
+   * so the seven tab pages and the shell get identical treatment.
+   * theme-walk.mjs asserts no two header boxes intersect, on every page, at
+   * every width, in both themes. */
+  header nav.tabs .brand { min-width: 0; }
+  header nav.tabs .brand-text {
+    min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  }
+  /* ONE steps out only when the row genuinely has no space for it. The
+     420px breakpoint this replaces was a guess calibrated to the longest
+     username, so every operator with a shorter one lost the brand's name
+     for nothing (reported: a wide empty gap between APERIRE and the
+     toggle). theme-toggle.js measures and sets data-fit; this rule is
+     what it toggles. Default is the full lockup, so a browser with no
+     JavaScript keeps the whole wordmark and the clip above stops it
+     overlapping anything. */
+  header nav.tabs .brand[data-fit="short"] .brand-one { display: none; }
+</style>
+<style>
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg); color: var(--text);
+    font-family: var(--sans);
+    font-size: 15px; line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ── Header + tabs (shared pattern, hidden by shell) ─────────────── */
+  /* ══════════════════════════════════════════════════════════════════
+     Header — promoted to every width (decisions.md D5, accepted
+     2026-08-10). See public/index.html's identical header block for the
+     full reasoning; this file carries the same structure so the shell and
+     every standalone page render one consistent chrome.
+     ══════════════════════════════════════════════════════════════════ */
+  header { position: sticky; top: 0; z-index: 50; background: var(--bg); }
+  nav.tabs {
+    display: grid; grid-template-columns: auto 1fr auto;
+    align-items: center; gap: 6px;
+    padding: 8px 4px 8px 8px; border-bottom: 1px solid var(--border);
+    position: relative;
+  }
+  .brand {
+    grid-column: 1; display: flex; align-items: center; gap: 8px;
+    padding: 2px 0; white-space: nowrap; min-width: 0;
+    position: relative; cursor: default;
+    /* No underline and no visited purple on the name: it is a link home,
+       and a browser dresses one by default. See public/overview.html for
+       the full comment; the same two declarations sit on .brand in every
+       tab. */
+    text-decoration: none; color: inherit;
+  }
+  /* This tab had neither the hover explainer the other seven carry nor the
+     `white-space: nowrap` above, which is what makes the shared
+     `text-overflow: ellipsis` on .brand-text mean anything: the wordmark
+     wrapped to a second line here instead of degrading the way #129 says
+     it does. Both were the same omission, and both are closed with #238.
+     The rules below are governance.html's, verbatim. */
+  .brand-tip {
+    position: absolute; top: calc(100% + 4px); left: 4px;
+    /* #133. Bounded by the screen as well as by 340px: the box is laid out
+       whether or not it is shown, so a tip wider than the viewport is a page
+       wider than the viewport. Counted against 100vw, which includes a
+       scrollbar, plus the 12px the box starts in at. */
+    width: 340px; max-width: calc(100vw - 32px); white-space: normal;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px 12px;
+    font-size: 12px; line-height: 1.5; color: var(--text-dim);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+    opacity: 0; pointer-events: none; transform: translateY(-4px);
+    transition: opacity 180ms ease 120ms, transform 180ms ease 120ms;
+    z-index: 100;
+  }
+  .brand:hover .brand-tip, .brand:focus-within .brand-tip { opacity: 1; transform: translateY(0); }
+  .brand-tip strong { color: var(--text); font-weight: 700; letter-spacing: 0.01em; }
+  .brand-mark { width: 23px; height: 23px; }
+  .brand-text {
+    /* The login card's brand treatment, adopted for consistency (operator:
+       "I like the style of the login page"): uppercase, wide tracking,
+       strong white APERIRE, light dim ONE — no gradient fill. */
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text);
+  }
+  .brand-one { color: var(--text); font-weight: 300; opacity: 0.7; }
+  .tabs-spacer { display: none; }
+
+  /* ── Node chip — grid column 2, true center. See public/index.html /
+     public/fleet-chip.js for the full comment; identical here. ───────── */
+  .node-chip-wrap { grid-column: 2; justify-self: center; position: relative; }
+  .node-chip {
+    display: flex; align-items: center; gap: 5px;
+    padding: 4px 8px; border: 1px solid var(--border); border-radius: 999px;
+    background: var(--surface); color: var(--text); font-family: var(--mono);
+    font-size: 11px; cursor: pointer; max-width: 46vw;
+    transition: border-color 140ms ease, background 140ms ease;
+  }
+  .node-chip:hover { border-color: var(--border-hi); background: var(--surface-hi); }
+  .node-chip:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 1px rgba(var(--blue-rgb), 0.4); }
+  .node-chip[aria-expanded="true"] { border-color: var(--accent); background: var(--surface-hi); }
+  .chip-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: var(--text-muted); border: 1px solid rgba(0,0,0,0.3); }
+  .chip-dot.ok   { background: var(--green); box-shadow: 0 0 4px rgba(var(--green-rgb), 0.55); }
+  .chip-dot.warn { background: var(--amber); box-shadow: 0 0 4px rgba(var(--amber-rgb), 0.55); }
+  .chip-name { font-weight: 700; max-width: 128px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chip-sep { color: var(--border-hi); }
+  .chip-roll { display: flex; align-items: center; gap: 4px; color: var(--text-dim); font-weight: 600; }
+  .chip-roll .hs-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-muted); border: 1px solid rgba(0,0,0,0.3); }
+  .chip-roll .hs-dot:not(:first-child) { margin-left: 3px; }
+  .chip-roll .hs-dot.ok   { background: var(--green); box-shadow: 0 0 4px rgba(var(--green-rgb), 0.55); }
+  .chip-roll .hs-dot.warn { background: var(--amber); box-shadow: 0 0 4px rgba(var(--amber-rgb), 0.55); }
+  .chip-roll .hs-dot.crit { background: var(--red);   box-shadow: 0 0 4px rgba(var(--red-rgb), 0.55); }
+  .chip-caret { color: var(--text-muted); font-size: 9px; }
+
+  .node-dd {
+    position: absolute; top: calc(100% + 8px); left: 50%; transform: translateX(-50%);
+    width: 320px; max-width: calc(100vw - 24px);
+    background: var(--surface-hi); border: 1px solid var(--border-hi); border-radius: var(--radius);
+    box-shadow: 0 20px 48px rgba(0,0,0,0.6); z-index: 60; overflow: hidden;
+  }
+  .node-dd[hidden] { display: none; }
+  /* Below 720px the chip has a row of its own and the panel anchors to it
+     (#236, theme.css). The pin that used to live here fixed the panel at
+     top: 54px, which assumed a one-row header and would now land on the
+     chip. */
+  .ndd-head { padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  .ndd-head .title { font-size: 11px; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-dim); font-family: var(--mono); }
+  .node-health-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+  .node-health-summary .total { font-size: 11px; font-weight: 700; color: var(--text-muted); font-family: var(--mono); }
+  .node-health-summary .hs-div { color: var(--border-hi); }
+  .node-health-summary .hs-stat { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 700; color: var(--text-dim); font-family: var(--mono); }
+  .node-health-summary .hs-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); border: 1px solid rgba(0,0,0,0.3); }
+  .node-health-summary .hs-dot.ok   { background: var(--green); box-shadow: 0 0 4px rgba(var(--green-rgb), 0.55); }
+  .node-health-summary .hs-dot.warn { background: var(--amber); box-shadow: 0 0 4px rgba(var(--amber-rgb), 0.55); }
+  .node-health-summary .hs-dot.crit { background: var(--red);   box-shadow: 0 0 4px rgba(var(--red-rgb), 0.55); }
+
+  .ndd-list { list-style: none; margin: 0; padding: 6px; display: flex; flex-direction: column; gap: 4px; }
+  .ndd-row { position: relative; display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); }
+  .ndd-row.warn { border-color: rgba(var(--amber-rgb), 0.4); }
+  .ndd-row.crit { border-color: rgba(var(--red-rgb), 0.5); }
+  .ndd-row.unreach { border-color: var(--border-hi); }
+  .ndd-link {
+    display: grid; grid-template-columns: auto auto 1fr; align-items: center; gap: 9px;
+    padding: 7px 10px; text-decoration: none; color: inherit; min-height: 44px;
+    border-radius: var(--radius-sm);
+  }
+  .ndd-link:hover, .ndd-link:focus-visible { background: var(--surface); outline: none; }
+  button.ndd-link { appearance: none; background: none; border: none; font: inherit; width: 100%; text-align: left; cursor: pointer; color: inherit; }
+  .ndd-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; background: var(--text-muted); border: 1px solid rgba(0,0,0,0.3); }
+  .ndd-dot.ok   { background: var(--green); box-shadow: 0 0 5px rgba(var(--green-rgb), 0.6); }
+  .ndd-dot.warn { background: var(--amber); box-shadow: 0 0 5px rgba(var(--amber-rgb), 0.6); }
+  .ndd-dot.crit { background: var(--red); box-shadow: 0 0 5px rgba(var(--red-rgb), 0.6); }
+  /* The node's role, the same letter and colours as the FLEET panel's .node-role (#1256). */
+  .ndd-role { font-family: var(--mono); font-size: 9px; font-weight: 700; line-height: 1; width: 14px; height: 14px; display: inline-flex; align-items: center; justify-content: center; border-radius: 3px; color: var(--text-muted); background: rgba(139,148,158,0.12); border: 1px solid var(--border-hi); }
+  .ndd-role.validator { color: var(--accent); background: rgba(var(--blue-rgb), 0.14); border-color: rgba(var(--blue-rgb), 0.42); }
+  .ndd-role.node { color: var(--text-dim); }
+  .ndd-role:empty { visibility: hidden; }
+  .ndd-link.ndd-self { grid-template-columns: auto 1fr; }
+  .ndd-body { min-width: 0; }
+  .ndd-name { display: block; font-family: var(--mono); font-size: 12.5px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ndd-state { display: block; font-family: var(--mono); font-size: 11px; color: var(--text-dim); }
+  .ndd-state.warn { color: var(--amber); }
+  .ndd-state.crit { color: var(--red); }
+  .ndd-state.unreach { color: var(--text-muted); }
+  .ndd-cur-tag { font-size: 9px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--accent); background: rgba(var(--blue-rgb), 0.12); border: 1px solid rgba(var(--blue-rgb), 0.4); border-radius: 999px; padding: 1px 6px; margin-left: 6px; }
+  span.ndd-link { cursor: default; }
+  span.ndd-link:hover { background: none; }
+  .ndd-ask {
+    justify-self: end; align-self: center; margin-left: 10px; margin-right: 10px; position: relative;
+    padding: 2px 8px; text-decoration: none; white-space: nowrap;
+    font-size: 10px; font-weight: 700; color: var(--amber);
+    background: var(--amber-soft); border: 1px solid rgba(var(--amber-rgb), 0.45);
+    border-radius: 20px;
+  }
+  /* No leftward bleed: the pseudo-element's own left inset moves INWARD
+     (4px) rather than extending past the ask link's true edge, and the
+     link itself now carries a real margin-left — together these leave a
+     genuine dead zone between the node button and this hit area, instead
+     of the two abutting with zero gap. */
+  .ndd-ask::before { content: ''; position: absolute; inset: -12px -6px -12px 4px; }
+  .ndd-ask:hover, .ndd-ask:focus-visible { background: rgba(var(--amber-rgb), 0.3); outline: none; }
+  .ndd-foot { padding: 8px 14px 10px; border-top: 1px solid var(--border); font-size: 10.5px; color: var(--text-muted); line-height: 1.5; }
+
+  /* ── Right-hand cluster — grid column 3. This page carries no audio
+     toggle of its own, unlike the other tabs. ─────────────────────── */
+  .right-group { grid-column: 3; justify-self: end; display: flex; align-items: center; gap: 6px; }
+  .navbg { order: 1; }
+  .navcur { order: 2; }
+  .hamburger { order: 3; }
+
+  .navbg {
+    display: flex; align-items: center; gap: 4px; flex: 0 0 auto;
+    padding: 4px 6px; border: 1px solid var(--amber); border-radius: 999px;
+    background: var(--amber-soft); font-family: var(--mono); font-size: 10.5px;
+    color: var(--amber); cursor: pointer;
+  }
+  .navbg[hidden] { display: none; }
+  .navbg-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--amber); flex: 0 0 auto; }
+  .navbg.warn { background: rgba(var(--amber-rgb), 0.16); }
+  .navbg.warn .navbg-dot { animation: navbgpulse 2.4s ease-in-out infinite; }
+  .navbg.stale { border-color: var(--text-muted); color: var(--text-muted); background: var(--surface-hi); }
+  .navbg.stale .navbg-dot { background: var(--text-muted); animation: none; }
+  @keyframes navbgpulse {
+    0%, 100% { box-shadow: 0 0 0 0 var(--red-soft); }
+    50%      { box-shadow: 0 0 0 5px rgba(var(--red-rgb), 0); }
+  }
+
+  .navcur {
+    display: inline-block; flex: 0 1 auto; align-self: center;
+    font-size: 13px; font-weight: 600; letter-spacing: 0.04em; color: var(--accent);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    max-width: 140px; line-height: 1; text-align: right;
+  }
+  @media (max-width: 720px) {
+    .navcur { display: none; }
+  }
+
+  .hamburger {
+    display: flex; align-items: center; justify-content: center; flex: 0 0 auto;
+    width: 26px; height: 26px; position: relative;
+    padding: 0; margin: 0; border: none; border-radius: 50%;
+    background: transparent; cursor: pointer; transition: background 0.16s ease;
+  }
+  .hamburger::before { content: ''; position: absolute; top: -9px; bottom: -9px; left: -9px; right: -4px; }
+  .hamburger:active { opacity: 0.6; }
+  .hamburger[aria-expanded="true"] { background: rgba(var(--blue-rgb), 0.14); }
+  .hamburger .bars { position: relative; width: 16px; height: 11px; }
+  .hamburger .bars i {
+    position: absolute; left: 0; right: 0; height: 1.5px; border-radius: 2px;
+    background: var(--text-muted);
+    transition: transform 0.2s ease, opacity 0.2s ease, top 0.2s ease, background 0.2s ease;
+  }
+  .hamburger .bars i:nth-child(1) { top: 0; }
+  .hamburger .bars i:nth-child(2) { top: 4.75px; }
+  .hamburger .bars i:nth-child(3) { top: 9.5px; }
+  .hamburger[aria-expanded="true"] .bars i { background: var(--accent); }
+  .hamburger[aria-expanded="true"] .bars i:nth-child(1) { top: 4.75px; transform: rotate(45deg); }
+  .hamburger[aria-expanded="true"] .bars i:nth-child(2) { opacity: 0; }
+  .hamburger[aria-expanded="true"] .bars i:nth-child(3) { top: 4.75px; transform: rotate(-45deg); }
+
+  .scrim {
+    display: block; position: fixed; inset: 0; background: rgba(var(--bg-rgb), 0.6); z-index: 48;
+    opacity: 0; pointer-events: none; transition: opacity 0.18s ease;
+  }
+  .scrim.on { opacity: 1; pointer-events: auto; }
+
+  .mobmenu {
+    display: block; position: absolute; top: 100%; left: auto; right: 8px; z-index: 49;
+    /* A content-appropriate card on every width, not a full-bleed sheet —
+       the labels are short and edge-to-edge buried the page (operator
+       feedback, 2026-08-12). Fixed width rather than max-content because
+       the foot hint is one long line that would otherwise drag the card
+       back to full width; 280px fits the widest row (title + sub + check)
+       with air, and the hint wraps. Desktop (>=721px) keeps its own
+       fixed-position max-content card via the media block below. */
+    width: min(280px, 100vw - 16px);
+    background: var(--bg-soft); border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+    transform: translateY(-6px); opacity: 0; pointer-events: none;
+    transition: transform 0.2s ease-out, opacity 0.2s ease-out;
+    max-height: calc(100dvh - 120px); overflow-y: auto;
+  }
+  /* Desktop: the menu is a wider card under the hamburger. Full-bleed at
+     1600px curtained the entire dashboard behind a nav list — the operator's
+     first report on the promoted header. The phone's full-width sheet went
+     the same way on 2026-08-12: the labels are short, so .mobmenu above is a
+     280px card at every width, and this block only widens it past 720px and
+     lightens the scrim so the page stays readable while the menu is up. */
+  @media (min-width: 721px) {
+    .mobmenu {
+      position: fixed; left: auto; right: 10px; top: 52px;
+      width: min(340px, calc(100vw - 20px));
+      border: 1px solid var(--border); border-radius: 10px;
+      box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
+    }
+    .scrim { background: rgba(var(--bg-rgb), 0.22); }
+  }
+  .mobmenu.on {
+    transform: translateY(0); opacity: 1; pointer-events: auto;
+    transition: transform 0.14s ease-in, opacity 0.14s ease-in;
+  }
+  .mobmenu ul { list-style: none; margin: 0; padding: 6px; }
+  .mobmenu li + li { border-top: 1px solid var(--border); }
+  .mtab {
+    display: flex; align-items: center; gap: 10px; padding: 11px 16px 11px 14px;
+    text-decoration: none; color: var(--text-dim); min-height: 44px; position: relative;
+  }
+  .mtab:hover, .mtab:focus-visible { background: var(--surface); color: var(--text); }
+  .mtab-body { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+  .mtab-title { font-size: 14.5px; font-weight: 600; color: var(--text); }
+  .mtab-sub { font-size: 11.5px; color: var(--text-muted); }
+  .mtab-check { margin-left: auto; flex: 0 0 auto; width: 16px; height: 16px; color: var(--accent); visibility: hidden; }
+  .mtab.active { background: rgba(var(--blue-rgb), 0.08); }
+  .mtab.active::before {
+    content: ''; position: absolute; left: 0; top: 6px; bottom: 6px; width: 3px;
+    border-radius: 0 3px 3px 0; background: var(--accent);
+  }
+  .mtab.active .mtab-title { color: var(--text); }
+  .mtab.active .mtab-check { visibility: visible; }
+  .mobmenu-foot { padding: 9px 14px; border-top: 1px solid var(--border); font-size: 11px; color: var(--text-muted); }
+  /* ADR 0016. Both halves of the tooltip sentence ship; the fact hides one.
+     Pinned explicitly for the same reason the nav rule is: a later display
+     rule on either span would beat the user-agent's [hidden]. */
+  [data-advisor-prose][hidden], [data-advisor-prose-alt][hidden] { display: none !important; }
+  /* ADR 0016. The Advisor nav entry and the pointer row that replaces it are
+     BOTH default-hidden in the markup and revealed when the published fact
+     says so, mirroring #fleetChipWrap. Gating them by hiding after the fetch
+     lands would give a declined-Advisor install a flash of an Advisor tab on
+     every page load, which is the nag the record forbids.
+
+     The !important is load-bearing, not decoration: .mtab sets display:flex,
+     and a class rule beats the user-agent's [hidden] { display: none }. A
+     bare hidden attribute on one of these does nothing at all. */
+  [data-advisor-nav][hidden], [data-advisor-pointer][hidden] { display: none !important; }
+  /* .madd, the menu's secondary rows: styled by mobile-nav.js, which owns them. */
+
+  html.menu-open, body.menu-open { overflow: hidden; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .hamburger .bars i, .scrim, .mobmenu, .node-dd, .node-chip { transition: none; }
+    .navbg.warn .navbg-dot { animation: none; }
+  }
+
+  /* ── Main layout ─────────────────────────────────────────────────── */
+  main {
+    width: 100%;
+    padding: clamp(4px, 0.5vw, 8px) clamp(14px, 1.6vw, 28px) clamp(10px, 1vw, 16px);
+    display: flex; flex-direction: column;
+    gap: clamp(8px, 0.8vw, 14px);
+  }
+
+  /* ── P0 status strip — four cells, mirrors Overview/System pattern ─ */
+  .status-strip {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 12px;
+  }
+  /* 1100, not 1200 — iPad Pro 11" landscape is 1194px wide and a 1200 cutoff
+     caught it, stacking these four cells into two rows. Measured there: the
+     strip went from 86px to 184px, half of everything this page was over the
+     fold by. RESPONSIVE-STANDARDS lists 1194 with the four-column strip; this
+     makes that true. Same change on Consensus, Network and System. */
+  @media (max-width: 1100px) { .status-strip { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width:  720px) { .status-strip { grid-template-columns: 1fr; gap: 8px; } }
+
+  /* The shared short-viewport compaction block used to sit here, and losing
+     that argument is why it is now at the very bottom of this stylesheet.
+     Almost every rule in it was dead: a section's own unconditional rule of
+     equal specificity, written LATER in the file, wins over a media-query
+     rule regardless of whether the query matches. Measured in the band, only
+     `main` was still reaching the page; fifteen selectors were rendering
+     their uncompacted values. See the block itself for the rest. */
+  
+
+  .strip-cell {
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--surface);
+    padding: 10px 16px 11px;
+    display: flex; flex-direction: column; gap: 3px;
+    min-height: 78px;
+  }
+  .strip-cell .lbl {
+    font-size: 11px; font-weight: 700; letter-spacing: 0.18em;
+    color: var(--text-muted); text-transform: uppercase;
+  }
+  .strip-cell .val {
+    font-family: var(--mono);
+    font-size: 22px; font-weight: 700;
+    color: var(--text); line-height: 1.1;
+  }
+  .strip-cell .val.ok    { color: var(--green); }
+  .strip-cell .val.warn  { color: var(--amber); }
+  .strip-cell .val.alert { color: var(--red); }
+  .strip-cell .val.page  {
+    color: var(--red);
+    animation: page-pulse 1.4s ease-in-out infinite;
+  }
+  @keyframes page-pulse {
+    0%, 100% { text-shadow: 0 0 0 transparent; }
+    50%      { text-shadow: 0 0 12px rgba(var(--red-rgb), 0.65); }
+  }
+  .strip-cell .sub {
+    font-family: var(--mono); font-size: 11.5px; color: var(--text-dim);
+  }
+
+  /* Channel pills inside the Channels strip cell. */
+  .channel-row {
+    display: flex; gap: 6px; align-items: center;
+    margin-top: 2px;
+  }
+  .channel-pill {
+    font-family: var(--mono);
+    font-size: 11px; font-weight: 700;
+    padding: 2px 8px; border-radius: 999px;
+    background: var(--green-soft); color: var(--green);
+    border: 1px solid rgba(var(--green-rgb), 0.35);
+    letter-spacing: 0.06em;
+  }
+  .channel-pill.warn  { background: var(--amber-soft); color: var(--amber); border-color: rgba(var(--amber-rgb), 0.38); }
+  .channel-pill.alert { background: var(--red-soft);   color: var(--red);   border-color: rgba(var(--red-rgb), 0.42); }
+  .channel-pill.dim   { background: rgba(110, 118, 129, 0.12); color: var(--text-muted); border-color: var(--border); }
+
+  /* ── Card frame (used by every section below the strip) ──────────── */
+  .card {
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--surface);
+    padding: 12px 16px 14px;
+  }
+  .card h2 {
+    margin: 0 0 10px;
+    font-size: 12px; font-weight: 700; letter-spacing: 0.18em;
+    color: var(--text-dim); text-transform: uppercase;
+    display: flex; align-items: center; gap: 10px;
+    border-bottom: 1px solid var(--border); padding-bottom: 6px;
+  }
+  .card h2 .count {
+    font-family: var(--mono); font-size: 10.5px; color: var(--text-muted);
+    font-weight: 500; letter-spacing: 0.04em;
+  }
+  /* Phone header: the uppercase name and the count never break mid-word, and if
+     the moved-up pager cannot share the line it drops to its own line rather
+     than forcing "ALERT" / "HISTORY". Tighter tracking helps the name fit. */
+  @media (max-width: 720px) {
+    .card h2 { flex-wrap: wrap; white-space: nowrap; letter-spacing: 0.08em; row-gap: 2px; column-gap: 6px; }
+    /* Tighten the count and the gaps so the longer Digest Log line
+       (· last 7d · N sends) leaves room for the pager on the same row. */
+    .card h2 .count { letter-spacing: 0.01em; word-spacing: -2px; font-size: 10px; }
+    .card h2 .head-pager { margin-left: auto; }
+  }
+  .card h2 .pill {
+    font-family: var(--mono); font-size: 10.5px; font-weight: 700;
+    padding: 2px 7px; border-radius: 999px;
+    background: var(--green-soft); color: var(--green);
+    border: 1px solid rgba(var(--green-rgb), 0.35);
+    letter-spacing: 0.06em;
+  }
+  .card h2 .pill.warn  { background: var(--amber-soft); color: var(--amber); border-color: rgba(var(--amber-rgb), 0.38); }
+  .card h2 .pill.alert { background: var(--red-soft);   color: var(--red);   border-color: rgba(var(--red-rgb), 0.42); }
+
+  /* ── Empty state box (the v1.1 log-panel slot uses it) ──────────── */
+  .empty-allclear {
+    text-align: center;
+    padding: 28px 12px;
+    color: var(--green);
+    background: linear-gradient(180deg, rgba(var(--green-rgb), 0.06), transparent 70%);
+    border: 1px dashed rgba(var(--green-rgb), 0.35);
+    border-radius: var(--radius-sm);
+    font-family: var(--mono); letter-spacing: 0.06em;
+  }
+  .empty-allclear .big { font-size: 22px; font-weight: 700; letter-spacing: 0.08em; display: block; }
+  .empty-allclear .sub { font-size: 12px; color: var(--text-dim); margin-top: 4px; display: block; }
+
+  /* Severity pills (reused). */
+  .sev {
+    display: inline-block;
+    font-family: var(--mono); font-size: 10.5px; font-weight: 700;
+    letter-spacing: 0.08em;
+    padding: 2px 8px; border-radius: 999px; text-transform: uppercase;
+  }
+  .sev.warn  { background: var(--amber-soft); color: var(--amber); border: 1px solid rgba(var(--amber-rgb), 0.38); }
+  .sev.alert { background: var(--red-soft);   color: var(--red);   border: 1px solid rgba(var(--red-rgb), 0.42); }
+  .sev.page  { background: var(--red-soft);   color: var(--red);   border: 1px solid var(--red); animation: page-pulse 1.4s ease-in-out infinite; }
+  .sev.ok    { background: var(--green-soft); color: var(--green); border: 1px solid rgba(var(--green-rgb), 0.35); }
+  .sev.dim   { background: rgba(110, 118, 129, 0.12); color: var(--text-muted); border: 1px solid var(--border); }
+
+  /* Inline action buttons. */
+  .btn {
+    font-family: var(--mono); font-size: 11px; font-weight: 600;
+    color: var(--text-dim);
+    background: var(--bg-soft);
+    border: 1px solid var(--border); border-radius: 5px;
+    padding: 3px 9px; cursor: pointer;
+    letter-spacing: 0.05em;
+    transition: color 140ms ease, border-color 140ms ease, background 140ms ease;
+  }
+  .btn:hover { color: var(--text); border-color: var(--border-hi); background: var(--surface-hi); }
+  .btn.primary {
+    color: var(--accent); border-color: rgba(var(--blue-rgb), 0.4);
+    background: rgba(var(--blue-rgb), 0.08);
+  }
+  .btn.primary:hover { background: rgba(var(--blue-rgb), 0.16); }
+  .btn.alert {
+    color: var(--red); border-color: rgba(var(--red-rgb), 0.4);
+    background: rgba(var(--red-rgb), 0.08);
+  }
+  .btn.alert:hover { background: rgba(var(--red-rgb), 0.16); }
+
+  /* Channel icons inside firing rows / strip cells. */
+  .ci {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 18px; height: 18px; border-radius: 4px;
+    font-family: var(--mono); font-size: 9.5px; font-weight: 700;
+    background: rgba(var(--green-rgb), 0.15); color: var(--green);
+    border: 1px solid rgba(var(--green-rgb), 0.35);
+  }
+  .ci.dim { background: rgba(110, 118, 129, 0.12); color: var(--text-muted); border-color: var(--border); }
+  /* Configured but the actual delivery failed — red so an operator
+     glancing at the row sees "alert fired but the page didn't reach me." */
+  .ci.fail { background: rgba(var(--red-rgb), 0.18); color: var(--red); border-color: rgba(var(--red-rgb), 0.42); }
+  /* Send in flight — amber until the Resend / ntfy / webhook ack lands. */
+  .ci.pending { background: rgba(var(--amber-rgb), 0.18); color: var(--amber); border-color: rgba(var(--amber-rgb), 0.38); }
+
+  /* ── Alert History, full width, its own row ──────────────────────────
+     Eight columns (time, metric, severity, value, duration, channels,
+     state, actions), and it used to share a 3fr track with Test Fire and
+     Digest Log. At desktop widths that track gave it fewer pixels than an
+     iPad got at full width (the old ≤1399 stack), and a firing row's three
+     actions, Ack, Mute 1h, Ask Advisor, spilled past the card's right edge
+     and into the gap. An eight-column table needs the width a three-action
+     row actually takes. The fix is to give it the whole row instead of
+     trimming the row, so it is full width unconditionally now.
+
+     It is still a table paged at a fixed row count (HISTORY_PAGE_SIZE), so
+     its height is bounded by construction and it needs no fold-fit
+     measurement of its own. That held before the split and still holds.
+
+     min-width: 0. `main` is a column flex container, and a flex item's
+     automatic minimum is its content's min-content size. Without this, the
+     table's intrinsic width (row-actions' three buttons, unwrapped) could
+     force the card, and `main` with it, wider than the viewport: the same
+     1194px sideways-overflow trap the old grid-item rule guarded against,
+     one level shallower now that this card sits directly in main instead
+     of inside a grid track. */
+  .alert-history-merged {
+    display: flex; flex-direction: column; min-height: 0; min-width: 0;
+  }
+  .alert-history-merged .table-wrap { flex: 1; }
+
+  /* ── Digest Log + Test Fire, one delivery-verification card ──────────
+     Both zones answer "is the alert pipeline actually working": Digest Log
+     is the record of every scheduled send, Test Fire is how you provoke
+     one on demand to check right now. They used to be two cards; an
+     operator review asked for one card instead, since they're really one
+     question asked two ways, with each zone keeping its own name, its own
+     info tip, and its own controls (Digest Log's count and pager, Test
+     Fire's Dry Run / Live Test buttons).
+
+     Split 60/40 (3fr 2fr): Digest Log's table carries four real columns
+     against Test Fire's two, so it gets the wider track. The zones are
+     plain divs, not nested `.card`s, on purpose, giving each one its own
+     border and background would read as two cards glued together rather
+     than one. Instead the boundary is a dashed rule, the same device
+     `.cfg-edit` already uses inside a Configuration panel to mark "still
+     one box, new subsection" rather than "new box." Side by side only
+     (see the stacked note below) — an operator review on a real iPad and
+     iPhone is what settled both of those calls.
+
+     A second real-device review asked the two zones to rhyme structurally,
+     not just end level. Test Fire now carries the same three tiers Digest
+     Log does: header, a chip band, then a table that fills the rest of
+     the zone. RATE and RESETS moved out of a paragraph of label/value text
+     into `#testfireRate`, two `.chip-static` pills sitting in the same
+     band position as Digest Log's filter chips. `.chip-static` is a
+     genuinely separate class from `.chip`, not a modifier of it: reusing
+     `.chip` would also pick up the generic click-to-filter wiring every
+     `.filter-chips` group gets below, and there is nothing here to
+     filter, the operator's own answer to "does it need a filter?" was no.
+     CHANNELS and PREFIX moved into `#testfireTable`, an ordinary
+     `table.t`, so its thead matches Digest Log's thead exactly with no
+     rule of its own to fall out of sync.
+
+     `align-items: stretch` (the grid default) plus `display: flex;
+     flex-direction: column` on both zones (`.dt-merged .dt-zone`) is what
+     makes them end level: each zone's `.table-wrap` is the flex child
+     that takes the rest of the zone's height
+     (`.dt-merged .dt-zone .table-wrap { flex: 1 }`, one rule for both
+     zones now that both end in a table). Digest Log's table pages at a
+     fixed 3 rows and Test Fire's table is always exactly one row, so
+     both zones' heights are bounded by construction and neither grows
+     with content. */
+  .dt-merged {
+    display: grid;
+    grid-template-columns: 3fr 2fr;
+    column-gap: 8px;
+    row-gap: 20px;
+    align-items: stretch;
+  }
+  /* min-width: 0. Same grid-item trap as Alert History above; without it
+     Digest Log's table can force its track, and the page, wider than the
+     viewport at the 1194px width the comment there names. */
+  .dt-merged > .dt-zone { min-width: 0; }
+  .dt-merged .dt-zone { display: flex; flex-direction: column; min-height: 0; }
+  .dt-merged .dt-zone .table-wrap { flex: 1; }
+  /* The internal boundary, side-by-side layout only. padding-left, not the
+     column-gap, carries most of the visual distance to the divider, so it
+     reads closer to Digest Log (the record) than to Test Fire (the action
+     on it). This is a plain, unguarded rule, and it has to stay BEFORE
+     both media blocks below: two rules on the same selector at equal
+     specificity resolve by source order regardless of which one is
+     wrapped in a media query, so a copy of this declaration appearing
+     after either override below would silently win over it at every
+     width, which is exactly the bug a prior version of this file had (the
+     stacked override losing to this rule when this rule came second). */
+  .dt-merged .dt-testfire { border-left: 1px dashed var(--border); padding-left: 20px; }
+  /* Compact-desktop / short-viewport band — same tighter spacing every
+     other component gets in this range, kept here (not in the shared
+     compaction block near the top of the file) so it reliably comes after
+     the rule above it overrides. */
+  @media (min-width: 1101px) and (max-width: 1399px),
+         (min-width: 1400px) and (max-height: 1000px) {
+    .dt-merged { column-gap: 4px; row-gap: 8px; }
+    .dt-merged .dt-testfire { padding-left: 12px; }
+  }
+  /* Same seam as .cfg-grid (1100), not the old ≤1399. There is no
+     eight-column table in this card forcing a wider one, so it collapses
+     where every other 2-column row on this page does. Stack order follows
+     the DOM: Digest Log then Test Fire.
+
+     Stacked, the dashed rule is dropped rather than rotated to a top
+     edge: an operator review on a real iPhone read the rotated version as
+     a box drawn around Test Fire, narrower than Digest Log above it,
+     rather than as a lighter internal seam. Below this seam the two zones
+     are full-width and equal, and the row-gap between them is the only
+     separator — nothing to indicate "these two are one card" is needed
+     once neither one plays second fiddle to a track ratio, and the
+     stacked page already reads top to bottom as one flow. */
+  @media (max-width: 1100px) {
+    .dt-merged { grid-template-columns: 1fr; row-gap: 16px; }
+    .dt-merged .dt-testfire { border-left: 0; padding-left: 0; }
+  }
+  /* An empty table says so in one centred cell, whichever table it is. */
+  table.t .empty-cell { text-align: center; color: var(--text-muted); padding: 18px; }
+  /* Empty digest: the table fills the grown wrap and the message centres in it,
+     so the dark area reads as deliberately empty rather than cut short. */
+  .digest-empty table.t { height: 100%; }
+  .digest-empty .empty-cell { vertical-align: middle; }
+
+  /* ── Time-range toggle — the same control Network, System and Consensus
+        carry, so a range picker is one control wherever it appears. ────── */
+  .range-toggle { display: inline-flex; gap: 0; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 2px; }
+  .range-btn {
+    appearance: none; background: transparent; color: var(--text-dim);
+    border: 0; border-radius: 4px; padding: 3px 9px;
+    font-size: 10.5px; font-family: var(--mono); letter-spacing: 0.02em;
+    cursor: pointer; transition: background 120ms ease, color 120ms ease;
+  }
+  .range-btn:hover:not(.active) { color: var(--text); background: rgba(var(--wash-rgb), 0.04); }
+  .range-btn.active { background: rgba(var(--blue-rgb), 0.18); color: var(--accent); box-shadow: inset 0 0 0 1px rgba(var(--blue-rgb), 0.45); }
+
+  .filter-chips {
+    display: flex; gap: 6px; flex-wrap: wrap;
+    margin-bottom: 8px;
+  }
+
+  /* History header — chips on the left, pager on the right. Wraps on
+     narrow widths so the pager drops below the chips instead of crowding.
+     `.right` modifier is for cards with no chips (e.g., Digest Log) where
+     the pager is the only thing in the row. */
+  .history-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 8px;
+  }
+  .history-head.right { justify-content: flex-end; }
+  .history-head .filter-chips { margin-bottom: 0; }
+  /* The range toggle sits at the right end of the history head, with the
+     severity chips on the left; the pager has moved up onto the h2. Below the
+     phone cutoff the head wraps and the toggle starts a line of its own rather
+     than being pushed to a right edge that is no longer there. */
+  .history-head .range-toggle { margin-left: auto; }
+  @media (max-width: 720px) {
+    .history-head .range-toggle { margin-left: 0; }
+    .range-btn { padding: 3px 7px; }
+  }
+
+  /* Head pager — `‹ 1 / 2 ›` sitting at the right end of a card's own <h2>,
+     carried by both cards on the merged row. Deliberately the same component
+     as Overview's Nodes
+     card pager (.node-pager there), copied rather than shared: the two pages
+     have no common stylesheet, and the operator asked for that card's
+     control specifically. Kept identical to it down to the 21px buttons and
+     the &lsaquo;/&rsaquo; glyphs, so the fleet pager and this one read as one
+     control wherever they appear. `margin-left: auto` is what pins it right
+     in the h2's flex row. */
+  .head-pager { display: flex; align-items: center; gap: 5px; flex-shrink: 0; margin-left: auto; }
+  .head-pager[hidden] { display: none; }
+  .head-pager .page-ind {
+    font-size: 10.5px; font-weight: 700; color: var(--text-muted);
+    letter-spacing: 0.04em; min-width: 26px; text-align: center; user-select: none;
+  }
+  .head-pager .pg-btn {
+    appearance: none; cursor: pointer;
+    width: 21px; height: 21px; flex-shrink: 0;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-family: var(--mono); font-size: 14px; line-height: 1;
+    background: var(--bg); color: var(--text-dim);
+    border: 1px solid var(--border); border-radius: var(--radius-sm);
+    transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+  }
+  .head-pager .pg-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  .head-pager .pg-btn:focus-visible { outline: none; border-color: var(--accent); color: var(--accent); box-shadow: 0 0 0 1px rgba(var(--blue-rgb), 0.4); }
+  .head-pager .pg-btn:disabled { color: var(--border-hi); border-color: var(--border); opacity: 0.5; cursor: default; }
+  .chip {
+    font-family: var(--mono); font-size: 11px; font-weight: 600;
+    padding: 3px 10px; border-radius: 999px;
+    background: var(--bg-soft); color: var(--text-dim);
+    border: 1px solid var(--border);
+    cursor: pointer; user-select: none;
+    letter-spacing: 0.05em;
+    transition: color 140ms ease, border-color 140ms ease;
+  }
+  .chip:hover { color: var(--text); border-color: var(--border-hi); }
+  .chip.active { color: var(--accent); border-color: var(--accent); background: rgba(var(--blue-rgb), 0.10); }
+
+  /* A pill with .chip's geometry but none of its behavior: Test Fire's
+     rate/reset readout (`#testfireRate`) uses this instead of `.chip`
+     itself so it lines up with a filter-chips row without becoming one.
+     A genuinely separate class, not a `.chip` modifier: the click wiring
+     below is `document.querySelectorAll('.filter-chips')` walking every
+     `.chip` inside, and there is nothing here to filter, so nothing here
+     should be wired to filter anything or look like it could be. No
+     cursor change, no hover state, no button semantics. */
+  .chip-static {
+    display: inline-flex; align-items: center;
+    /* `.chip` is a <button>, which gets the UA default line-height
+       ("normal") for free; this is a <span>, which instead inherits the
+       page's own line-height, taller than a button's "normal" for this
+       font. Stated explicitly so the two pills' padding boxes come out
+       the same height rather than a few px apart. */
+    line-height: normal;
+    font-family: var(--mono); font-size: 11px; font-weight: 600;
+    padding: 3px 10px; border-radius: 999px;
+    background: var(--bg-soft); color: var(--text-dim);
+    border: 1px solid var(--border);
+    letter-spacing: 0.05em;
+    user-select: none;
+  }
+  .chip-static.warn { color: var(--amber); border-color: rgba(var(--amber-rgb), 0.38); background: var(--amber-soft); }
+
+  /* Tables — alert history + digest log + test fire + log panel reuse this.
+     `overflow: visible` is intentional so row hover tooltips can extend
+     beyond the table's rounded corners. The trade-off is that the table's
+     square corners may peek through the wrap's rounded ones at the very
+     edge — not visible at default 1px borders. */
+  .table-wrap {
+    border: 1px solid var(--border); border-radius: var(--radius-sm);
+    overflow: visible; background: var(--bg-soft);
+  }
+  .table-scroll { max-height: 320px; overflow-y: auto; }
+  /* .card min-width: 0 so it can shrink to its parent grid cell instead
+     of being forced wide by its child content's intrinsic width. (The
+     old mobile overflow-x scroll on .table-wrap is gone: tables now FIT
+     the phone by column diet, and the wrap clips — a scroll context here
+     would clip the tap-open row detail, which must extend below.) */
+  @media (max-width: 720px) {
+    .card { min-width: 0; }
+  }
+  table.t {
+    width: 100%; border-collapse: collapse;
+    font-family: var(--mono); font-size: 12px;
+  }
+  table.t thead th {
+    position: sticky; top: 0; z-index: 1;
+    background: var(--surface);
+    text-align: left;
+    font-size: 10.5px; font-weight: 600; letter-spacing: 0.08em;
+    color: var(--text-muted); text-transform: uppercase;
+    padding: 7px 10px; border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  table.t tbody td {
+    padding: 6px 10px;
+    border-bottom: 1px solid rgba(48, 54, 61, 0.5);
+    color: var(--text-dim);
+    vertical-align: middle;
+  }
+  table.t tbody tr:last-child td { border-bottom: none; }
+  table.t tbody tr:hover td { background: rgba(var(--blue-rgb), 0.04); }
+
+  /* Row detail tooltip — hover any tbody row to surface the full record.
+     The tip lives inside the first cell (Time column); first cell is the
+     positioning anchor, so the floating panel sits below the row's left
+     edge regardless of which cell the cursor is over. Phase 3 will render
+     this from real row data; today the content is hand-authored per row
+     so the layout reads correctly during visual review. */
+  table.t tbody td:first-child { position: relative; }
+  /* The three E/N/W delivery chips are one unit — never let the cell wrap
+     them into a second line (operator screenshot, iPad landscape,
+     2026-08-13). */
+  table.t td.chan { white-space: nowrap; }
+  table.t td.chan .ci + .ci { margin-left: 3px; }
+  /* Metric names are the table's widest free-text column. Ellipsize
+     rather than let a long rule name push the last column off the card —
+     the row tooltip already carries the full record. */
+  table.t td.metric {
+    max-width: 24ch; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* The last column carries the row's actions. A firing row has three of them
+     and a resolved row one, and the cell is right-aligned so the actions end
+     at the same x whichever kind of row it is. The cell itself is allowed to
+     wrap: a button dropping to a second line, still right-aligned, is the
+     fallback if this column is ever genuinely too narrow for three buttons.
+     A label never breaks mid-word though, so `nowrap` moves from the cell
+     onto the buttons themselves. Alert History is full width now (see
+     .alert-history-merged above), so this is a guard for an edge case,
+     not the normal case. */
+  table.t td.row-actions { white-space: normal; text-align: right; }
+  table.t td.row-actions .btn { white-space: nowrap; }
+  table.t td.row-actions .btn + .btn { margin-left: 4px; }
+  /* On a phone the last column has room for one action, so Ack and Mute go and
+     Ask Advisor stays — they act on something still firing, and a phone is
+     where you look first and act second. The tap-open row detail is unchanged. */
+  @media (max-width: 720px) { table.t td.row-actions .act-wide { display: none; } }
+  /* Tablet portrait, 721 to 900. The column diet below stops at 720 and the
+     eight-column table needs 823px of content, so between those two numbers
+     nothing absorbed the difference and the PAGE took it: the document
+     measured 855px wide at 721, 768 and 800, with the actions column and
+     part of the state column hanging past the right edge (#482). iPad
+     portrait is 768 and the Surface Go is 800, so this is a real band, not a
+     corner of the width axis.
+
+     The wrap cannot be the scroll context. Any clip or scroll here cages the
+     row-detail tooltip, which is absolutely positioned inside the first cell
+     and hangs BELOW the row (see the note under this block, measured on a
+     real iPhone). So the table sheds width instead, the same way the phone
+     does and with the same two rules, just two columns rather than four:
+     Channels and Duration go, and the timestamp is allowed to break across
+     two lines. Both are in the row detail, which opens on tap or hover.
+     Measured: 823px of content becomes 587px, against the 659px the card has
+     at 721. All eight columns are back at 901, where the table has room for
+     them (the System tab's history charts use the same 901 line).
+
+     Scoped to #historyTable, not to `table.t`: Digest Log, Test Fire and the
+     log panel share that class and none of them overflows (Digest Log's four
+     columns fit a phone). An id outranks `table.t` whatever the order, the
+     same reason #testfireTable's own opt-out below sits where it does.
+
+     The 720 block below drops these columns again for every table: that is
+     the operator's own four-column phone spec and it reads on its own. */
+  @media (max-width: 900px) {
+    #historyTable .col-chan, #historyTable .col-dur { display: none; }
+    #historyTable tbody td.nowrap { white-space: normal; }
+  }
+  /* NO overflow clipping on the wrap, ever: any clip/scroll context here
+     cages the row-detail tooltips (WebKit computes the mixed
+     visible/clip axes stricter than Chromium — an earlier clip-x cut
+     the tap-open detail off at the card edge on a real iPhone,
+     2026-08-13). Fitting is the table's own job: metric ellipsis +
+     nowrap chips above, and a fixed layout on phones below, which is
+     mathematically incapable of exceeding its container. */
+  /* Phone: four columns, by operator spec (2026-08-13) — time, metric,
+     severity, Investigate. Everything else (value, duration, channels,
+     state) lives in the row detail, which opens on tap below. */
+  @media (max-width: 720px) {
+    table.t .col-val, table.t .col-chan,
+    table.t .col-dur, table.t .col-state { display: none; }
+    /* Fixed layout: columns get their declared widths, the metric column
+       absorbs the remainder and ellipsizes — no content can widen the
+       table past the card, which auto layout cannot promise. */
+    table.t { table-layout: fixed; }
+    table.t thead th:first-child { width: 58px; }
+    table.t thead th:nth-child(3) { width: 64px; }
+    table.t thead th:last-child { width: 108px; }
+    table.t td.metric { max-width: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    table.t tbody td, table.t thead th { padding-left: 6px; padding-right: 6px; }
+    /* One rule, all properties — a second a.btn rule in this block once
+       lost the cascade silently. Nowrap: "Ask Advisor" is one line or it
+       is nothing; the column above carries slack for iOS's wider mono. */
+    table.t a.btn { padding: 3px 6px; font-size: 11px; white-space: nowrap; }
+    /* "Yesterday 23:09:08" breaks into two short lines in its narrow
+       fixed column instead of forcing width. */
+    table.t tbody td.nowrap { white-space: normal; }
+    /* Test Fire's table is naturally two short columns (Channels, Prefix)
+       and always exactly one row. The fixed layout and column widths
+       above are sized for the wider Alert History / Digest Log tables
+       (a timestamp column, a metric column that needs to ellipsize) and
+       would squeeze a list like "Email · ntfy · 3 webhooks" into a column
+       built for a clock. An id selector outranks `table.t` regardless of
+       order, so this can sit here next to what it opts out of rather than
+       needing to come after it. */
+    #testfireTable { table-layout: auto; }
+    #testfireTable thead th:first-child,
+    #testfireTable thead th:last-child { width: auto; }
+  }
+  /* Tap-pinned row detail — same panel the desktop hover shows. The
+     class is toggled by a tap on the row (see the delegation script);
+     hover keeps working untouched on desktop, and a click there pins
+     the panel open, which is quietly useful with a mouse too. */
+  table.t tbody tr.tip-open .row-tip { display: block; }
+  .row-tip {
+    display: none;
+    position: absolute;
+    top: calc(100% + 4px);
+    left: 0;
+    width: min(320px, calc(100vw - 48px));
+    z-index: 50;
+    background: var(--surface);
+    border: 1px solid var(--border-hi);
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-dim);
+    line-height: 1.55;
+    letter-spacing: normal;
+    text-transform: none;
+    pointer-events: none;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    white-space: normal;
+  }
+  table.t tbody tr:hover .row-tip { display: block; }
+  .row-tip .ttitle {
+    color: var(--text); font-weight: 700;
+    font-size: 12px;
+    margin-bottom: 5px;
+    padding-bottom: 4px;
+    border-bottom: 1px solid var(--border);
+  }
+  .row-tip .trow {
+    display: flex; justify-content: space-between;
+    gap: 10px; padding: 1px 0;
+  }
+  .row-tip .trow .k { color: var(--text-muted); white-space: nowrap; }
+  .row-tip .trow .v { color: var(--text); font-weight: 600; text-align: right; word-break: break-all; }
+  .row-tip .trow .v.dim { color: var(--text-dim); font-weight: 500; }
+  /* Library hook — italicized accent block that surfaces a one-line
+     troubleshooting hint per row. Phase 3 wires this to a structured
+     metric-alert knowledge library (sibling to rippled-patterns.yaml)
+     so each alert carries a suggested first-check action and a link
+     into the full runbook. Today's content is hand-authored per row. */
+  .row-tip .rec {
+    margin-top: 6px;
+    padding-top: 5px;
+    border-top: 1px solid var(--border);
+    color: var(--accent);
+    font-size: 10.5px;
+    font-style: italic;
+  }
+  .row-tip .rec .k {
+    color: var(--text-muted);
+    font-style: normal;
+    margin-right: 5px;
+  }
+  /* #128. The optional single command line, set apart from the sentence
+     above it so it reads as something to copy rather than more prose.
+     pointer-events stay off with the rest of the tip: this is a thing to
+     read and retype, not a button, and the tip closes when the pointer
+     leaves the row. */
+  .row-tip .rec .cmd {
+    display: block;
+    margin-top: 5px;
+    padding: 4px 6px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    color: var(--text);
+    font-style: normal;
+    font-size: 10.5px;
+    word-break: break-all;
+    user-select: text;
+  }
+  /* A row whose rule carries an action says so, because the guidance lives
+     in a tooltip and a tooltip nobody hovers is a tooltip nobody reads. A
+     marker, not the text: the row already runs to eight columns and five of
+     them are dropped on a phone, so there is no width here to spend. */
+  table.t .has-action {
+    color: var(--accent);
+    font-style: normal;
+    margin-left: 4px;
+    cursor: help;
+  }
+  table.t .metric  { color: var(--text); font-weight: 600; }
+  table.t .nowrap  { white-space: nowrap; }
+  table.t .right   { text-align: right; }
+
+  /* ── P2 configuration view — read-only sections ──────────────────── */
+  .cfg-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+  @media (max-width: 1100px) { .cfg-grid { grid-template-columns: 1fr; } }
+
+  .cfg-section {
+    border: 1px solid var(--border); border-radius: var(--radius-sm);
+    background: var(--bg-soft);
+    padding: 11px 13px 12px;
+  }
+  .cfg-section .head {
+    display: flex; align-items: baseline; gap: 10px;
+    margin-bottom: 7px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 5px;
+  }
+  .cfg-section .head .name {
+    font-size: 11px; font-weight: 700; letter-spacing: 0.16em;
+    color: var(--text); text-transform: uppercase;
+  }
+  /* Badge sits at the right edge regardless of head content width — this
+     keeps the four panel headers symmetric. The tt-icon between name and
+     badge fills with intrinsic width only; no flex span pushes it. */
+  .cfg-section .head .badge { margin-left: auto; }
+  .cfg-section .badge {
+    font-family: var(--mono); font-size: 10px; font-weight: 700;
+    letter-spacing: 0.06em;
+    padding: 2px 7px; border-radius: 999px;
+  }
+  .cfg-section .badge.ok    { background: var(--green-soft); color: var(--green); border: 1px solid rgba(var(--green-rgb), 0.35); }
+  .cfg-section .badge.warn  { background: var(--amber-soft); color: var(--amber); border: 1px solid rgba(var(--amber-rgb), 0.38); }
+  .cfg-section .badge.alert { background: var(--red-soft);   color: var(--red);   border: 1px solid rgba(var(--red-rgb), 0.42); }
+
+  .cfg-section .row {
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-family: var(--mono); font-size: 12px;
+    padding: 2px 0; line-height: 1.45;
+  }
+  .cfg-section .row .k { color: var(--text-muted); }
+  .cfg-section .row .v { color: var(--text); font-weight: 600; }
+  .cfg-section .row .v.dim { color: var(--text-dim); font-weight: 400; }
+  .cfg-section .row .v.mask { font-family: var(--mono); letter-spacing: 0.04em; }
+
+  /* Body rows split into two columns to halve panel height. Multi-column
+     layout (not grid) so the existing .row flex children work unmodified
+     — each row is one column-flow item. break-inside: avoid prevents a
+     single row from being cut between columns. Drops to single column
+     on phones (RESPONSIVE-STANDARDS.md mobile cutoff). */
+  .cfg-section .body-grid {
+    column-count: 2;
+    column-gap: 18px;
+  }
+  .cfg-section .body-grid > .row { break-inside: avoid; }
+  @media (max-width: 720px) {
+    .cfg-section .body-grid { column-count: 1; }
+  }
+
+  /* Edit-instructions footer — same .row rhythm as the body so the panel
+     reads top-to-bottom as one structured block. Dashed top border
+     visually separates "current state" (above) from "how to change it"
+     (below) without introducing a heavyweight box. */
+  .cfg-section .cfg-edit {
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px dashed var(--border);
+  }
+  .cfg-section .cfg-edit .row .v {
+    color: var(--text-dim); font-weight: 400;
+  }
+
+  /* ── Test Fire zone ──────────────────────────────────────────────── */
+  /* Pill action buttons live in the header; the body holds only meta. */
+  .btn.pill {
+    border-radius: 999px;
+    padding: 3px 12px;
+    text-transform: none;
+    letter-spacing: 0.04em;
+  }
+  /* Header trailing actions, push to the right edge of the h2 row. */
+  .dt-testfire h2 { align-items: center; }
+  .dt-testfire h2 .h-actions {
+    margin-left: auto;
+    display: flex; gap: 6px;
+  }
+  /* Inline info-icon + hover tooltip. Used here on Test Fire to surface
+     "verify the pipeline" context without a permanent subtitle string. */
+  .tt-icon {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    background: var(--bg-soft);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    font-size: 10px; font-weight: 700;
+    cursor: help;
+    position: relative;
+    text-transform: none;
+    letter-spacing: normal;
+  }
+  .tt-icon:hover, .tt-icon:focus { color: var(--text-dim); border-color: var(--border-hi); outline: none; }
+  .tt-icon::before {
+    content: 'i';
+    font-family: 'Times New Roman', Georgia, serif;
+    font-style: italic;
+    font-size: 10px;
+    line-height: 1;
+  }
+  /* `--tt-shift` is the clamp's only lever: every transform below threads it
+     through its X component so positionTtBody() can slide a tip back inside
+     the viewport without knowing which of the three anchorings placed it.
+     Zero by default, so the CSS alone still anchors exactly as it did. */
+  /* #131. The same popover on an anchor that is not an ⓘ: the per-row
+     delivery icons and the Channels strip pills. They carried native
+     `title=""`, which this project does not use for hover help — a browser
+     tooltip waits, cannot be styled or hovered, carries no link, and never
+     opens on a keyboard focus. `.tt-host` is any element that OWNS a
+     `.tt-body`; it needs the positioning context and the cursor, and it is
+     added to each of the three rules below (rest, hover, focus) so one set
+     of boxes serves both anchor kinds. */
+  .tt-host { position: relative; cursor: help; }
+  .tt-icon .tt-body, .tt-host .tt-body {
+    position: absolute;
+    top: calc(100% + 6px);
+    left: 50%; transform: translate(calc(-50% + var(--tt-shift, 0px)), -4px);
+    width: 260px;
+    /* Never wider than the screen it has to fit on, whatever the clamp does. */
+    max-width: calc(100vw - 16px);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-family: var(--sans);
+    font-size: 11px; font-weight: 400;
+    color: var(--text-dim);
+    letter-spacing: normal;
+    text-transform: none;
+    /* The rest of this block resets what the anchor imposes — font, casing,
+       tracking — and `white-space` was the one it left out. The icons sit in
+       table headers and label rows that set `nowrap`, which the tip inherits:
+       its 260px width then bounds the BOX while the text lays out on one
+       endless line, so a phone-width page reported a scrollable area of
+       2484px against a 390px viewport (#95). Nothing was visible out there —
+       every offending element was a <strong> or <code> inside a tip — but the
+       page really was that wide, which RESPONSIVE-STANDARDS forbids outright.
+       `anywhere` covers the other half: a long unbroken token (a path, a
+       metric name) has no space to break at and would run past 260px on its
+       own. */
+    white-space: normal;
+    overflow-wrap: anywhere;
+    line-height: 1.45;
+    opacity: 0; pointer-events: none;
+    /* Opacity only. The clamp writes its correction into the transform, and a
+       tip that has to come back 136px would have spent the fade sliding
+       across the screen to get there. The 4px lift goes with it; a tooltip
+       that simply appears where it belongs is the better trade. */
+    transition: opacity 160ms ease;
+    z-index: 100;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+    text-align: left;
+  }
+  /* #133. A tip that is NOT shown must not be able to widen the page. It is
+     laid out either way, and a 260px box centred on an icon near the right
+     edge rests past that edge: 69px of phantom scrollable page at 320px, the
+     same class as #87 and #95. At rest the box is parked one full width to
+     the LEFT of its anchor instead, because overflow to the left of the
+     document is not scrollable and adds nothing, while overflow to the right
+     is and does.
+     `display: none` would also remove the extent and was not used: it drops
+     the fade with it (a display change is not interpolated without
+     `@starting-style` + `transition-behavior`), and the whole point of this
+     popover over a native tooltip is how it appears.
+     The park is scoped to :not(:hover):not(:focus) — exactly the states the
+     three rules below show the tip in — so no VISIBLE tip is ever displaced,
+     whichever anchoring placed it, and positionTtBody() still measures the
+     box where it will actually be seen. Higher specificity than all three
+     resting anchorings, lower than none of the shown ones, because it cannot
+     apply at the same time as any of them. */
+  .tt-icon:not(:hover):not(:focus) .tt-body,
+  .tt-host:not(:hover):not(:focus) .tt-body { transform: translateX(-100%); }
+  .tt-icon:hover .tt-body, .tt-icon:focus .tt-body,
+  .tt-host:hover .tt-body, .tt-host:focus .tt-body {
+    opacity: 1; transform: translate(calc(-50% + var(--tt-shift, 0px)), 0);
+  }
+  /* Right-edge variant — anchor the tooltip to the right of the icon so
+     it doesn't overflow the viewport on right-column cells/cards. */
+  .tt-icon.right .tt-body {
+    left: auto; right: 0;
+    transform: translate(var(--tt-shift, 0px), -4px);
+  }
+  .tt-icon.right:hover .tt-body, .tt-icon.right:focus .tt-body {
+    transform: translate(var(--tt-shift, 0px), 0);
+  }
+  /* Configuration panel tooltips need both axes adjusted from the
+     default centered-below positioning:
+       - left edge of icon (not centered) — the centered default
+         bleeds past the viewport's left edge for left-column panels
+         on narrow windows like iPad landscape.
+       - above the icon (not below) — the bottom-row panels (Digest,
+         Relay) sit at the bottom of the page, so a tooltip dropping
+         down below the icon clips at the iPad's bottom edge.
+     Above + left-anchored covers all four panels regardless of
+     position in the 2×2 grid. */
+  /* `.tt-host` as well as `.tt-icon`: the parse badge on each of these
+     panels owns a popover now (#131), it sits on the same head row as the ⓘ
+     beside it, and the reason above is about WHERE THE PANEL IS, not about
+     which kind of anchor asked. A badge left on the default centred-below
+     anchoring is the very clip this rule exists to prevent, on the two panels
+     that sit at the bottom of the page. The clamp corrects x only; nothing
+     corrects y. */
+  .cfg-section .tt-icon .tt-body,
+  .cfg-section .tt-host .tt-body {
+    left: 0; right: auto;
+    top: auto; bottom: calc(100% + 6px);
+    transform: translate(var(--tt-shift, 0px), 4px);
+  }
+  .cfg-section .tt-icon:hover .tt-body,
+  .cfg-section .tt-icon:focus .tt-body,
+  .cfg-section .tt-host:hover .tt-body,
+  .cfg-section .tt-host:focus .tt-body {
+    transform: translate(var(--tt-shift, 0px), 0);
+  }
+  /* ── v1.1 slot — log panel placeholder so the layout doesn't reflow
+        when the rippled log card lands later. Hidden by default. ───── */
+  .log-panel-slot { display: none; }
+  .log-panel-slot.show { display: block; }
+
+  /* Fleet peer view — D8 last tab batch. Same shape as consensus.html/
+     governance.html's own peer-view banner. */
+  .peer-view-banner {
+    text-align: center;
+    font-size: 11px; font-weight: 600; letter-spacing: 0.04em;
+    color: var(--amber);
+    padding: 0 0 10px;
+  }
+
+  /* ── Footer ──────────────────────────────────────────────────────── */
+  footer {
+    padding: 10px 18px 16px;
+    color: var(--text-muted);
+    font-size: 11px;
+    font-family: var(--mono);
+    display: flex; justify-content: space-between;
+    border-top: 1px solid var(--border);
+    margin-top: 6px;
+  }
+  /* The status footer is a desktop nicety — on a phone or an iPad it is the
+     last thing on every page, saying nothing the header does not, at the
+     cost of a scroll. Tablet tops out at 1199 in the breakpoint table. */
+  @media (max-width: 1199px) { footer { display: none; } }
+
+  /* ── Short-viewport compaction — LAST IN THIS FILE ON PURPOSE ────────
+     Media queries carry no extra specificity. A rule in one only wins over
+     an unconditional rule of equal specificity if it comes later in source
+     order, and this block used to sit near the top, above almost everything
+     it was trying to compact. Fifteen of its sixteen selectors were dead
+     code; the band rendered its ordinary desktop spacing and nobody noticed
+     because nothing had visibly broken (#96, the same trap 8183661 fixed
+     one instance of).
+
+     So it lives at the end. Anything added below it will beat it, which is
+     the one thing to remember when adding to this file. */
+/* ── Short-viewport compaction ─────────────────────────────────────
+     The page has a lot of vertical content (status strip + Alert History
+     row + Digest Log/Test Fire row + 4 config panels), and where the
+     viewport runs short the bottom of the Configuration card spills below
+     the fold. The compaction is aggressive — every box loses padding,
+     every row drops line-height, and the cfg-edit footer goes from 3
+     rows to a single inline string.
+
+     Two conditions, because the pressure here is vertical and only the first
+     of them is about width:
+
+       1100–1399px  — the iPad / compact-desktop band, unchanged. Every
+                      viewport in it is short enough to need this.
+       ≥1400px and ≤1000px tall — desktop monitors are not tall viewports
+                      once OS and browser chrome come off. A 1080p screen
+                      leaves roughly 900px of usable height, and at that
+                      height the Configuration card was sliced at the fold —
+                      the report this answers. Gated on height rather than
+                      width so a 1440p monitor, or a maximised window on a
+                      tall display, keeps the roomy desktop spacing.
+
+     1000px is chosen to sit between the two real cases: a 1080p window is
+     under it whether the page is embedded in the fleet shell (frame height)
+     or standalone (window height), and a full-height 1080p viewport is above
+     it in both. */
+  @media (min-width: 1101px) and (max-width: 1399px),
+         (min-width: 1400px) and (max-height: 1000px) {
+    main { padding: 2px 14px 6px; gap: 6px; }
+    .card { padding: 7px 12px 8px; }
+    .card h2 { margin: 0 0 5px; padding-bottom: 3px; font-size: 11px; }
+
+    /* Status strip cells — tighter top/bottom + drop the min-height.
+       `.lbl` / `.val`, which is what the markup uses: this block asked for
+       `.label` / `.value` and matched nothing at all (#96). */
+    .strip-cell { padding: 6px 13px 7px; min-height: 0; gap: 1px; }
+    .strip-cell .lbl { font-size: 9.5px; }
+    .strip-cell .val { font-size: 16px; line-height: 1.1; }
+    .strip-cell .sub   { font-size: 11px; }
+
+    /* Digest Log + Test Fire's own short-viewport tweaks live with the rest
+       of that section's CSS now, not here (see the comment beside
+       `.dt-merged .dt-testfire` below): a copy up here was silently losing
+       to that section's own later, unguarded rule at equal specificity,
+       regardless of which one the media query matched. */
+
+    /* Tables (Alert History + Digest Log) — tighter rows. */
+    table.t { font-size: 11.5px; }
+    table.t thead th { padding: 4px 9px; font-size: 10px; }
+    table.t tbody td { padding: 3px 9px; }
+    .filter-chips { margin-bottom: 6px; }
+    .range-btn { font-size: 10px; padding: 2px 8px; }
+
+    /* Configuration card — the biggest space-eater. The 2×2 grid
+       stays but every panel sheds vertical space: tighter head, body
+       rows shrunk, and the cfg-edit footer drops its row labels +
+       collapses line-height so the three lines (Edit on / Path /
+       Reload) read as a tight continuous block. The full labeled
+       form comes back above 1400 px. */
+    .cfg-grid { gap: 6px; }
+    .cfg-section { padding: 6px 10px 7px; }
+    .cfg-section .head { margin-bottom: 4px; padding-bottom: 3px; }
+    .cfg-section .head .name { font-size: 10.5px; }
+    .cfg-section .row { padding: 0; line-height: 1.3; font-size: 11.5px; }
+    .cfg-section .body-grid { column-gap: 14px; }
+    /* Hide cfg-edit entirely on iPad-landscape. The footer's
+       three-row "Edit on / Path / Reload" block is the largest
+       per-panel space cost (~120 px across the 2×2 grid). The same
+       information is one tap away in the panel's ⓘ tooltip and the
+       full version returns above 1400 px. Operators on iPad keep the
+       at-a-glance live status without sacrificing the rest of the
+       page to scroll. */
+    .cfg-section .cfg-edit { display: none; }
+  }
+</style>
+<script src="/theme-toggle.js" defer></script>
+</head>
+<body>
+
+<!-- Header is hidden by the shell iframe loader; kept for direct page loads. -->
+<header>
+  <nav class="tabs" data-tabname="Insights">
+    <a class="brand" href="/" aria-label="Aperire — back to the dashboard">
+      <img class="brand-mark" src="/aperire-mark.svg" alt="Aperire One" />
+      <span class="brand-text">Aperire <span class="brand-one">One</span></span>
+      <span class="brand-tip" role="tooltip"><strong>Aperire One</strong>, from the Latin &ldquo;to open&rdquo; or &ldquo;to reveal&rdquo; &mdash; an XRPL validator and node dashboard that brings a whole fleet into one view.</span>
+    </a>
+
+    <!-- Fleet node picker — decisions.md D5, task step C. See
+         public/index.html for the full comment; identical markup here. -->
+    <div class="node-chip-wrap" id="fleetChipWrap" hidden>
+      <button type="button" class="node-chip" id="fleetChip" aria-expanded="false" aria-controls="fleetDD">
+        <span class="chip-dot" id="fleetChipDot" aria-hidden="true"></span>
+        <span class="chip-name" id="fleetChipName">&mdash;</span>
+        <span class="chip-sep" id="fleetChipSep" aria-hidden="true">&middot;</span>
+        <span class="chip-roll" id="fleetChipRoll"></span>
+        <span class="chip-caret" aria-hidden="true">&#9662;</span>
+      </button>
+      <div class="node-dd" id="fleetDD" aria-label="Fleet nodes" hidden>
+        <div class="ndd-head">
+          <div class="title">Fleet</div>
+          <div class="node-health-summary" id="fleetDDSummary"></div>
+        </div>
+        <ul class="ndd-list" id="fleetDDList"></ul>
+        <div class="ndd-foot">Switches this dashboard to that node. No second sign-in, no leaving this dashboard.</div>
+      </div>
+    </div>
+
+    <div class="tabs-spacer"></div>
+    <span class="right-group">
+    <button type="button" class="navbg" id="navBg" hidden aria-label="Break glass open">
+      <span class="navbg-dot" aria-hidden="true"></span>
+      <span id="navBgText">12m</span>
+    </button>
+    <span class="navcur" aria-hidden="true">Insights</span>
+    <button type="button" class="hamburger" id="hamburgerBtn" aria-expanded="false" aria-controls="mobMenu" aria-label="Open navigation menu">
+      <span class="bars" aria-hidden="true"><i></i><i></i><i></i></span>
+    </button>
+    </span>
+  </nav>
+
+  <div class="scrim" id="scrim"></div>
+
+  <nav class="mobmenu" id="mobMenu" aria-label="Dashboard sections">
+    <ul>
+      <li><a class="mtab" href="/#/overview">
+        <span class="mtab-body"><span class="mtab-title">Overview</span><span class="mtab-sub">Health at a glance</span></span>
+        <svg class="mtab-check" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M13.7 3.7 6 11.4 2.3 7.7 3.7 6.3 6 8.6l6.3-6.3z"/></svg>
+      </a></li>
+      <li><a class="mtab" href="/#/consensus">
+        <span class="mtab-body"><span class="mtab-title">Consensus</span><span class="mtab-sub">Voting on new ledgers</span></span>
+        <svg class="mtab-check" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M13.7 3.7 6 11.4 2.3 7.7 3.7 6.3 6 8.6l6.3-6.3z"/></svg>
+      </a></li>
+      <li><a class="mtab" href="/#/network">
+        <span class="mtab-body"><span class="mtab-title">Network</span><span class="mtab-sub">Peers &amp; connections</span></span>
+        <svg class="mtab-check" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M13.7 3.7 6 11.4 2.3 7.7 3.7 6.3 6 8.6l6.3-6.3z"/></svg>
+      </a></li>
+      <li><a class="mtab" href="/#/system">
+        <span class="mtab-body"><span class="mtab-title">System</span><span class="mtab-sub">Compute health</span></span>
+        <svg class="mtab-check" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M13.7 3.7 6 11.4 2.3 7.7 3.7 6.3 6 8.6l6.3-6.3z"/></svg>
+      </a></li>
+      <li><a class="mtab" href="/#/governance">
+        <span class="mtab-body"><span class="mtab-title">Governance</span><span class="mtab-sub">Rules &amp; votes</span></span>
+        <svg class="mtab-check" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M13.7 3.7 6 11.4 2.3 7.7 3.7 6.3 6 8.6l6.3-6.3z"/></svg>
+      </a></li>
+      <li><a class="mtab active" href="/#/insights" aria-current="page">
+        <span class="mtab-body"><span class="mtab-title">Insights</span><span class="mtab-sub">Alerts &amp; audit</span></span>
+        <svg class="mtab-check" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M13.7 3.7 6 11.4 2.3 7.7 3.7 6.3 6 8.6l6.3-6.3z"/></svg>
+      </a></li>
+      <li hidden data-advisor-nav><a class="mtab" href="/#/advisor">
+        <span class="mtab-body"><span class="mtab-title">Advisor</span><span class="mtab-sub">Diagnosis &amp; guidance</span></span>
+        <svg class="mtab-check" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M13.7 3.7 6 11.4 2.3 7.7 3.7 6.3 6 8.6l6.3-6.3z"/></svg>
+      </a></li>
+    </ul>
+    <!-- ADR 0016 decision 6. When `any` is false the Advisor tab is not
+         rendered, and this one quiet row takes its place at the BOTTOM of the
+         menu, below the tab list and styled as a secondary item rather than
+         as a tab. It is the only invitation anywhere in the product: not a
+         banner, not a toast, not a badge, and it appears on no other tab.
+         Reached only by deliberate navigation. -->
+    <a class="madd" href="/advisor.html" hidden data-advisor-pointer>
+      <span class="madd-title">Add the Advisor</span>
+      <span class="madd-sub">Optional. One command.</span>
+    </a>
+    <div class="mobmenu-foot">Tap a section to switch. Press Esc or tap outside to close.</div>
+  </nav>
+</header>
+
+<main>
+
+  <!-- D8 last tab batch — "viewing X · as of Ns ago" (security-review-d8-fetchthrough
+       P1-030 — a peer's data must never present as live). Populated by
+       renderPeerBanner(). -->
+  <div class="peer-view-banner" id="peerViewBanner" role="status" hidden></div>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       P0 · STATUS STRIP
+       ═══════════════════════════════════════════════════════════════ -->
+  <section class="status-strip" aria-label="Insights status">
+
+    <div class="strip-cell">
+      <span class="lbl">
+        Firing Now
+        <span class="tt-icon" tabindex="0" aria-label="About Firing Now">
+          <span class="tt-body">Count of currently firing alerts, broken down by severity tier. Bands amber for <strong>warn</strong>, red for <strong>critical</strong>, and pulsing red for <strong>page</strong>.</span>
+        </span>
+      </span>
+      <span class="val alert" id="firingNowVal">1 C</span>
+      <span class="sub" id="firingNowSub">1 critical · 0 warn · 0 page</span>
+    </div>
+
+    <div class="strip-cell">
+      <span class="lbl">
+        Last Page
+        <span class="tt-icon" tabindex="0" aria-label="About Last Page">
+          <span class="tt-body">Time since the most recent <strong>Page</strong>-tier alert went out. Page tier re-fires every 15 min while active. Reads <code>—</code> when no page in the last 7 days.</span>
+        </span>
+      </span>
+      <span class="val" id="lastPageVal">—</span>
+      <span class="sub" id="lastPageSub">no page in 7d</span>
+    </div>
+
+    <div class="strip-cell">
+      <span class="lbl">
+        Last Digest
+        <span class="tt-icon" tabindex="0" aria-label="About Last Digest">
+          <span class="tt-body">When the scheduled digest last sent, plus a countdown to the next send. Default cadence <strong>13:00 UTC</strong>, configurable in <code>digest.yaml</code>.</span>
+        </span>
+      </span>
+      <span class="val" id="lastDigestVal">&mdash;</span>
+      <span class="sub" id="lastDigestSub">reading this node's record</span>
+    </div>
+
+    <div class="strip-cell">
+      <span class="lbl">
+        Channels
+        <span class="tt-icon right" tabindex="0" aria-label="About Channels">
+          <span class="tt-body">Delivery channels for alerts. Green pill means configured and reachable; dim pill means not configured. Sub-line shows the count active.</span>
+        </span>
+      </span>
+      <div class="channel-row" id="channelRow">
+        <!-- #131. The page's own popover, not a native title, and the words
+             follow the configuration: the dim class was being toggled from
+             /api/insights/config while the title kept claiming "Resend
+             reachable" on a host with no email set up at all. -->
+        <span class="channel-pill tt-host" id="channelPillEmail" tabindex="0" aria-label="Email delivery">EMAIL<span class="tt-body" id="channelTipEmail">Email delivery, through Resend.</span></span>
+        <span class="channel-pill tt-host" id="channelPillNtfy" tabindex="0" aria-label="ntfy push delivery">NTFY<span class="tt-body" id="channelTipNtfy">Push delivery, through an ntfy topic.</span></span>
+        <span class="channel-pill dim tt-host" id="channelPillWebhook" tabindex="0" aria-label="Webhook delivery">WEBHOOK<span class="tt-body" id="channelTipWebhook">Webhook delivery, to your own endpoint.</span></span>
+      </div>
+      <span class="sub" id="channelActiveSub">2 of 3 active</span>
+    </div>
+
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       P0 · ALERT HISTORY
+       One panel for alerts, current and past. What is firing is pinned to
+       the top of the same table that holds what has already ended, so an
+       operator watching a restart sees the alert appear and then turn
+       resolved in one place instead of losing it from one card and
+       looking for it in another. Full width: eight columns plus a
+       firing row's three actions need it, and a narrower shared track let
+       the actions spill past the card's own right edge.
+       ═══════════════════════════════════════════════════════════════ -->
+  <section class="card alert-history-merged" aria-label="Alert history">
+      <h2>
+        Alert History
+        <span class="tt-icon" tabindex="0" aria-label="About Alert History">
+          <span class="tt-body">Every alert, current and past, in one place. <strong>Live</strong> follows the last hour as it happens and refreshes itself; the time ranges (1h to 30d) show the history in that window. Whatever the range, anything <strong>firing right now is pinned to the top</strong>, so a long-running alert is never hidden by a short window. Severity chips narrow the tier; <strong>State</strong> is the lifecycle (<code>Firing</code> or <code>Resolved</code>). <span data-advisor-prose hidden><strong>Ask Advisor</strong> investigates any row, and a </span><span data-advisor-prose-alt>A </span>firing row also carries <strong>Ack</strong> and <strong>Mute 1h</strong>. Tap a row for the full record.</span>
+        </span>
+        <span class="count" id="historyCount">· 6 events<span class="tt-body"></span></span>
+        <span class="head-pager" id="historyPager">
+          <button class="pg-btn" type="button" id="historyPagerPrev" aria-label="Previous page" disabled>&lsaquo;</button>
+          <span class="page-ind" id="historyPagerRange">1-6 of 6</span>
+          <button class="pg-btn" type="button" id="historyPagerNext" aria-label="Next page" disabled>&rsaquo;</button>
+        </span>
+      </h2>
+
+      <div class="history-head">
+        <div class="filter-chips" id="historyChips">
+          <button class="chip active">All</button>
+          <button class="chip">Page</button>
+          <button class="chip">Crit</button>
+          <button class="chip">Warn</button>
+          <button class="chip">Resolved</button>
+        </div>
+        <div class="range-toggle" id="historyRange" role="group" aria-label="Alert history time range">
+          <button class="range-btn" type="button" data-range="live">Live</button>
+          <button class="range-btn" type="button" data-range="1h">1h</button>
+          <button class="range-btn" type="button" data-range="6h">6h</button>
+          <button class="range-btn active" type="button" data-range="24h">24h</button>
+          <button class="range-btn" type="button" data-range="7d">7d</button>
+          <button class="range-btn" type="button" data-range="30d">30d</button>
+        </div>
+      </div>
+
+      <div class="table-wrap">
+          <table class="t" id="historyTable">
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Metric</th>
+                <th>Severity</th>
+                <th class="right col-val">Value</th>
+                <th class="col-dur">Duration</th>
+                <th class="col-chan">Channels</th>
+                <th class="col-state">State</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              <!-- ADR 0016 / #111. Empty on purpose.
+
+                   Six hardcoded rows used to sit here as design fixtures, each
+                   carrying a live-looking Ask Advisor pill. The renderer replaces
+                   this tbody wholesale on every load, so they were never real data,
+                   but they PAINTED: an install with no Advisor got a flash of six Ask
+                   Advisor pills before the first render took them away, on every
+                   visit to this page. Hiding them after the fetch lands is the same
+                   flash one frame later, so they are gone instead. -->
+            </tbody>
+          </table>
+      </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       P0 · DIGEST LOG + TEST FIRE, one delivery-verification card
+       Below Alert History rather than beside it. One card, two named
+       zones split 60/40: Digest Log is the record of every scheduled
+       send, Test Fire is how you provoke one on demand. Each zone keeps
+       its own title, info tip, and controls, only the card box and the
+       page's "one h2 per card" pattern are what merged.
+
+       The zones also share the same internal shape now: header, then a
+       chip band, then a table that fills the rest of the zone, so the
+       two read as the same kind of thing answered two ways rather than
+       two differently-built boxes that happen to be the same height.
+       Digest Log's chips filter its table; Test Fire's chips
+       (`#testfireRate`) don't filter anything, there is nothing to
+       filter, they just report the rate and when it resets, in the same
+       band position. Both zones end level by construction (each table
+       fills its own zone), a dashed rule marks the seam between them
+       side by side, and it drops entirely once they stack below 1100px.
+       ═══════════════════════════════════════════════════════════════ -->
+  <section class="card dt-merged" aria-label="Delivery verification">
+
+      <div class="dt-zone dt-digest" aria-label="Digest log">
+        <h2>
+          Digest Log
+          <span class="tt-icon" tabindex="0" aria-label="About Digest Log">
+            <span class="tt-body">Scheduled digest delivery record from the last 7 days. Confirms the reporting layer is alive even when no alerts have fired. State pill turns amber on retry, red on hard failure.</span>
+          </span>
+          <span class="count" id="digestCount">· last 7d · 7 sends</span>
+          <span class="head-pager" id="digestPager">
+            <button class="pg-btn" type="button" id="digestPagerPrev" aria-label="Previous page" disabled>&lsaquo;</button>
+            <span class="page-ind" id="digestPagerRange">1-3 of 7</span>
+            <button class="pg-btn" type="button" id="digestPagerNext" aria-label="Next page">&rsaquo;</button>
+          </span>
+        </h2>
+
+        <div class="history-head">
+          <div class="filter-chips" id="digestChips">
+            <button class="chip active">All</button>
+            <button class="chip">Email</button>
+            <button class="chip">Ntfy</button>
+            <button class="chip">Webhooks</button>
+          </div>
+        </div>
+
+        <div class="table-wrap" id="digestWrap">
+          <table class="t" id="digestTable">
+            <thead>
+              <tr>
+                <th>Sent</th>
+                <th>Channel</th>
+                <th>Recipients</th>
+                <th>State</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td class="nowrap">today 13:00
+                  <div class="row-tip">
+                    <div class="ttitle">Daily digest · today</div>
+                    <div class="trow"><span class="k">Subject</span><span class="v">Aperire daily report · 99.7% agreement</span></div>
+                    <div class="trow"><span class="k">Sent</span><span class="v">2026-04-25 13:00:04 UTC</span></div>
+                    <div class="trow"><span class="k">Recipients</span><span class="v">3</span></div>
+                    <div class="trow"><span class="k">Provider</span><span class="v">Resend</span></div>
+                    <div class="trow"><span class="k">Message ID</span><span class="v dim">re_8KhFy2pTxQ4</span></div>
+                    <div class="rec"><span class="k">Includes</span>agreement · top alerts · network · amendments</div>
+                  </div>
+                </td>
+                <td class="metric">Email</td>
+                <td>3</td>
+                <td><span class="sev ok">Sent</span></td>
+              </tr>
+              <tr>
+                <td class="nowrap">Apr 23 13:00
+                  <div class="row-tip">
+                    <div class="ttitle">Daily digest · Apr 23</div>
+                    <div class="trow"><span class="k">Subject</span><span class="v">Aperire daily report · 99.9% agreement</span></div>
+                    <div class="trow"><span class="k">Sent</span><span class="v">2026-04-23 13:00:03 UTC</span></div>
+                    <div class="trow"><span class="k">Recipients</span><span class="v">3</span></div>
+                    <div class="trow"><span class="k">Message ID</span><span class="v dim">re_2WjAr8KsMnP</span></div>
+                  </div>
+                </td>
+                <td class="metric">Email</td>
+                <td>3</td>
+                <td><span class="sev ok">Sent</span></td>
+              </tr>
+              <tr>
+                <td class="nowrap">Apr 22 13:00
+                  <div class="row-tip">
+                    <div class="ttitle">Daily digest · Apr 22</div>
+                    <div class="trow"><span class="k">Subject</span><span class="v">Aperire daily report · 99.6% agreement</span></div>
+                    <div class="trow"><span class="k">Sent</span><span class="v">2026-04-22 13:00:05 UTC</span></div>
+                    <div class="trow"><span class="k">Recipients</span><span class="v">3</span></div>
+                    <div class="trow"><span class="k">Message ID</span><span class="v dim">re_5LpCq3VtWxB</span></div>
+                    <div class="rec"><span class="k">Note</span>load_factor page from 22:08 included in next digest</div>
+                  </div>
+                </td>
+                <td class="metric">Email</td>
+                <td>3</td>
+                <td><span class="sev ok">Sent</span></td>
+              </tr>
+              <tr>
+                <td class="nowrap">Apr 21 13:00
+                  <div class="row-tip">
+                    <div class="ttitle">Daily digest · Apr 21 · retried</div>
+                    <div class="trow"><span class="k">Subject</span><span class="v">Aperire daily report · 100.0% agreement</span></div>
+                    <div class="trow"><span class="k">First attempt</span><span class="v">13:00:08 UTC</span></div>
+                    <div class="trow"><span class="k">Failure</span><span class="v">Resend API timeout</span></div>
+                    <div class="trow"><span class="k">Successful</span><span class="v">13:00:31 UTC (retry)</span></div>
+                    <div class="trow"><span class="k">Recipients</span><span class="v">3</span></div>
+                    <div class="trow"><span class="k">Message ID</span><span class="v dim">re_9MqEz4HrYjK</span></div>
+                  </div>
+                </td>
+                <td class="metric">Email</td>
+                <td>3</td>
+                <td><span class="sev warn">Retried</span></td>
+              </tr>
+              <tr>
+                <td class="nowrap">Apr 20 13:00
+                  <div class="row-tip">
+                    <div class="ttitle">Daily digest · Apr 20</div>
+                    <div class="trow"><span class="k">Subject</span><span class="v">Aperire daily report · 99.8% agreement</span></div>
+                    <div class="trow"><span class="k">Sent</span><span class="v">2026-04-20 13:00:02 UTC</span></div>
+                    <div class="trow"><span class="k">Recipients</span><span class="v">3</span></div>
+                    <div class="trow"><span class="k">Message ID</span><span class="v dim">re_3RtDh6BvFnL</span></div>
+                  </div>
+                </td>
+                <td class="metric">Email</td>
+                <td>3</td>
+                <td><span class="sev ok">Sent</span></td>
+              </tr>
+              <tr>
+                <td class="nowrap">Apr 19 13:00
+                  <div class="row-tip">
+                    <div class="ttitle">Daily digest · Apr 19</div>
+                    <div class="trow"><span class="k">Subject</span><span class="v">Aperire daily report · 100.0% agreement</span></div>
+                    <div class="trow"><span class="k">Sent</span><span class="v">2026-04-19 13:00:06 UTC</span></div>
+                    <div class="trow"><span class="k">Recipients</span><span class="v">3</span></div>
+                    <div class="trow"><span class="k">Message ID</span><span class="v dim">re_6QnGy7CxKpM</span></div>
+                  </div>
+                </td>
+                <td class="metric">Email</td>
+                <td>3</td>
+                <td><span class="sev ok">Sent</span></td>
+              </tr>
+              <tr>
+                <td class="nowrap">Apr 18 13:00
+                  <div class="row-tip">
+                    <div class="ttitle">Daily digest · Apr 18</div>
+                    <div class="trow"><span class="k">Subject</span><span class="v">Aperire daily report · 99.9% agreement</span></div>
+                    <div class="trow"><span class="k">Sent</span><span class="v">2026-04-18 13:00:04 UTC</span></div>
+                    <div class="trow"><span class="k">Recipients</span><span class="v">3</span></div>
+                    <div class="trow"><span class="k">Message ID</span><span class="v dim">re_7NjBs5DwQrX</span></div>
+                  </div>
+                </td>
+                <td class="metric">Email</td>
+                <td>3</td>
+                <td><span class="sev ok">Sent</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="dt-zone dt-testfire" aria-label="Test fire">
+        <h2>
+          Test Fire
+          <span class="tt-icon" tabindex="0" aria-label="About Test Fire">
+            <span class="tt-body">Verify the alert pipeline. <strong>Dry Run</strong> walks every channel without sending. <strong>Live Test</strong> fires a real notification through every configured channel, prefixed <code>[TEST]</code>.</span>
+          </span>
+          <span class="h-actions">
+            <button class="btn pill primary" id="dryRunBtn">Dry Run</button>
+            <button class="btn pill alert" id="liveTestBtn">Live Test</button>
+          </span>
+        </h2>
+
+        <div class="history-head">
+          <div class="filter-chips" id="testfireRate">
+            <span class="chip-static">— / — this hour</span>
+            <span class="chip-static">resets —</span>
+          </div>
+        </div>
+
+        <div class="table-wrap" id="testfireWrap">
+          <table class="t" id="testfireTable">
+            <thead>
+              <tr>
+                <th>Channels</th>
+                <th>Prefix</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td id="testfireChannelsCell">—</td>
+                <td id="testfirePrefixCell">[TEST]</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       v1.1 SLOT — rippled log panel will mount here
+       ═══════════════════════════════════════════════════════════════ -->
+  <section class="log-panel-slot" aria-label="Rippled log panel">
+    <div class="card">
+      <h2>Rippled Log Patterns <span class="count">· v1.1</span></h2>
+      <div class="empty-allclear">
+        <span class="big">Coming in v1.1</span>
+        <span class="sub">Pattern library + hover runbook · arrives once base alerts ship</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════════
+       P2 · CONFIGURATION (read + validate + instruct)
+       ═══════════════════════════════════════════════════════════════ -->
+  <section class="card" aria-label="Configuration">
+    <h2>
+      Configuration
+      <span class="tt-icon" tabindex="0" aria-label="About Configuration">
+        <span class="tt-body">Current dashboard configuration loaded from disk. Read-only by design — all edits happen via SSH on the appropriate host, then a service reload. No write path through the browser, so a compromised dashboard process can't change rules or recipients.</span>
+      </span>
+      <span class="count">· read-only · edit on disk</span>
+    </h2>
+
+    <div class="cfg-grid">
+
+      <!-- Rules -->
+      <div class="cfg-section" data-section="rules">
+        <div class="head">
+          <span class="name">Rules</span>
+          <span class="tt-icon" tabindex="0" aria-label="About Rules">
+            <span class="tt-body">Alert rules and thresholds. The full catalog lives in <code>docs/METRICS-CATALOG.md</code>. Two files: <code>rules.yaml</code> is the set this product ships and every update replaces it, and <code>rules.local.yaml</code> is yours, overriding a shipped rule by metric and severity, adding one, or switching one off. Reload reads both fresh, no restart needed. There is no web write path: edits route through SSH so a compromised dashboard process can't change alerting behavior.<br><br><strong>Edit:</strong> Box A · dashboard host<br><strong>Reload:</strong> <code>sudo systemctl kill -s HUP aperire-server</code></span>
+          </span>
+          <span class="badge ok" id="cfgRulesBadge">PARSED<span class="tt-body"></span></span>
+        </div>
+        <div class="body-grid">
+          <div class="row"><span class="k">Active rules</span><span class="v" id="cfgRulesTotal">—</span></div>
+          <div class="row"><span class="k">Page tier</span><span class="v" id="cfgRulesPage">—</span></div>
+          <div class="row"><span class="k">Critical tier</span><span class="v" id="cfgRulesCrit">—</span></div>
+          <div class="row"><span class="k">Warn tier</span><span class="v" id="cfgRulesWarn">—</span></div>
+          <div class="row"><span class="k">Local overrides</span><span class="v" id="cfgRulesLocal">—</span></div>
+          <div class="row"><span class="k">Last reloaded</span><span class="v dim" id="cfgRulesReloaded">—</span></div>
+        </div>
+        <div class="cfg-edit">
+          <div class="row"><span class="k">Edit on</span><span class="v">Box A &middot; dashboard host</span></div>
+          <div class="row"><span class="k">Shipped</span><span class="v" id="cfgRulesPath">&mdash;</span></div>
+          <div class="row"><span class="k">Yours</span><span class="v" id="cfgRulesLocalPath">&mdash;</span></div>
+          <div class="row"><span class="k">Reload</span><span class="v">sudo systemctl kill -s HUP aperire-server</span></div>
+        </div>
+      </div>
+
+      <!-- Channels -->
+      <div class="cfg-section" data-section="channels">
+        <div class="head">
+          <span class="name">Channels</span>
+          <span class="tt-icon" tabindex="0" aria-label="About Channels">
+            <span class="tt-body">Email (Resend), ntfy push, and webhooks. Secrets live in <code>/etc/aperire/aperire.env</code> and are referenced by env-var name only &mdash; never inline in <code>channels.yaml</code>. Webhooks support per-target severity filters and three formats: discord, slack, generic. See <code>docs/ALERTING-GUIDE.md</code>.<br><br><strong>Edit:</strong> Box A · dashboard host<br><strong>Reload:</strong> <code>sudo systemctl kill -s HUP aperire-server</code></span>
+          </span>
+          <span class="badge ok" id="cfgChannelsBadge">PARSED<span class="tt-body"></span></span>
+        </div>
+        <div class="body-grid">
+          <div class="row"><span class="k">Email · Resend</span><span class="v mask" id="cfgEmailKey">—</span></div>
+          <div class="row"><span class="k">Sender</span><span class="v" id="cfgEmailSender">—</span></div>
+          <div class="row"><span class="k">Recipients</span><span class="v" id="cfgEmailRecips">—</span></div>
+          <div class="row"><span class="k">ntfy topic</span><span class="v mask" id="cfgNtfy">—</span></div>
+          <div class="row"><span class="k">Webhooks</span><span class="v dim" id="cfgWebhooks">—</span></div>
+        </div>
+        <div class="cfg-edit">
+          <div class="row"><span class="k">Edit on</span><span class="v">Box A &middot; dashboard host</span></div>
+          <div class="row"><span class="k">Path</span><span class="v" id="cfgChannelsPath">&mdash;</span></div>
+          <div class="row"><span class="k">Reload</span><span class="v">sudo systemctl kill -s HUP aperire-server</span></div>
+        </div>
+      </div>
+
+      <!-- Digest -->
+      <div class="cfg-section" data-section="digest">
+        <div class="head">
+          <span class="name">Digest</span>
+          <span class="tt-icon" tabindex="0" aria-label="About Digest">
+            <span class="tt-body">Scheduled summary email. Cadence, recipients, and content selectors live in <code>digest.yaml</code>. Default time is 13:00 UTC. The selectors choose which sections render (agreement summary, top alerts, network health, upcoming amendments). Recipients fall back to the email channel's recipient list if not overridden.<br><br><strong>Edit:</strong> Box A · dashboard host<br><strong>Reload:</strong> <code>sudo systemctl kill -s HUP aperire-server</code></span>
+          </span>
+          <span class="badge ok" id="cfgDigestBadge">PARSED<span class="tt-body"></span></span>
+        </div>
+        <div class="body-grid">
+          <div class="row"><span class="k">Cadence</span><span class="v" id="cfgDigestCadence">—</span></div>
+          <div class="row"><span class="k">Time</span><span class="v" id="cfgDigestTime">—</span></div>
+          <div class="row"><span class="k">Recipients</span><span class="v" id="cfgDigestRecips">—</span></div>
+          <div class="row"><span class="k">Includes</span><span class="v" id="cfgDigestIncludes">—</span></div>
+          <div class="row"><span class="k">Next send</span><span class="v dim" id="cfgDigestNext">—</span></div>
+        </div>
+        <div class="cfg-edit">
+          <div class="row"><span class="k">Edit on</span><span class="v">Box A &middot; dashboard host</span></div>
+          <div class="row"><span class="k">Path</span><span class="v" id="cfgDigestPath">&mdash;</span></div>
+          <div class="row"><span class="k">Reload</span><span class="v">sudo systemctl kill -s HUP aperire-server</span></div>
+        </div>
+      </div>
+
+      <!-- Relay (validator host) -->
+      <div class="cfg-section">
+        <div class="head">
+          <span class="name">Relay</span>
+          <span class="tt-icon" tabindex="0" aria-label="About Relay">
+            <span class="tt-body">Aperire-relay runs on the validator host (Box B) and ships metrics outbound to the dashboard. Outbound-only &mdash; zero inbound surface, nothing for the dashboard to push back. Restart (not reload) is required because the relay re-establishes its outbound connection on start. Multi-validator support is planned via <code>RELAY_TOKENS</code> on the dashboard end. See <code>docs/RELAY-REFERENCE.md</code>.<br><br><strong>Edit:</strong> Box B · validator host<br><strong>Path:</strong> <code>/etc/aperire/relay.conf</code><br><strong>Restart:</strong> <code>sudo systemctl restart aperire-relay</code></span>
+          </span>
+          <span class="badge ok">CONNECTED</span>
+        </div>
+        <div class="body-grid">
+          <div class="row"><span class="k">Host</span><span class="v">box-b.lan.example</span></div>
+          <div class="row"><span class="k">Hop</span><span class="v dim">LAN · 2 ms</span></div>
+          <div class="row"><span class="k">Version</span><span class="v">0.4.1</span></div>
+          <div class="row"><span class="k">rippled mode</span><span class="v">native (systemd)</span></div>
+          <div class="row"><span class="k">Ports monitored</span><span class="v">4</span></div>
+          <div class="row"><span class="k">Last heartbeat</span><span class="v dim">2 s ago</span></div>
+        </div>
+        <div class="cfg-edit">
+          <div class="row"><span class="k">Edit on</span><span class="v">Box B &middot; validator host</span></div>
+          <div class="row"><span class="k">Path</span><span class="v">/etc/aperire/relay.conf</span></div>
+          <div class="row"><span class="k">Restart</span><span class="v">sudo systemctl restart aperire-relay</span></div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+</main>
+
+
+<script>
+(function () {
+  'use strict';
+  // Phase 0 placeholder — no live data yet. Just stamp the footer with
+  // the current time so the page feels alive while we iterate visuals.
+  function stamp() {
+    var el = document.getElementById('lastUpdate');
+    if (el) el.textContent = new Date().toLocaleTimeString();
+  }
+  stamp();
+  // Skip the tick when the document is hidden — saves DOM mutations
+  // and GC churn for a tab the operator isn't currently watching.
+  setInterval(function () { if (document.hidden) return; stamp(); }, 1000);
+
+  // Stub handlers for the action buttons — preserve the click feel during
+  // the visual review phase. Phase 5 wires these to real endpoints.
+  // Chip groups are independent — clicking a chip in one group only
+  // toggles within that group, so Alert History and Digest Log filters
+  // don't fight each other.
+  document.querySelectorAll('.filter-chips').forEach(function (group) {
+    group.querySelectorAll('.chip').forEach(function (c) {
+      c.addEventListener('click', function () {
+        group.querySelectorAll('.chip').forEach(function (x) { x.classList.remove('active'); });
+        c.classList.add('active');
+      });
+    });
+  });
+  // Phase 5 — Test Fire buttons. Dry Run walks the pipeline without
+  // sending; Live Test fires real notifications with a [TEST] subject
+  // prefix, rate-limited 5/hour/channel and optionally token-gated.
+  //
+  // Two repaint targets: #testfireRate (the rate/reset pills, styled like
+  // Digest Log's filter chips but not wired to any click handler) and the
+  // channels/prefix table row. The channels cell names what a Live Test
+  // would actually reach, from `configured` in the server's answer
+  // (#1265): email and ntfy each only when it can send, webhooks with
+  // their count. The server keeps one bucket per channel and one press
+  // fills every configured bucket, so the pill reads the fullest of the
+  // configured ones: that is the first to refuse a send, and it keeps the
+  // band at two pills, which is what fits a phone. Only the prefix is a
+  // fixed string.
+  var lastTestFire = null;
+  function testFireChannelsText(configured) {
+    var names = [];
+    if (configured && configured.email) names.push('Email');
+    if (configured && configured.ntfy) names.push('ntfy');
+    var hooks = configured && configured.webhooks;
+    if (hooks > 0) names.push(hooks === 1 ? '1 webhook' : hooks + ' webhooks');
+    return names.length ? names.join(' · ') : 'None configured';
+  }
+  function renderTestFireRate(state) {
+    var rateBand = document.getElementById('testfireRate');
+    var channelsCell = document.getElementById('testfireChannelsCell');
+    var prefixCell = document.getElementById('testfirePrefixCell');
+    if (!rateBand) return;
+    var ch = state && state.channels;
+    var any = ch && (ch.email || ch.ntfy || ch.webhook);
+    if (!any) return;
+    var conf = state.configured || {};
+    var live = [];
+    if (conf.email && ch.email) live.push(ch.email);
+    if (conf.ntfy && ch.ntfy) live.push(ch.ntfy);
+    if (conf.webhooks > 0 && ch.webhook) live.push(ch.webhook);
+    var top = live.reduce(function (a, b) { return b.used > a.used ? b : a; },
+      { used: 0, limit: any.limit, reset_ts: null });
+    var resetText = '—';
+    if (top.reset_ts) {
+      var d = new Date(top.reset_ts);
+      resetText = String(d.getUTCHours()).padStart(2, '0') + ':' + String(d.getUTCMinutes()).padStart(2, '0') + ' UTC';
+    }
+    var pills =
+      '<span class="chip-static">' + top.used + ' / ' + top.limit + ' this hour</span>' +
+      '<span class="chip-static">resets ' + resetText + '</span>';
+    if (state.token_required) pills += '<span class="chip-static warn">token required</span>';
+    rateBand.innerHTML = pills;
+    if (channelsCell) channelsCell.textContent = testFireChannelsText(conf);
+    if (prefixCell) prefixCell.textContent = '[TEST]';
+  }
+  async function loadTestFireState() {
+    try {
+      var res = await fetch('/api/insights/test_fire', { cache: 'no-store' });
+      var data = await res.json();
+      lastTestFire = data;
+      renderTestFireRate(data);
+    } catch (_) {}
+  }
+  loadTestFireState();
+  setInterval(function () { if (!document.hidden) loadTestFireState(); }, 30000);
+
+  function showTestFireResult(label, payload) {
+    // Lightweight toast that floats over the Test Fire zone.
+    var container = document.querySelector('.dt-testfire') || document.body;
+    var toast = container.querySelector('.testfire-toast');
+    if (!toast) {
+      toast = document.createElement('div');
+      toast.className = 'testfire-toast';
+      toast.style.cssText = 'position:absolute;top:8px;right:8px;max-width:340px;'
+        + 'background:rgba(15,18,24,0.97);border:1px solid var(--border-hi);'
+        + 'border-radius:6px;padding:9px 11px;font-family:var(--mono);'
+        + 'font-size:11px;color:var(--text-dim);line-height:1.5;'
+        + 'box-shadow:0 6px 18px rgba(0,0,0,0.5);z-index:5;';
+      if (getComputedStyle(container).position === 'static') container.style.position = 'relative';
+      container.appendChild(toast);
+    }
+    var lines = ['<div style="color:var(--text);font-weight:700;margin-bottom:4px;">' + label + '</div>'];
+    var channels = (payload && payload.channels) || [];
+    channels.forEach(function (c) {
+      var line = '<div>· <strong>' + c.id + '</strong> ';
+      if (c.attempted && c.delivered) {
+        line += '<span style="color:var(--green);">delivered</span>';
+        if (c.message_id) line += ' <span style="color:var(--text-muted);">(' + c.message_id.slice(0, 12) + '…)</span>';
+      } else if (c.attempted && !c.delivered) {
+        line += '<span style="color:var(--red);">failed: ' + (c.error || 'unknown') + '</span>';
+      } else if (c.would_send_to) {
+        line += '<span style="color:var(--accent);">dry run</span> → ' + c.would_send_to.length + ' recipient' + (c.would_send_to.length === 1 ? '' : 's');
+      } else {
+        line += '<span style="color:var(--text-muted);">' + (c.reason || 'skipped') + '</span>';
+      }
+      line += '</div>';
+      lines.push(line);
+    });
+    toast.innerHTML = lines.join('');
+    clearTimeout(toast._dismiss);
+    toast._dismiss = setTimeout(function () { toast.remove(); }, 8000);
+  }
+
+  async function fireTest(mode) {
+    var btn = document.getElementById(mode === 'live' ? 'liveTestBtn' : 'dryRunBtn');
+    if (!btn || btn.disabled) return;
+    btn.disabled = true;
+    var orig = btn.textContent;
+    btn.textContent = mode === 'live' ? 'Firing…' : 'Walking…';
+
+    // If APERIRE_TEST_TOKEN is set in env, prompt the operator before
+    // a Live Test. Dry Run never asks since nothing is delivered.
+    var token = null;
+    if (mode === 'live') {
+      try {
+        var stateRes = await fetch('/api/insights/test_fire', { cache: 'no-store' });
+        var state = await stateRes.json();
+        if (state.token_required) {
+          token = window.prompt('Enter APERIRE_TEST_TOKEN to confirm a real send to all configured channels:');
+          if (!token) {
+            btn.textContent = orig; btn.disabled = false; return;
+          }
+        }
+      } catch (_) {}
+    }
+
+    try {
+      var res = await fetch('/api/insights/test_fire', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ mode: mode, token: token }),
+      });
+      var data = await res.json();
+      if (!res.ok) {
+        showTestFireResult(mode === 'live' ? 'Live Test rejected' : 'Dry Run rejected',
+          { channels: [{ id: 'request', attempted: true, delivered: false, error: data.error || res.statusText }] });
+      } else {
+        showTestFireResult(mode === 'live' ? 'Live Test sent' : 'Dry Run complete', data);
+        if (data.rate_state) renderTestFireRate({
+          channels: data.rate_state, configured: data.configured,
+          token_required: !!(lastTestFire && lastTestFire.token_required),
+        });
+      }
+    } catch (err) {
+      showTestFireResult('Test Fire error', { channels: [{ id: 'fetch', attempted: true, delivered: false, error: err.message }] });
+    } finally {
+      btn.textContent = orig;
+      btn.disabled = false;
+    }
+  }
+  var dryRunBtn = document.getElementById('dryRunBtn');
+  if (dryRunBtn) dryRunBtn.addEventListener('click', function () { fireTest('dry_run'); });
+  var liveTestBtn = document.getElementById('liveTestBtn');
+  if (liveTestBtn) liveTestBtn.addEventListener('click', function () { fireTest('live'); });
+
+  // Generic table pager — 3 rows per page, prev/next cycle through.
+  // For Alert History the filter chips will eventually narrow the visible
+  // set; when they do, call render() again to reset to page 1 and
+  // recompute total based on visible rows.
+  function setupPager(tableId, prevId, nextId, rangeId, pageSize) {
+    var rows = document.querySelectorAll('#' + tableId + ' tbody tr');
+    var prev = document.getElementById(prevId);
+    var next = document.getElementById(nextId);
+    var range = document.getElementById(rangeId);
+    if (!prev || !next || !range) return;
+    // Reset any previously-attached listeners by replacing the buttons
+    // with clones. setupPager is called after every table re-render, so
+    // without this each cycle would stack another click handler.
+    var newPrev = prev.cloneNode(true);
+    var newNext = next.cloneNode(true);
+    prev.replaceWith(newPrev);
+    next.replaceWith(newNext);
+    prev = newPrev;
+    next = newNext;
+    if (!rows.length) {
+      range.textContent = '0-0 of 0';
+      prev.disabled = true; next.disabled = true;
+      return;
+    }
+    var current = 1;
+    var total = rows.length;
+    var totalPages = Math.max(1, Math.ceil(total / pageSize));
+    function render() {
+      var start = (current - 1) * pageSize;
+      var end = Math.min(start + pageSize, total);
+      rows.forEach(function (r, i) {
+        r.style.display = (i >= start && i < end) ? '' : 'none';
+      });
+      range.textContent = (start + 1) + '-' + end + ' of ' + total;
+      prev.disabled = current <= 1;
+      next.disabled = current >= totalPages;
+    }
+    prev.addEventListener('click', function () { if (current > 1) { current--; render(); } });
+    next.addEventListener('click', function () { if (current < totalPages) { current++; render(); } });
+    render();
+  }
+
+  // Alert History has a pager of its own (renderHistoryPager) — it holds the
+  // operator's page across a repaint, which this generic one cannot.
+  setupPager('digestTable', 'digestPagerPrev', 'digestPagerNext', 'digestPagerRange', 3);
+
+  // ── Insights config loader (Phase 2) ─────────────────────────────
+  // Fetches /api/insights/config and renders into the P2 Configuration
+  // card + the Channels strip cell. Re-runs every 60s so SIGHUP reloads
+  // pick up without a hard refresh.
+  function setText(id, value) {
+    var el = document.getElementById(id);
+    if (el) el.textContent = value;
+  }
+  function setBadge(id, validation) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    var level = (validation && validation.level) || 'alert';
+    el.classList.remove('ok', 'warn', 'alert');
+    el.classList.add(level);
+    var msg = (validation && validation.message) ? validation.message : '';
+    // #131. The parse message is the one thing on this badge worth reading —
+    // a native title held it, which delays, cannot be reached from a keyboard
+    // and truncates a long parser error. It goes in the page's own popover,
+    // and the anchor class is only added when there is something to say, so a
+    // badge with a clean parse opens no empty box.
+    var tip = el.querySelector('.tt-body');
+    if (!tip) { tip = document.createElement('span'); tip.className = 'tt-body'; el.appendChild(tip); }
+    tip.textContent = msg;
+    el.classList.toggle('tt-host', !!msg);
+    el.removeAttribute('title');
+    // The label is the badge's own text node, never innerHTML: writing
+    // textContent here would take the popover with it.
+    if (!el.firstChild || el.firstChild.nodeType !== 3) el.insertBefore(document.createTextNode(''), el.firstChild);
+    el.firstChild.nodeValue = level === 'ok' ? 'PARSED' : level === 'warn' ? 'WARN' : 'ALERT';
+  }
+  function relTime(ms) {
+    if (ms == null) return '—';
+    var d = (Date.now() - ms) / 1000;
+    if (d < 60) return Math.round(d) + 's ago';
+    if (d < 3600) return Math.round(d / 60) + 'm ago';
+    if (d < 86400) return Math.round(d / 3600) + 'h ago';
+    return Math.round(d / 86400) + 'd ago';
+  }
+  // The all-clear state is just "All clear" now — no second clause. It read
+  // "0 active alerts · none in the last 24h", which is noise: the Alert History
+  // table right below already shows what fired and when, so the line restated
+  // it (and contradicted it, saying "none in 24h" with a row sitting under it).
+  // "All clear" on its own is the whole message (operator, 2026-08-24).
+  function nextDigestCountdown(timeUtc) {
+    if (!timeUtc) return '—';
+    var parts = String(timeUtc).split(':');
+    if (parts.length < 2) return '—';
+    var hh = Number(parts[0]), mm = Number(parts[1]);
+    if (!Number.isFinite(hh) || !Number.isFinite(mm)) return '—';
+    var now = new Date();
+    var next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), hh, mm, 0));
+    if (next.getTime() <= now.getTime()) next.setUTCDate(next.getUTCDate() + 1);
+    var deltaMin = Math.round((next.getTime() - now.getTime()) / 60000);
+    var hrs = Math.floor(deltaMin / 60);
+    var mins = deltaMin % 60;
+    return 'in ' + (hrs > 0 ? hrs + 'h ' : '') + mins + 'm';
+  }
+
+  async function loadInsightsConfig() {
+    try {
+      var res = await fetch('/api/insights/config', { cache: 'no-store' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      var cfg = await res.json();
+
+      // ── Rules ──
+      setText('cfgRulesPath', cfg.rules.path);
+      setText('cfgRulesTotal', String(cfg.rules.counts.total));
+      setText('cfgRulesPage',  cfg.rules.counts.page  + ' rule' + (cfg.rules.counts.page  === 1 ? '' : 's'));
+      setText('cfgRulesCrit',  cfg.rules.counts.critical + ' rule' + (cfg.rules.counts.critical === 1 ? '' : 's'));
+      setText('cfgRulesWarn',  cfg.rules.counts.warn + ' rule' + (cfg.rules.counts.warn === 1 ? '' : 's'));
+      // ADR 0020. The card names both files, because "why is this rule not
+      // the shipped one" is answered by whether anything is overriding it.
+      setText('cfgRulesLocalPath', cfg.rules.localPath || '—');
+      var loc = cfg.rules.local || { present: false, overrides: 0, added: 0, disabled: 0 };
+      setText('cfgRulesLocal', !loc.present ? 'none (no local file)'
+        : (loc.overrides + loc.added + loc.disabled) === 0 ? 'none'
+        : loc.overrides + ' changed · ' + loc.added + ' added · ' + loc.disabled + ' off');
+      setText('cfgRulesReloaded', relTime(cfg.rules.lastReloadedAt));
+      setBadge('cfgRulesBadge', cfg.rules.validation);
+
+      // ── Channels ──
+      setText('cfgChannelsPath', cfg.channels.path);
+      var em = cfg.channels.email;
+      if (em.configured) {
+        setText('cfgEmailKey',    em.keyPresent ? 'key ' + em.keyMask + ' · ✓' : 'key not set');
+        setText('cfgEmailSender', em.senderRaw || '—');
+        setText('cfgEmailRecips', String(em.recipients));
+      } else {
+        setText('cfgEmailKey',    'not configured');
+        setText('cfgEmailSender', '—');
+        setText('cfgEmailRecips', '0');
+      }
+      var nt = cfg.channels.ntfy;
+      setText('cfgNtfy', nt.configured ? nt.topic + ' · ' + (nt.tokenPresent ? '✓ token set' : 'public') : 'not configured');
+      var wh = cfg.channels.webhooks.count;
+      setText('cfgWebhooks', wh > 0 ? wh + ' webhook' + (wh === 1 ? '' : 's') : 'none configured');
+      setBadge('cfgChannelsBadge', cfg.channels.validation);
+
+      // ── Channels strip pills (P0) ──
+      var pillEmail   = document.getElementById('channelPillEmail');
+      var pillNtfy    = document.getElementById('channelPillNtfy');
+      var pillWebhook = document.getElementById('channelPillWebhook');
+      if (pillEmail)   pillEmail.classList.toggle('dim', !em.configured);
+      if (pillNtfy)    pillNtfy.classList.toggle('dim',  !nt.configured);
+      if (pillWebhook) pillWebhook.classList.toggle('dim', wh === 0);
+      // #131. The pill's own words, from the same reading that dims it. The
+      // static markup said "Resend reachable" whether or not anything was
+      // configured, which is this dashboard's kept-vs-observed bug in a
+      // tooltip: a claim nobody measured, painted as current.
+      setText('channelTipEmail', em.configured
+        ? 'Email delivery, through Resend. Configured, ' + em.recipients +
+          (em.recipients === 1 ? ' recipient.' : ' recipients.')
+        : 'Email delivery, through Resend. Not configured: no alert is emailed.');
+      setText('channelTipNtfy', nt.configured
+        ? 'Push delivery, through the ntfy topic ' + nt.topic + '.'
+        : 'Push delivery, through an ntfy topic. Not configured: nothing is pushed.');
+      setText('channelTipWebhook', wh > 0
+        ? 'Webhook delivery, to your own endpoint. ' + wh + (wh === 1 ? ' webhook configured.' : ' webhooks configured.')
+        : 'Webhook delivery, to your own endpoint. None configured.');
+      setText('channelActiveSub', cfg.channels.activeCount + ' of 3 active');
+
+      // ── Digest ──
+      setText('cfgDigestPath', cfg.digest.path);
+      setText('cfgDigestCadence', cfg.digest.cadence || '—');
+      setText('cfgDigestTime', cfg.digest.timeUtc ? cfg.digest.timeUtc + ' UTC' : '—');
+      setText('cfgDigestRecips', String(cfg.digest.recipients));
+      setText('cfgDigestIncludes', cfg.digest.includes.length > 0 ? cfg.digest.includes.join(' · ') : '—');
+      setText('cfgDigestNext', cfg.digest.enabled ? nextDigestCountdown(cfg.digest.timeUtc) : 'disabled');
+      setBadge('cfgDigestBadge', cfg.digest.validation);
+
+      // ── Last Digest strip cell ──
+      // The schedule half only. This fetch knows when the next digest is
+      // due; it knows nothing about any digest having been sent, and the
+      // cell used to render `time_utc` as the value, so a box that had never
+      // sent one read "13:00 UTC" with the Digest Log below it saying
+      // 0 SENDS (#486). renderLastDigestCell owns the cell now.
+      if (typeof runtime !== 'undefined') {
+        runtime.digest = { enabled: !!cfg.digest.enabled, timeUtc: cfg.digest.timeUtc || null };
+        renderLastDigestCell();
+      }
+
+      // ── Stash knowledge for Phase 3 row tooltips ──
+      // Each Alert History row tooltip looks up its metric here for
+      // the "First check" recommendation line. Updated each config
+      // poll so hot-reloaded library content propagates without a
+      // dashboard restart.
+      if (typeof runtime !== 'undefined') {
+        runtime.knowledge = (cfg.knowledge && cfg.knowledge.metric_alerts) || {};
+        // #128. rules.full is already on this payload, so the row's
+        // instruction costs no new route. (metric, severity) is the key
+        // because every alert row carries both, and because a warn and a
+        // critical on one metric are allowed to say different things.
+        var acts = {};
+        var full = (cfg.rules && cfg.rules.full) || [];
+        for (var i = 0; i < full.length; i++) {
+          var rl = full[i];
+          if (!rl || !rl.metric || !rl.severity) continue;
+          if (!rl.action && !rl.action_command) continue;
+          acts[rl.metric + '|' + rl.severity] = { action: rl.action || '', command: rl.action_command || '' };
+        }
+        runtime.ruleActions = acts;
+      }
+    } catch (err) {
+      console.warn('insights config load failed:', err);
+    }
+  }
+  loadInsightsConfig();
+  setInterval(function () { if (document.hidden) return; loadInsightsConfig(); }, 60000);
+
+  // ── Phase 3 — alert engine state, history, digest log ────────────
+  // Renders Alert History (one panel for what is firing and what has
+  // already ended), Digest Log, plus the Firing Now / Last Page strip
+  // cells. Polls every 5s. Filter chips narrow the visible row set; the
+  // range toggle bounds the history below the pinned firing rows; the
+  // pager re-pages within whatever is left.
+
+  const runtime = {
+    knowledge: {},                              // populated from config fetches
+    // #128. Per-RULE action text, keyed 'metric|severity'. Looked up live
+    // from the config poll rather than stamped onto each event, so editing
+    // rules.yaml and reloading changes what a currently-firing row says.
+    // Storing it on the row would freeze the wording at the moment it fired.
+    ruleActions: {},
+    firing: [],
+    events: [],
+    runs: [],
+    filters: { history: 'all', digest: 'all' },
+    range: '24h',
+    // What the history endpoint actually served, as opposed to what was
+    // asked of it: the window it echoed back, and whether the row limit
+    // truncated it. Both are read straight off the response, never assumed.
+    served: { sinceMs: null, requestedSinceMs: null, capped: false },
+    // #486. The last digest this node actually SENT, from /api/insights/state,
+    // and the schedule, from /api/insights/config. Two fetches feed one strip
+    // cell, so both land here and one renderer reads them. `lastDigestKnown`
+    // is the gate: before the first state answer there is no send and no
+    // absence of one, and the cell must not claim either.
+    lastDigest: null,
+    lastDigestKnown: false,
+    digest: { enabled: false, timeUtc: null },
+  };
+
+  function escHtml(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', '\'': '&#39;' })[c];
+    });
+  }
+  function fmtTime(ms) {
+    // Render in the BROWSER's local timezone, 24-hour format. UTC reads
+    // poorly when an operator is comparing dashboard timestamps against
+    // their wall clock or against an email notification on a phone whose
+    // mail client already shows local time. Tooltips still surface the
+    // full UTC timestamp via fmtFullUtc for unambiguous correlation
+    // with server logs.
+    var d = new Date(ms);
+    var hh = String(d.getHours()).padStart(2, '0');
+    var mm = String(d.getMinutes()).padStart(2, '0');
+    var ss = String(d.getSeconds()).padStart(2, '0');
+    // Day-prefix logic uses LOCAL day so "Today" / "Yesterday" align
+    // with how the operator reads the row times above.
+    var now = new Date();
+    var dayMs = 86_400_000;
+    var startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    var entryStart = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+    var dayDiff = Math.round((startToday - entryStart) / dayMs);
+    var prefix;
+    if (dayDiff === 0)      prefix = 'Today';
+    else if (dayDiff === 1) prefix = 'Yesterday';
+    else {
+      var month = d.toLocaleString('en-US', { month: 'short' });
+      prefix = month + ' ' + d.getDate();
+    }
+    return prefix + ' ' + hh + ':' + mm + ':' + ss;
+  }
+  // The phone cut: no seconds (minute precision is what a thumb-width
+  // column can afford; the tap-open detail keeps the full UTC stamp),
+  // and "Yesterday" becomes the actual date — "Aug 12" wraps into a
+  // narrow column where the nine-letter word could not.
+  function fmtTimeShort(ms) {
+    var d = new Date(ms);
+    var hh = String(d.getHours()).padStart(2, '0');
+    var mm = String(d.getMinutes()).padStart(2, '0');
+    var now = new Date();
+    var startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    var entryStart = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+    var prefix = (startToday === entryStart) ? 'Today'
+      : d.toLocaleString('en-US', { month: 'short' }) + ' ' + d.getDate();
+    return prefix + ' ' + hh + ':' + mm;
+  }
+  function fmtFullUtc(ms) {
+    return new Date(ms).toISOString().replace('T', ' ').replace(/\.\d+Z$/, ' UTC');
+  }
+  function fmtDurSec(s) {
+    if (s == null) return '—';
+    if (s < 60) return Math.round(s) + 's';
+    if (s < 3600) {
+      var m = Math.floor(s / 60);
+      var rs = Math.round(s - m * 60);
+      return m + 'm' + (rs > 0 ? ' ' + rs + 's' : '');
+    }
+    var h = Math.floor(s / 3600);
+    var rm = Math.round((s - h * 3600) / 60);
+    return h + 'h' + (rm > 0 ? ' ' + rm + 'm' : '');
+  }
+  function fmtDurCompact(s) {
+    if (s == null) return '—';
+    if (s < 60) return Math.round(s) + 's';
+    if (s < 3600) return Math.round(s / 60) + 'm';
+    return Math.round(s / 3600 * 10) / 10 + 'h';
+  }
+  function isToday(d) {
+    var n = new Date();
+    return d.getUTCFullYear() === n.getUTCFullYear()
+        && d.getUTCMonth() === n.getUTCMonth()
+        && d.getUTCDate() === n.getUTCDate();
+  }
+  function formatValue(metric, v) {
+    if (v == null) return '—';
+    var lower = String(metric || '').toLowerCase();
+    if (lower.endsWith('_pct') || lower === 'agreement_pct_1h') {
+      // One decimal reads well until the value is small and non-zero, where it
+      // rounds to "0.0%" — and a warn alert reading "0.0% / > 0.0%" looks
+      // impossible, so the operator concludes the rule is broken and stops
+      // trusting it. A swap alert on this box did exactly that for 17 days at
+      // 0.0057%. Show enough digits that a firing alert always explains itself.
+      if (v !== 0 && Math.abs(v) < 0.05) return v.toPrecision(2) + '%';
+      return v.toFixed(1) + '%';
+    }
+    if (lower === 'tcp_retrans_per_sec') return v.toFixed(1) + '/s';
+    if (lower === 'rx_bps' || lower === 'tx_bps') {
+      if (v >= 1024 * 1024) return (v / 1024 / 1024).toFixed(1) + ' MB/s';
+      if (v >= 1024) return (v / 1024).toFixed(0) + ' kB/s';
+      return Math.round(v) + ' B/s';
+    }
+    return Number.isInteger(v) ? String(v) : v.toFixed(2);
+  }
+  function severityClass(sev) {
+    if (sev === 'page') return 'page';
+    if (sev === 'critical') return 'alert';
+    return 'warn';
+  }
+  function severityLabel(sev) {
+    if (sev === 'page') return 'Page';
+    if (sev === 'critical') return 'Crit';
+    return 'Warn';
+  }
+  // Tap a row to pin its detail panel open; tap it again — or anywhere
+  // else — to close. Delegated at the document so the tables' innerHTML
+  // rebuilds can never shed it, and the Investigate link is left alone
+  // (the action must never cost an extra tap). On desktop this coexists
+  // with hover: a click pins the panel, useful with a mouse too.
+  // ── keeping a tooltip on screen ────────────────────────────────────
+  //
+  // The tips are anchored in CSS — centred under their icon, or right-aligned,
+  // or above-and-left inside a Configuration panel — and none of those three
+  // knows where the viewport edge is. A 260px box centred on an icon 111px
+  // from the left starts at -12px, and on a phone that is the first letter of
+  // every line cut off (operator, on a real iPhone at 390pt: measured four of
+  // twelve tips clipping, the worst starting 136px off-screen).
+  //
+  // Same fix the tab pages already use for `.info-tip` (network.html's
+  // positionInfoTip): measure on open, and slide the box back inside by
+  // whatever it overhangs, with a margin so it never sits flush against the
+  // edge. Written into `--tt-shift`, which every anchoring threads through its
+  // own transform, so this corrects all three without knowing which one ran —
+  // and writes 0 when the tip already fits, which is every tip on a desktop.
+  const TT_MARGIN = 8;
+  function positionTtBody(icon) {
+    const tip = icon.querySelector('.tt-body');
+    if (!tip) return;
+    // Measure unshifted, or a second hover would correct an already-corrected
+    // box and walk it across the screen.
+    tip.style.setProperty('--tt-shift', '0px');
+    const r = tip.getBoundingClientRect();
+    const vw = document.documentElement.clientWidth;
+    let shift = 0;
+    if (r.left < TT_MARGIN) shift = TT_MARGIN - r.left;
+    else if (r.right > vw - TT_MARGIN) shift = (vw - TT_MARGIN) - r.right;
+    if (shift) tip.style.setProperty('--tt-shift', shift.toFixed(1) + 'px');
+  }
+  document.addEventListener('mouseover', function (e) {
+    const icon = e.target.closest && e.target.closest('.tt-icon, .tt-host');
+    if (icon && !e.target.closest('.tt-body')) positionTtBody(icon);
+  });
+  document.addEventListener('focusin', function (e) {
+    const icon = e.target.closest && e.target.closest('.tt-icon, .tt-host');
+    if (icon) positionTtBody(icon);
+  });
+  // A phone has no hover: the tap that opens a tip arrives as touchstart
+  // before any synthesised mouse event, and it is the case this was reported
+  // from, so it is wired explicitly rather than left to the mouseover above.
+  document.addEventListener('touchstart', function (e) {
+    const icon = e.target.closest && e.target.closest('.tt-icon, .tt-host');
+    if (icon) positionTtBody(icon);
+  }, { passive: true });
+
+  document.addEventListener('click', function (e) {
+    var link = e.target.closest('a');
+    if (link) return; // Investigate (or any link) wins untouched
+    var row = e.target.closest('table.t tbody tr');
+    var open = document.querySelectorAll('table.t tbody tr.tip-open');
+    open.forEach(function (tr) { if (tr !== row) tr.classList.remove('tip-open'); });
+    if (row && row.querySelector('.row-tip')) row.classList.toggle('tip-open');
+  });
+
+  // #131. Three letters per row, and what each one means is the page's own
+  // popover, never a native `title`. Same anchor treatment as every ⓘ on this
+  // page: focusable, so the answer is reachable without a pointer, and
+  // labelled, so a screen reader is told the state rather than the letter E.
+  function channelIconsHtml(channels, delivery) {
+    var ids = ['email', 'ntfy', 'webhook'];
+    var labels = { email: 'E', ntfy: 'N', webhook: 'W' };
+    var names = { email: 'Email', ntfy: 'ntfy', webhook: 'Webhook' };
+    var set = new Set(channels || []);
+    var dmap = delivery || {};
+    return ids.map(function (id) {
+      var configured = set.has(id);
+      var status = dmap[id];
+      var cls = 'ci tt-host';
+      var tip = names[id] + ' — not a channel for this alert.';
+      if (!configured) {
+        cls += ' dim';
+      } else if (typeof status === 'string' && status.indexOf('failed') === 0) {
+        cls += ' fail';
+        // The service's own words for why, kept whole: "failed: 500" is the
+        // one thing an operator needs off a row that never reached them.
+        tip = names[id] + ' — delivery failed. ' + status + '.';
+      } else if (status === 'pending') {
+        cls += ' pending';
+        tip = names[id] + ' — sending now, no acknowledgement yet.';
+      } else if (status === 'delivered') {
+        tip = names[id] + ' — delivered.';
+      } else {
+        tip = names[id] + ' — a channel for this alert. Nothing recorded about the send.';
+      }
+      return '<span class="' + cls + '" tabindex="0" aria-label="' + escHtml(tip) + '">' +
+        labels[id] + '<span class="tt-body">' + escHtml(tip) + '</span></span>';
+    }).join(' ');
+  }
+  // #128. The action for a row's own rule, or null. A row whose rule was
+  // edited away, or which fired under a rule that no longer exists, gets
+  // null rather than another rule's text.
+  function ruleActionFor(row) {
+    if (!row || !row.metric || !row.severity) return null;
+    var hit = runtime.ruleActions[row.metric + '|' + row.severity];
+    if (!hit || (!hit.action && !hit.command)) return null;
+    return hit;
+  }
+
+  function buildAlertRowTip(row) {
+    var sevLbl = severityLabel(row.severity);
+    var stateLbl = row.isResolved ? 'Resolved' : 'Firing';
+    var parts = [
+      '<div class="ttitle">' + escHtml(row.metric) + ' · ' + sevLbl + ' · ' + stateLbl + '</div>',
+      '<div class="trow"><span class="k">Triggered</span><span class="v">' + escHtml(fmtFullUtc(row.firingTs)) + '</span></div>',
+    ];
+    if (row.isResolved && row.resolvedTs) {
+      parts.push('<div class="trow"><span class="k">Resolved</span><span class="v">' + escHtml(fmtFullUtc(row.resolvedTs)) + '</span></div>');
+      parts.push('<div class="trow"><span class="k">Held for</span><span class="v">' + escHtml(fmtDurSec(row.durationS)) + '</span></div>');
+    } else {
+      parts.push('<div class="trow"><span class="k">Firing for</span><span class="v">' + escHtml(fmtDurSec((Date.now() - row.firingTs) / 1000)) + '</span></div>');
+    }
+    var thr = (row.thresholdOp || '') + ' ' + (row.thresholdValue != null ? row.thresholdValue : '');
+    if (row.durationRequiredS) thr += ' for ' + row.durationRequiredS + 's';
+    parts.push('<div class="trow"><span class="k">Threshold</span><span class="v">' + escHtml(thr.trim()) + '</span></div>');
+    if (row.value != null) {
+      parts.push('<div class="trow"><span class="k">' + (row.isResolved ? 'Final' : 'Current') + '</span><span class="v">' + escHtml(formatValue(row.metric, row.value)) + '</span></div>');
+    }
+    parts.push('<div class="trow"><span class="k">Channels</span><span class="v">' + ((row.channels && row.channels.length) ? escHtml(row.channels.join(' · ')) : 'none') + '</span></div>');
+    parts.push('<div class="trow"><span class="k">Dedup</span><span class="v dim">' + escHtml(row.dedup_key) + '</span></div>');
+
+    // #128. One slot, two possible sources, most specific first. The rule's
+    // own action is about THIS threshold at THIS severity; the metric library
+    // is about the metric in general. Where a rule carries neither, the
+    // library answer stands exactly as it did before.
+    //
+    // Every field is escaped. An action_command is operator-authored text
+    // that Aperire never runs and never substitutes a value into, so it is
+    // rendered as literal characters and nothing else.
+    var act = ruleActionFor(row);
+    if (act) {
+      var rec = '<div class="rec"><span class="k">What to do</span>' + escHtml(act.action);
+      if (act.command) rec += '<code class="cmd">' + escHtml(act.command) + '</code>';
+      parts.push(rec + '</div>');
+    } else {
+      var kn = runtime.knowledge[row.metric];
+      if (kn && kn.recommended_actions && kn.recommended_actions[0]) {
+        parts.push('<div class="rec"><span class="k">First check</span>' + escHtml(kn.recommended_actions[0]) + '</div>');
+      }
+    }
+    return '<div class="row-tip">' + parts.join('') + '</div>';
+  }
+  function buildDigestRowTip(run) {
+    var parts = [
+      '<div class="ttitle">Digest · ' + escHtml(fmtTime(run.ts)) + '</div>',
+    ];
+    if (run.subject) parts.push('<div class="trow"><span class="k">Subject</span><span class="v">' + escHtml(run.subject) + '</span></div>');
+    parts.push('<div class="trow"><span class="k">' + (run.state === 'retried' ? 'Successful' : 'Sent') + '</span><span class="v">' + escHtml(fmtFullUtc(run.ts)) + '</span></div>');
+    parts.push('<div class="trow"><span class="k">Channel</span><span class="v">' + escHtml(run.channel) + '</span></div>');
+    parts.push('<div class="trow"><span class="k">Recipients</span><span class="v">' + run.recipient_count + '</span></div>');
+    if (run.message_id) parts.push('<div class="trow"><span class="k">Message ID</span><span class="v dim">' + escHtml(run.message_id) + '</span></div>');
+    if (run.error) parts.push('<div class="trow"><span class="k">Error</span><span class="v dim">' + escHtml(run.error) + '</span></div>');
+    return '<div class="row-tip">' + parts.join('') + '</div>';
+  }
+
+  // ── Renderers ───────────────────────────────────────────────────
+  function renderFiringNowAndLastPage(stateData) {
+    var counts = stateData.counts || { firing_now: 0, page: 0, critical: 0, warn: 0 };
+    var valEl = document.getElementById('firingNowVal');
+    var subEl = document.getElementById('firingNowSub');
+    if (valEl) {
+      valEl.classList.remove('ok', 'warn', 'alert', 'page');
+      var label;
+      if (counts.firing_now === 0) {
+        label = '0';
+        valEl.classList.add('ok');
+      } else if (counts.page > 0) {
+        label = counts.firing_now + ' P';
+        valEl.classList.add('page');
+      } else if (counts.critical > 0) {
+        label = counts.firing_now + ' C';
+        valEl.classList.add('alert');
+      } else {
+        label = counts.firing_now + ' W';
+        valEl.classList.add('warn');
+      }
+      valEl.textContent = label;
+    }
+    if (subEl) subEl.textContent = counts.critical + ' critical · ' + counts.warn + ' warn · ' + counts.page + ' page';
+
+    // Last Page cell
+    var lpVal = document.getElementById('lastPageVal');
+    var lpSub = document.getElementById('lastPageSub');
+    if (lpVal && lpSub) {
+      if (stateData.lastPage) {
+        var lp = stateData.lastPage;
+        var ageMs = Date.now() - lp.ts;
+        lpVal.textContent = fmtDurCompact(ageMs / 1000) + ' ago';
+        lpSub.textContent = lp.metric + ' · ' + (lp.state === 'firing' ? 'still firing' : 'resolved');
+      } else {
+        lpVal.textContent = '—';
+        lpSub.textContent = 'no page in 7d';
+      }
+    }
+  }
+
+  // #486. LAST DIGEST is a send that happened, never the schedule. The cell
+  // rendered `digest.time_utc`, which is a setting, as though it were an
+  // observation, so a node that had never sent a digest read "13:00 UTC"
+  // with the Digest Log directly below it saying "0 SENDS". Same class of
+  // defect as a kept reading painted as a current one, and here the panel
+  // underneath was already contradicting it on screen.
+  //
+  // Three states, and they are kept apart:
+  //   a send        the age of the last run whose state is `sent`
+  //   no send yet   a dash, and the sub-line says so and when the next is due
+  //   not known     a dash and the wait, before any answer has landed
+  //
+  // Locally the send comes from /api/insights/state, which looks back a year
+  // and skips failed runs. On a peer there is no such field on the read
+  // contract, so it comes from that peer's own digest rows (7 days, the
+  // window the Digest Log panel asks for), and the sub-line then describes
+  // THAT send rather than this host's schedule, which is not the peer's.
+  function renderLastDigestCell() {
+    var valEl = document.getElementById('lastDigestVal');
+    var subEl = document.getElementById('lastDigestSub');
+    if (!valEl || !subEl) return;
+    var peer = !!(window.aperirePeerFetch && window.aperirePeerFetch.isPeerActive());
+    var run = null;
+    var known = false;
+    if (peer) {
+      // renderDigestLog's own source. `runs` is newest-first (the endpoint
+      // orders by ts DESC), so the first sent row is the last send.
+      var runs = runtime.runs || [];
+      for (var i = 0; i < runs.length; i++) {
+        if (runs[i].state === 'sent') { run = runs[i]; break; }
+      }
+      known = peerBannerFetchMs.digests != null;
+    } else {
+      // The route already filters to `sent`, and this checks it anyway: the
+      // two branches then read the same rule off the same field, and a route
+      // that ever widens again cannot quietly turn a failed attempt into
+      // today's digest.
+      run = (runtime.lastDigest && runtime.lastDigest.state === 'sent') ? runtime.lastDigest : null;
+      known = runtime.lastDigestKnown;
+    }
+    if (run) {
+      // relTime, not fmtDurCompact: a digest is a daily thing, and a send
+      // nine days ago reads as "9d ago" rather than "216h".
+      valEl.textContent = relTime(run.ts);
+      subEl.textContent = peer
+        ? run.channel + ' · ' + run.recipient_count + (run.recipient_count === 1 ? ' recipient' : ' recipients')
+        : (runtime.digest.enabled ? 'next ' + nextDigestCountdown(runtime.digest.timeUtc) : 'digest disabled');
+      return;
+    }
+    valEl.textContent = '\u2014';
+    if (!known) { subEl.textContent = 'reading this node\'s record'; return; }
+    if (peer) { subEl.textContent = 'no digest sent in 7d'; return; }
+    subEl.textContent = runtime.digest.enabled
+      ? 'none sent yet · next ' + nextDigestCountdown(runtime.digest.timeUtc)
+      : 'none sent yet · digest disabled';
+  }
+
+  // One place that builds the handoff into the Advisor, so a firing alert and
+  // a historical one carry the same context. The missed-validations panel has
+  // had this since it shipped; nothing else did, so a disk warning or a peer
+  // drop fired and the operator was left to reconstruct the moment from three
+  // charts before they could even ask a question.
+  // A later install must light these pills up without a reload, and a
+  // removal must take them away. renderHistory is the one repaint that
+  // rebuilds the rows.
+  // ADR 0016, Appendix A.2's one prose row. This tooltip named Ask Advisor as
+  // a feature of the panel, so on a host with no Advisor it described a
+  // capability that is not there — the controls were gated and the sentence
+  // about them was not. Both halves ship in the markup and the fact picks
+  // one, so neither flashes: with no Advisor the sentence starts "A firing
+  // row also carries...", with one it starts "Ask Advisor investigates any
+  // row, and a firing row also carries...".
+  function renderAdvisorProse() {
+    var ap = window.__advisorPresence;
+    var on = !!ap && ap.askShown();
+    [].forEach.call(document.querySelectorAll('[data-advisor-prose]'), function (el) { el.hidden = !on; });
+    [].forEach.call(document.querySelectorAll('[data-advisor-prose-alt]'), function (el) { el.hidden = on; });
+  }
+  window.addEventListener('aperire:advisor', renderAdvisorProse);
+
+  window.addEventListener('aperire:advisor', function () {
+    // renderAlertHistory, not renderHistory: the first history fetch usually
+    // lands BEFORE the presence fact, so the rows are built while the answer
+    // is still null and every pill is correctly withheld. Without this
+    // repaint they stay withheld for the life of the page, and a wrong
+    // function name here is silently the same as no listener at all.
+    if (typeof renderAlertHistory === 'function' && runtime && runtime.events) {
+      try { renderAlertHistory(runtime.events); } catch { /* not ready yet */ }
+    }
+  });
+
+  function investigateHref(r) {
+    var q = 'alert=' + encodeURIComponent(r.metric) +
+      '&sev=' + encodeURIComponent(r.severity || '') +
+      '&at=' + encodeURIComponent(r.firingTs || '') +
+      '&resolved=' + (r.isResolved ? '1' : '0');
+    if (r.value != null) q += '&value=' + encodeURIComponent(formatValue(r.metric, r.value));
+    if (r.thresholdOp && r.thresholdValue != null) {
+      q += '&op=' + encodeURIComponent(r.thresholdOp) +
+           '&threshold=' + encodeURIComponent(formatValue(r.metric, r.thresholdValue));
+    }
+    var heldS = r.isResolved ? r.durationS : (Date.now() - (r.firingTs || Date.now())) / 1000;
+    if (heldS) q += '&dur=' + encodeURIComponent(fmtDurCompact(heldS));
+    return '/advisor.html#' + q;
+  }
+
+  function aggregateAlertEvents(events) {
+    // Group raw events by dedup_key and produce one row per group.
+    // events come ts DESC; for each dedup_key the firing row is the
+    // canonical record. resolved rows attach `resolvedTs` + held duration.
+    var byKey = new Map();
+    for (var i = 0; i < events.length; i++) {
+      var e = events[i];
+      var entry = byKey.get(e.dedup_key) || {};
+      if (e.state === 'firing' && !entry.firing) entry.firing = e;
+      else if (e.state === 'resolved' && !entry.resolved) entry.resolved = e;
+      byKey.set(e.dedup_key, entry);
+    }
+    var rows = [];
+    byKey.forEach(function (entry) {
+      var src = entry.firing || entry.resolved;
+      if (!src) return;
+      // A resolved event whose firing event fell outside the window is still
+      // a resolved alert. Deriving the fire time from the held duration is
+      // what the resolved event records: it says when the alert ENDED and how
+      // long it was held, and the difference is when it started. (This used to
+      // read `isResolved: false` for that case, which rendered an alert that
+      // had ended as Firing with a duration counted from now. Rare on a 24h
+      // window, routine on a 1h one.)
+      var heldMs = (entry.resolved && entry.resolved.duration_s ? entry.resolved.duration_s : 0) * 1000;
+      var firingTs = entry.firing ? entry.firing.ts : (entry.resolved.ts - heldMs);
+      rows.push({
+        ts: firingTs,
+        metric: src.metric,
+        severity: src.severity,
+        firingTs: firingTs,
+        resolvedTs: entry.resolved ? entry.resolved.ts : null,
+        durationS: entry.resolved ? entry.resolved.duration_s : null,
+        durationRequiredS: entry.firing ? entry.firing.duration_s : null,
+        thresholdOp: src.threshold_op,
+        thresholdValue: src.threshold_value,
+        value: src.value,
+        channels: src.channels,
+        // Delivery is recorded on each lifecycle event (firing, resolved)
+        // separately. Show the resolved row's delivery if we have it,
+        // otherwise the firing row's. Most recent state wins.
+        delivery: (entry.resolved && entry.resolved.delivery) || (entry.firing && entry.firing.delivery) || {},
+        dedup_key: src.dedup_key,
+        isResolved: !!entry.resolved,
+        pinned: false,
+      });
+    });
+    rows.sort(function (a, b) { return b.ts - a.ts; });
+    return rows;
+  }
+
+  // ── The merged Alert History table ───────────────────────────────────
+  // One panel for alerts current and past. Two sources meet in it and they
+  // are deliberately kept apart:
+  //
+  //   runtime.firing   /api/insights/state's own firing table — the
+  //                    authoritative "what is firing right now". These rows
+  //                    are PINNED to the top of the table in EVERY window,
+  //                    so an alert that started three days ago is still the
+  //                    first thing on screen at the 1h range. `fired_ts`
+  //                    here is epoch SECONDS.
+  //   runtime.events   alerts_history — what has already happened, bounded
+  //                    by the range toggle. `ts` here is MILLISECONDS
+  //                    (queryAlertHistory multiplies on the way out of
+  //                    SQLite). Getting the two backwards renders "56y".
+  //
+  // A dedup_key that is firing right now is dropped from the history half:
+  // its own firing event is in that table too, and both would put the same
+  // alert on screen twice, once as current and once as past.
+  var HISTORY_RANGE_HOURS = { live: 1, '1h': 1, '6h': 6, '24h': 24, '7d': 168, '30d': 720 };
+  var HISTORY_PAGE_SIZE = 10;
+  // What the local history endpoint returns at most, and the ceiling the peer
+  // read route clamps its own `limit` to. A response that comes back with
+  // exactly this many rows was cut by the row count, not by the window.
+  var HISTORY_ROW_LIMIT = 500;
+  function rangeSpanMs(range) { return (HISTORY_RANGE_HOURS[range] || 1) * 3_600_000; }
+  function noteServedWindow(requestedSinceMs, echoedSinceMs, events) {
+    var rows = events || [];
+    var capped = rows.length >= HISTORY_ROW_LIMIT;
+    var sinceMs = typeof echoedSinceMs === 'number' ? echoedSinceMs : requestedSinceMs;
+    // A response that came back full was cut by the row count, and the real
+    // floor of what is on screen is the oldest row in it, not the window the
+    // endpoint echoed. Rows arrive ts DESC.
+    if (capped) {
+      var oldest = rows[rows.length - 1];
+      if (oldest && typeof oldest.ts === 'number' && oldest.ts > sinceMs) sinceMs = oldest.ts;
+    }
+    runtime.served = { sinceMs: sinceMs, requestedSinceMs: requestedSinceMs, capped: capped };
+  }
+
+  var SEV_RANK = { page: 3, critical: 2, warn: 1 };
+  function firingAsRows(firing) {
+    var rows = (firing || []).map(function (f) {
+      var firedAtMs = (f.fired_ts || 0) * 1000;
+      return {
+        ts: firedAtMs,
+        metric: f.metric,
+        severity: f.severity,
+        firingTs: firedAtMs,
+        resolvedTs: null,
+        durationS: null,
+        durationRequiredS: f.duration_s,
+        thresholdOp: f.threshold_op,
+        thresholdValue: f.threshold_value,
+        value: f.last_value,
+        channels: f.channels,
+        delivery: f.delivery || {},
+        dedup_key: f.dedup_key,
+        isResolved: false,
+        pinned: true,
+      };
+    });
+    // Worst first, then longest-running first — the order an operator would
+    // read them in if they were reading down the page.
+    rows.sort(function (a, b) {
+      var d = (SEV_RANK[b.severity] || 0) - (SEV_RANK[a.severity] || 0);
+      return d !== 0 ? d : a.ts - b.ts;
+    });
+    return rows;
+  }
+
+  function historyRowsInWindow(events, windowStartMs, firingKeys) {
+    return aggregateAlertEvents(events || []).filter(function (r) {
+      if (firingKeys[r.dedup_key]) return false;
+      // The window bounds ACTIVITY, not the fire time: an alert that started
+      // three hours ago and ended ten minutes ago belongs in the last hour.
+      var lastActivity = r.resolvedTs != null ? r.resolvedTs : r.firingTs;
+      return lastActivity >= windowStartMs;
+    });
+  }
+
+  function applySeverityFilter(rows) {
+    var filter = runtime.filters.history;
+    if (filter === 'all') return rows;
+    return rows.filter(function (r) {
+      if (filter === 'page') return r.severity === 'page';
+      if (filter === 'crit') return r.severity === 'critical';
+      if (filter === 'warn') return r.severity === 'warn';
+      if (filter === 'resolved') return r.isResolved;
+      return true;
+    });
+  }
+
+  // What the endpoint served, said plainly when it is narrower than what was
+  // asked for. The local history route caps its window at 7 days and its row
+  // count at 500; the peer read route has no window cap. Rather than assume
+  // either, this reads the `since_ms` the response echoed back and the number
+  // of rows that came with it, so a 30d range on a box that only serves 7d
+  // says "7 d served" instead of quietly showing a week under a month's label.
+  function servedNote() {
+    var served = runtime.served;
+    if (served.sinceMs == null || served.requestedSinceMs == null) return null;
+    var requestedSpan = Date.now() - served.requestedSinceMs;
+    var servedSpan = Date.now() - served.sinceMs;
+    // 5% slack: the two clocks are a request apart, not out of step.
+    if (servedSpan >= requestedSpan * 0.95) return null;
+    var h = servedSpan / 3_600_000;
+    var label = h >= 47 ? Math.round(h / 24) + ' d' : Math.round(h) + ' h';
+    return {
+      text: '· ' + label + ' served',
+      title: served.capped
+        ? 'The history request came back full at its row limit, so the window shown is ' + label + ' rather than the range asked for.'
+        : 'This dashboard serves at most ' + label + ' of alert history, so that is what the range shows.',
+    };
+  }
+
+  function alertRowHtml(r) {
+    var sevCls = severityClass(r.severity);
+    var stateCls = r.isResolved ? 'ok' : sevCls;
+    var stateLbl = r.isResolved ? 'Resolved' : 'Firing';
+    // The bare elapsed time, either way — the STATE pill already says firing
+    // or resolved, and saying it twice was the operator's first note on this
+    // table (2026-08-13).
+    var durationLbl = fmtDurCompact(r.isResolved ? r.durationS : (Date.now() - r.firingTs) / 1000);
+    var phone = window.matchMedia && matchMedia('(max-width: 720px)').matches;
+    // Ack and Mute act on something that is still firing, so a resolved row
+    // carries neither. On a phone they go too (see `.act-wide`): the last
+    // column has room for one action, and "what was that?" is the question
+    // you ask there.
+    var actions = '';
+    if (!r.isResolved) {
+      actions += '<button class="btn act-wide" type="button">Ack</button>' +
+                 '<button class="btn act-wide" type="button">Mute 1h</button>';
+    }
+    // ADR 0016, keyed on the SUBJECT node. An alert row marks a real
+    // concern, so installed-but-down disables the pill rather than removing
+    // it: hiding a firing alert's Ask because the optional Advisor is down
+    // would make installing it a prerequisite for seeing something is wrong.
+    // Absent, or no fact yet, and it is not rendered at all.
+    var ap = window.__advisorPresence;
+    if (ap && ap.askShown()) {
+      actions += '<a class="btn" href="' + (ap.askDisabled() ? '#' : investigateHref(r)) + '"' +
+        (ap.askDisabled() ? ' aria-disabled="true" tabindex="-1"' : '') +
+        ' aria-label="Ask the Advisor about this ' + escHtml(r.metric) + ' alert">Ask Advisor</a>';
+    }
+    return '' +
+      '<tr data-state="' + (r.isResolved ? 'resolved' : 'firing') + '"' + (r.pinned ? ' data-pinned="1"' : '') + '>' +
+        '<td class="nowrap">' + escHtml(phone ? fmtTimeShort(r.firingTs) : fmtTime(r.firingTs)) +
+          buildAlertRowTip(r) +
+        '</td>' +
+        '<td class="metric">' + escHtml(r.metric) +
+          (ruleActionFor(r) ? '<span class="has-action" aria-label="This alert carries an action">&#9432;</span>' : '') +
+        '</td>' +
+        '<td><span class="sev ' + sevCls + '">' + severityLabel(r.severity) + '</span></td>' +
+        '<td class="right col-val">' + escHtml(formatValue(r.metric, r.value)) + '</td>' +
+        '<td class="col-dur">' + escHtml(durationLbl) + '</td>' +
+        '<td class="chan col-chan">' + channelIconsHtml(r.channels, r.delivery) + '</td>' +
+        '<td class="col-state"><span class="sev ' + stateCls + '">' + stateLbl + '</span></td>' +
+        '<td class="row-actions">' + actions + '</td>' +
+      '</tr>';
+  }
+
+  // The pager holds the operator's page across a repaint — the table repaints
+  // every ten seconds and losing your place each time would make the later
+  // pages unreadable. On Live it follows new activity instead: when the set of
+  // rows actually changes, it goes back to page one, which is where the change
+  // is. A repaint that changed nothing never moves the page, on any range.
+  var historyPage = 0;
+  var historySignature = '';
+  function renderHistoryPager(total) {
+    var prev = document.getElementById('historyPagerPrev');
+    var next = document.getElementById('historyPagerNext');
+    var ind  = document.getElementById('historyPagerRange');
+    if (!prev || !next || !ind) return;
+    var pageCount = Math.max(1, Math.ceil(total / HISTORY_PAGE_SIZE));
+    if (historyPage > pageCount - 1) historyPage = pageCount - 1;
+    if (historyPage < 0) historyPage = 0;
+    var start = historyPage * HISTORY_PAGE_SIZE;
+    var end = Math.min(start + HISTORY_PAGE_SIZE, total);
+    var rows = document.querySelectorAll('#historyTable tbody tr[data-state]');
+    rows.forEach(function (row, i) { row.style.display = (i >= start && i < end) ? '' : 'none'; });
+    ind.textContent = total === 0 ? '0-0 of 0' : (start + 1) + '-' + end + ' of ' + total;
+    prev.disabled = historyPage === 0;
+    next.disabled = historyPage >= pageCount - 1;
+  }
+  (function bindHistoryPager() {
+    var prev = document.getElementById('historyPagerPrev');
+    var next = document.getElementById('historyPagerNext');
+    if (prev) prev.addEventListener('click', function () { if (historyPage > 0) { historyPage--; renderAlertHistory(runtime.events); } });
+    if (next) next.addEventListener('click', function () { historyPage++; renderAlertHistory(runtime.events); });
+  })();
+
+  function renderAlertHistory(events) {
+    var firingKeys = {};
+    var live = runtime.firing || [];
+    for (var i = 0; i < live.length; i++) firingKeys[live[i].dedup_key] = true;
+
+    var windowStartMs = Date.now() - rangeSpanMs(runtime.range);
+    var rows = applySeverityFilter(firingAsRows(live))
+      .concat(applySeverityFilter(historyRowsInWindow(events, windowStartMs, firingKeys)));
+
+    var headCount = document.getElementById('historyCount');
+    if (headCount) {
+      var note = servedNote();
+      // #131. Same as the badges: the count's own text node is written, so
+      // the popover beside it survives, and the anchor class is only on while
+      // there is a note to open.
+      var countTip = headCount.querySelector('.tt-body');
+      if (!countTip) { countTip = document.createElement('span'); countTip.className = 'tt-body'; headCount.appendChild(countTip); }
+      if (!headCount.firstChild || headCount.firstChild.nodeType !== 3) headCount.insertBefore(document.createTextNode(''), headCount.firstChild);
+      headCount.firstChild.nodeValue = '· ' + rows.length + ' event' + (rows.length === 1 ? '' : 's') +
+        (note ? ' ' + note.text : '');
+      countTip.textContent = note ? note.title : '';
+      headCount.classList.toggle('tt-host', !!note);
+      headCount.removeAttribute('title');
+    }
+
+    var tbody = document.querySelector('#historyTable tbody');
+    if (!tbody) return;
+    if (rows.length === 0) {
+      historySignature = '';
+      historyPage = 0;
+      tbody.innerHTML = '<tr><td colspan="8" class="empty-cell">No alerts in the selected window</td></tr>';
+      renderHistoryPager(0);
+      return;
+    }
+    // What the operator is looking at, not what was fetched: a repaint that
+    // produced the same rows in the same states must not move their page.
+    var signature = rows.map(function (r) { return r.dedup_key + ':' + (r.isResolved ? 'r' : 'f') + ':' + r.ts; }).join('|');
+    if (runtime.range === 'live' && signature !== historySignature) historyPage = 0;
+    historySignature = signature;
+    tbody.innerHTML = rows.map(alertRowHtml).join('');
+    renderHistoryPager(rows.length);
+  }
+
+  function renderDigestLog(runs) {
+    var rows = (runs || []).slice();
+    var filter = runtime.filters.digest;
+    if (filter !== 'all') {
+      rows = rows.filter(function (r) {
+        return String(r.channel).toLowerCase() === filter;
+      });
+    }
+    var headCount = document.getElementById('digestCount');
+    if (headCount) headCount.textContent = '· last 7d · ' + rows.length + ' send' + (rows.length === 1 ? '' : 's');
+
+    var tbody = document.querySelector('#digestTable tbody');
+    if (!tbody) return;
+    // The card grows to meet Alert History beside it, so an empty log fills
+    // the space it was given rather than leaving a bare strip under three
+    // header cells: the table takes the whole wrap and the message centres.
+    var wrap = document.getElementById('digestWrap');
+    if (wrap) wrap.classList.toggle('digest-empty', rows.length === 0);
+    if (rows.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="4" class="empty-cell">No digests sent in the selected window</td></tr>';
+    } else {
+      tbody.innerHTML = rows.map(function (r) {
+        var stateCls = r.state === 'sent' ? 'ok' : r.state === 'retried' ? 'warn' : 'alert';
+        var stateLbl = r.state === 'sent' ? 'Sent' : r.state === 'retried' ? 'Retried' : 'Failed';
+        var channelLbl = r.channel.charAt(0).toUpperCase() + r.channel.slice(1);
+        return '' +
+          '<tr>' +
+            '<td class="nowrap">' + escHtml(fmtTime(r.ts)) +
+              buildDigestRowTip(r) +
+            '</td>' +
+            '<td class="metric">' + escHtml(channelLbl) + '</td>' +
+            '<td>' + r.recipient_count + '</td>' +
+            '<td><span class="sev ' + stateCls + '">' + stateLbl + '</span></td>' +
+          '</tr>';
+      }).join('');
+    }
+    if (rows.length === 0) {
+      // The "no digests" line is a message, not a send. Paging it as "1-1 of 1"
+      // would count it as one, which is the count contradicting the "0 sends"
+      // in the header immediately above it.
+      var ind = document.getElementById('digestPagerRange');
+      var prev = document.getElementById('digestPagerPrev');
+      var next = document.getElementById('digestPagerNext');
+      if (ind) ind.textContent = '0-0 of 0';
+      if (prev) prev.disabled = true;
+      if (next) next.disabled = true;
+      return;
+    }
+    setupPager('digestTable', 'digestPagerPrev', 'digestPagerNext', 'digestPagerRange', 3);
+  }
+
+  // ── Filter chip wiring (re-renders relevant table on chip change) ─
+  // Addressed by id, not by position in the section: the two cards no longer
+  // sit as siblings in one grid, and a positional selector that stops matching
+  // fails silently on a guarded lookup.
+  document.querySelectorAll('#historyChips .chip').forEach(function (c) {
+    c.addEventListener('click', function () {
+      runtime.filters.history = c.textContent.trim().toLowerCase();
+      // A narrower filter can leave fewer pages than the one being read.
+      historyPage = 0;
+      renderAlertHistory(runtime.events);
+    });
+  });
+  document.querySelectorAll('#digestChips .chip').forEach(function (c) {
+    c.addEventListener('click', function () {
+      runtime.filters.digest = c.textContent.trim().toLowerCase();
+      renderDigestLog(runtime.runs);
+    });
+  });
+
+  // ── Range toggle ────────────────────────────────────────────────────
+  // Live is the last hour, rolling, repainted on the poll — the range to sit
+  // on while restarting a node, because the alert appears at the top as
+  // Firing and then turns Resolved in the same row rather than disappearing.
+  // The rest are the same rolling rule over a longer span. Whatever is
+  // selected, the firing rows are pinned above the window, so a short range
+  // never hides a long-running alert.
+  //
+  // Changing the range refetches: the window is a server-side parameter, and
+  // filtering a 1h response down to 30d would show an hour under a month's
+  // label.
+  document.querySelectorAll('#historyRange .range-btn').forEach(function (b) {
+    b.addEventListener('click', function () {
+      var next = b.getAttribute('data-range');
+      if (!next || next === runtime.range) return;
+      document.querySelectorAll('#historyRange .range-btn').forEach(function (x) { x.classList.remove('active'); });
+      b.classList.add('active');
+      runtime.range = next;
+      historyPage = 0;
+      // Paint what is already known at the new window straight away, then
+      // let the fetch widen or narrow it. A range click that showed nothing
+      // for a second would read as an empty window rather than a pending one.
+      renderAlertHistory(runtime.events);
+      loadAlertHistoryFetch();
+    });
+  });
+
+  // ── Peer-view banner ────────────────────────────────────────────────
+  // D8 last tab batch — "viewing X · as of Ns ago" (security-review-
+  // d8-fetchthrough P1-030 — a peer's data must never present as live).
+  // Every other peer-aware tab shows this; Insights originally didn't
+  // (see the now-corrected comment on clearInsightsForTransition below) —
+  // a live drive against a real peer read `isPeerActive()` as true with
+  // real peer data filling in, yet the page itself gave no visual cue
+  // that what was on screen was a peer's reading, not this box's own.
+  //
+  // firing/alerts/digests have no server-side staleness clock of their
+  // own (queried fresh from SQLite on every call, not served from an
+  // in-memory poll cache the way node-status/consensus-snapshot are) —
+  // so the honest age here is simply how long ago THIS dashboard's own
+  // fetch of each of the three last landed. The banner shows the OLDEST
+  // of the three last-successful-fetch timestamps, the same "worst of
+  // the known ages" rule the other peer-aware tabs apply when folding
+  // multiple data sources into one banner.
+  var peerBannerFetchMs = { state: null, history: null, digests: null };
+  function fmtPeerAge(ms) {
+    var s = Math.max(0, Math.round(ms / 1000));
+    if (s < 60) return s + 's ago';
+    return Math.round(s / 60) + 'm ago';
+  }
+  function renderPeerBanner() {
+    // Banner removed per operator request (feedback #16): the fleet chip/card
+    // already names the active node and the "as of Ns ago" line read as noise
+    // and bounced. The HARD stale guard is unaffected — an unreachable/unverified
+    // peer still surfaces in the STATE pill via renderPeerErrorState.
+    var el = document.getElementById('peerViewBanner');
+    if (el) el.hidden = true;
+  }
+  renderPeerBanner();
+
+  // ── Fetchers ─────────────────────────────────────────────────────
+  //
+  // D8 slice 3 backend retrofit (advisor-enhancement/
+  // security-review-peer-read-proxy.md, d8-frontend-tab-audit.md). This
+  // page's own local endpoints (/api/insights/state|history|digest_log)
+  // have NO read-contract equivalent shape — different keys
+  // (`events`/`runs` vs `alerts`/`digests`), different param names
+  // (`hours`/`days` vs `since_ms`), and /api/insights/state bundles counts
+  // this box computes server-side from its own `firing` table. peer-fetch.js
+  // deliberately does not carry these three routes in its own LOCAL_PATH
+  // map for exactly that reason (see that file's comment) — routing them
+  // through one shape-agnostic helper would silently paint the wrong
+  // fields. Each loader below is its own small adapter instead: local mode
+  // is untouched, peer mode builds the SAME `runtime` shape from the
+  // read-contract routes so every render* function downstream needs no
+  // peer-awareness of its own.
+  //
+  // NOT peer-servable at all, and left describing THIS box even while
+  // viewing a peer: /api/insights/config (this dashboard's OWN alert-rule
+  // configuration — a peer's rules are its own, not something the fetch-
+  // through carries or should) and Test Fire (a write action; the read
+  // proxy is read-only by construction). Both are simply never touched by
+  // this retrofit.
+  function severityCountsFromFiring(firing) {
+    var counts = { firing_now: firing.length, page: 0, critical: 0, warn: 0 };
+    for (var i = 0; i < firing.length; i++) {
+      if (firing[i].severity === 'page') counts.page++;
+      else if (firing[i].severity === 'critical') counts.critical++;
+      else if (firing[i].severity === 'warn') counts.warn++;
+    }
+    return counts;
+  }
+  // The firing poll runs every 5s, the history poll every 10s. An alert that
+  // ends between the two leaves the table with nothing to show for it: it has
+  // left the pinned firing rows and its resolved row has not arrived, so for
+  // up to ten seconds the alert is in neither half of the panel. That is the
+  // gap an operator watching a restart is looking straight at. So the moment
+  // the active set loses a key, fetch the history at once instead of waiting
+  // out its own interval. The resolve time and the held duration are still
+  // the server's, read from the event it wrote; nothing here is inferred from
+  // the disappearance.
+  var lastActiveDedupKeys = {};
+  function refetchHistoryWhenAnAlertEnds(firing) {
+    var now = {};
+    var list = firing || [];
+    for (var i = 0; i < list.length; i++) now[list[i].dedup_key] = true;
+    var vanished = false;
+    for (var k in lastActiveDedupKeys) {
+      if (Object.prototype.hasOwnProperty.call(lastActiveDedupKeys, k) && !now[k]) { vanished = true; break; }
+    }
+    lastActiveDedupKeys = now;
+    if (vanished) loadAlertHistoryFetch();
+  }
+
+  async function loadInsightsStateFromPeer() {
+    // Mirrors server.ts's own /api/insights/state (~4907): firing_now/page/
+    // critical/warn counted from the SAME `firing` list, lastPage the most
+    // recent severity=page row. lastDigest is fetched by the LOCAL endpoint
+    // too but has no renderer anywhere in this file today — not carried
+    // here, so this peer branch fetches only what it can actually paint.
+    var firingRes = await window.aperirePeerFetch.readFetch('firing', {});
+    if (!firingRes.ok) throw new Error('HTTP ' + firingRes.status);
+    var firingData = await firingRes.json();
+    var firing = firingData.firing || [];
+    runtime.firing = firing;
+    var oneYearAgoMs = Date.now() - 365 * 86_400_000;
+    var alertsRes = await window.aperirePeerFetch.readFetch('alerts', { since_ms: oneYearAgoMs, limit: 200 });
+    var alerts = alertsRes.ok ? ((await alertsRes.json()).alerts || []) : [];
+    var lastPage = alerts.find(function (e) { return e.severity === 'page'; }) || null;
+    renderFiringNowAndLastPage({ counts: severityCountsFromFiring(firing), lastPage: lastPage });
+    // The firing rows are pinned to the top of the history table, so a new
+    // firing set repaints it — even if the history events themselves have
+    // not changed since the last poll.
+    renderAlertHistory(runtime.events);
+    refetchHistoryWhenAnAlertEnds(runtime.firing);
+    peerBannerFetchMs.state = Date.now();
+    renderPeerBanner();
+  }
+  async function loadInsightsState() {
+    try {
+      if (window.aperirePeerFetch.isPeerActive()) { await loadInsightsStateFromPeer(); return; }
+      var res = await fetch('/api/insights/state', { cache: 'no-store' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      var data = await res.json();
+      runtime.firing = data.firing || [];
+      renderFiringNowAndLastPage(data);
+      // #486. The send, and the fact that this node was asked about it. A
+      // successful answer with no digest in it is "none sent", which is a
+      // reading; before it there is nothing to say.
+      runtime.lastDigest = data.lastDigest || null;
+      runtime.lastDigestKnown = true;
+      renderLastDigestCell();
+      // See the peer branch: the pinned rows come from this fetch, so the
+      // table is repainted by it and not only by the history poll.
+      renderAlertHistory(runtime.events);
+      refetchHistoryWhenAnAlertEnds(runtime.firing);
+    } catch (err) { console.warn('insights state load failed:', err); }
+  }
+  async function loadAlertHistoryFetch() {
+    try {
+      if (window.aperirePeerFetch.isPeerActive()) {
+        // `alerts` (peer route) is the same underlying table as `events`
+        // (local endpoint), just a different key and a since_ms param
+        // instead of hours — see ReadAlertEvent's doc comment in
+        // read-contract.ts, field-for-field the same as AlertEvent (db.ts).
+        var peerSinceMs = Date.now() - rangeSpanMs(runtime.range);
+        var peerRes = await window.aperirePeerFetch.readFetch('alerts', { since_ms: peerSinceMs, limit: HISTORY_ROW_LIMIT });
+        if (!peerRes.ok) throw new Error('HTTP ' + peerRes.status);
+        var peerData = await peerRes.json();
+        runtime.events = peerData.alerts || [];
+        noteServedWindow(peerSinceMs, peerData.since_ms, runtime.events);
+        renderAlertHistory(runtime.events);
+        peerBannerFetchMs.history = Date.now();
+        renderPeerBanner();
+        return;
+      }
+      var hours = HISTORY_RANGE_HOURS[runtime.range] || 1;
+      var requestedSinceMs = Date.now() - hours * 3_600_000;
+      var res = await fetch('/api/insights/history?hours=' + hours, { cache: 'no-store' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      var data = await res.json();
+      runtime.events = data.events || [];
+      noteServedWindow(requestedSinceMs, data.since_ms, runtime.events);
+      renderAlertHistory(runtime.events);
+    } catch (err) { console.warn('insights history load failed:', err); }
+  }
+  async function loadDigestLogFetch() {
+    try {
+      if (window.aperirePeerFetch.isPeerActive()) {
+        // `digests` (peer route) is queryDigestRuns() verbatim, the same
+        // function the local endpoint calls — field-for-field the same
+        // DigestRun shape (db.ts), just keyed `digests` not `runs`.
+        var peerRes = await window.aperirePeerFetch.readFetch('digests', { since_ms: Date.now() - 7 * 86_400_000, limit: 200 });
+        if (!peerRes.ok) throw new Error('HTTP ' + peerRes.status);
+        var peerData = await peerRes.json();
+        runtime.runs = peerData.digests || [];
+        renderDigestLog(runtime.runs);
+        peerBannerFetchMs.digests = Date.now();
+        // #486. On a peer these rows are the only record of a send there is,
+        // so the LAST DIGEST cell is built from them rather than left holding
+        // this host's own answer under the peer's name.
+        renderLastDigestCell();
+        renderPeerBanner();
+        return;
+      }
+      var res = await fetch('/api/insights/digest_log?days=7', { cache: 'no-store' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      var data = await res.json();
+      runtime.runs = data.runs || [];
+      renderDigestLog(runtime.runs);
+    } catch (err) { console.warn('insights digest log load failed:', err); }
+  }
+
+  // The hash may already name a peer on first load (a reload while viewing
+  // one, or a direct deep link into #node=label) — shows "loading…" right
+  // away rather than leaving the banner hidden until the first fetch
+  // resolves or the 1s interval's next tick.
+  renderPeerBanner();
+  loadInsightsState();
+  loadAlertHistoryFetch();
+  loadDigestLogFetch();
+  // Skip polls when the document is hidden — fetches are pointless for
+  // a tab the operator isn't watching, and skipping them saves WS / HTTP
+  // chatter, JSON parsing, and DOM mutation churn over long sessions.
+  setInterval(function () { if (document.hidden) return; loadInsightsState(); },     5000);
+  setInterval(function () { if (document.hidden) return; loadAlertHistoryFetch(); }, 10000);
+  setInterval(function () { if (document.hidden) return; loadDigestLogFetch(); },    30000);
+
+  // Re-window the table even when nothing is being fetched. Every range is
+  // rolling, so a row that was the oldest thing in the last hour is outside
+  // it a minute later, and the durations on the pinned firing rows climb by
+  // the second. While the polls are succeeding they repaint this anyway; a
+  // failing endpoint would otherwise leave a window that had stopped moving,
+  // which is the same lie about freshness the panel exists to avoid.
+  setInterval(function () {
+    if (document.hidden) return;
+    renderAlertHistory(runtime.events);
+  }, 15000);
+
+  // Refresh immediately when the tab becomes visible again, so the
+  // operator doesn't see stale data while the next interval fires.
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) return;
+    loadInsightsState();
+    loadAlertHistoryFetch();
+    loadDigestLogFetch();
+    if (typeof loadInsightsConfig === 'function') loadInsightsConfig();
+  });
+
+  // D8 slice 3 backend retrofit — react to a fleet-peer switch immediately
+  // rather than waiting out whichever loader's own poll interval happens to
+  // fire next (up to 30s for the digest log). Blanks every panel this
+  // retrofit touches FIRST — a brief empty/loading state, never a stale
+  // reading held under the new label while the fetch is in flight (the
+  // same "kept vs observed" discipline overview.html's/consensus.html's own
+  // peer-view modules apply with blankParameterizedFields). Also resets the
+  // peer-view banner's own age tracking — a peer switch (or a return to
+  // local, where renderPeerBanner simply hides it) must never show an age
+  // left over from whichever node was active before.
+  function clearInsightsForTransition() {
+    runtime.firing = []; runtime.events = []; runtime.runs = [];
+    // The node being viewed is changing, so the alerts that were active a
+    // moment ago belong to a different box. Forget them rather than reading
+    // their absence under the new label as five alerts resolving at once.
+    lastActiveDedupKeys = {};
+    runtime.served = { sinceMs: null, requestedSinceMs: null, capped: false };
+    // The last send belongs to whichever node was on screen, so it goes with
+    // the rest of that node's readings (#486). Nothing is claimed about the
+    // node being switched to until its own answer lands.
+    runtime.lastDigest = null;
+    runtime.lastDigestKnown = false;
+    historyPage = 0;
+    renderFiringNowAndLastPage({ counts: { firing_now: 0, page: 0, critical: 0, warn: 0 }, lastPage: null });
+    renderLastDigestCell();
+    renderAlertHistory([]);
+    renderDigestLog([]);
+    peerBannerFetchMs = { state: null, history: null, digests: null };
+    renderPeerBanner();
+  }
+  function refreshAllInsights() {
+    clearInsightsForTransition();
+    loadInsightsState();
+    loadAlertHistoryFetch();
+    loadDigestLogFetch();
+  }
+  var topWinForHash;
+  try { topWinForHash = window.top; } catch (_) { topWinForHash = window; }
+  topWinForHash.addEventListener('hashchange', refreshAllInsights);
+  window.addEventListener('pagehide', function () {
+    try { topWinForHash.removeEventListener('hashchange', refreshAllInsights); } catch (_) { /* already gone */ }
+  });
+})();
+</script>
+
+<script src="/mobile-nav.js" defer></script>
+<script src="/fleet-chip.js" defer></script>
+<script src="/advisor-presence.js" defer></script>
+<script src="/idle-tracker.js" defer></script>
+<!-- No fold-fit measurement on this page any more. It existed for Currently
+     Firing, the one band here with no natural height: one alert made it 162px
+     and eight made it 474px, and the residual was what decided how many rows a
+     page of that card held. Alert History has taken its place and is a table
+     paged at a fixed row count, so the band is bounded by construction. -->
+</body>
+</html>

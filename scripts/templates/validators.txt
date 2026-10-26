@@ -1,0 +1,23 @@
+# Mainnet validator list publishers.
+#
+# Copied verbatim from the mainnet block of XRPLF/rippled
+# cfg/validators-example.txt. Do not retype these keys: a wrong publisher key
+# means the node trusts no validator list, never reaches a quorum, and never
+# validates a ledger.
+#
+# WARNING from upstream, worth repeating: changing these values can make this
+# node see a validated ledger that contradicts everyone else's (a fork) if its
+# lists do not sufficiently overlap with the lists other servers use.
+
+[validator_list_sites]
+https://vl.ripple.com
+https://unl.xrplf.org
+
+[validator_list_keys]
+#vl.ripple.com
+ED2677ABFFD1B33AC6FBC3062B71F1E8397C1505E1C42C64D11AD1B28FF73F4734
+#unl.xrplf.org
+ED42AEC58B701EEBB77356FFFEC26F83C1F0407263530F068C7C73D392C7E06FD1
+
+[validator_list_threshold]
+0

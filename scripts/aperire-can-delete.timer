@@ -1,0 +1,28 @@
+[Unit]
+Description=Aperire: daily ledger-store rotation window
+Documentation=file:/usr/local/lib/aperire/aperire-can-delete.sh
+
+[Timer]
+# Once a day, at a fixed local hour.
+#
+# Why daily, and why fixed. With online_delete=32768 a rotation becomes due
+# roughly every 32 hours (32,768 ledgers at ~3.5s), so a daily window catches
+# each one within a day of it becoming due. Fixed rather than randomised
+# because the point of this work is that an operator can say when their node
+# rotates. 04:00 local is the quietest hour on a validator host and is far
+# from the times anyone does maintenance by hand.
+#
+# A run on a day with no rotation due costs two RPC calls and five minutes of
+# polling, then disarms. It is cheap to be early.
+OnCalendar=*-*-* 04:00:00
+AccuracySec=1min
+
+# A host that was off at 04:00 runs the window when it comes back. The script
+# refuses to arm unless the node is caught up, so a boot-time catch-up run on
+# a still-syncing node prints a line and exits.
+Persistent=true
+
+Unit=aperire-can-delete.service
+
+[Install]
+WantedBy=timers.target

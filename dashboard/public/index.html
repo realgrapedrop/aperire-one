@@ -1,0 +1,1293 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Aperire One: XRPLD Dashboard</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<link rel="icon" href="/favicon.ico" sizes="32x32" />
+<!-- The theme, decided before anything paints.
+     This has to be inline, blocking, and above the stylesheet link below.
+     A deferred file would run after the first frame and the operator would
+     see a flash of the wrong theme on every single load; a file loaded in
+     parallel would race the paint. Six lines in <head> is the price of that
+     never happening. Reading localStorage can throw (private mode, an embed
+     a browser treats as third-party storage), so a failure silently leaves
+     the default, which is dark. Identical on all nine pages; see
+     public/theme-toggle.js for the half that writes the value. -->
+<script>(function(){var t='dark';try{if(localStorage.getItem('aperire-theme')==='light')t='light';}catch(e){}document.documentElement.setAttribute('data-theme',t);})();</script>
+<!-- The palette, both themes, shared by every page. Linked BEFORE this
+     page's own <style> so a page can still override a token, and
+     render-blocking so the first frame is never unstyled. -->
+<link rel="stylesheet" href="/theme.css">
+<style>
+  /* Scrollbars, product-wide. The browser default is a bright white bar
+     that punches through the dark palette — reported from the upgrade
+     transcript pane, where it sat a foot from an amber status line.
+     color-scheme lets the engine render native bars dark; the explicit
+     rules tune the thumb to platinum: visible when sought, quiet when
+     not. Hover brightens so grabbing it stays obvious. */
+  *::-webkit-scrollbar-thumb:hover { background: rgba(178, 190, 204, 0.55); background-clip: padding-box; }
+  *::-webkit-scrollbar-corner { background: transparent; }
+
+  * { box-sizing: border-box; }
+  .sr-only {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+  }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg); color: var(--text);
+    font-family: var(--sans); font-size: 15px; line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+    height: 100%;
+  }
+  body { display: flex; flex-direction: column; min-height: 100dvh; }
+
+  /* ── Header + tabs (copied verbatim from the tab pages) ───────────── */
+  /* ══════════════════════════════════════════════════════════════════
+     Header — promoted to every width (decisions.md D5 + the fleet-picker
+     mock's nav recommendation, accepted 2026-08-10). brand · centered
+     node chip · current-tab label · hamburger is now the ONE header
+     shape at every viewport; the old always-visible tab row and the
+     721–1099px tablet grid are retired. nav.tabs is a 3-column grid
+     (auto / 1fr / auto) rather than a flex row so the chip can sit in a
+     TRUE center column regardless of what's on either side — `order`
+     can push an element to an edge but can't center it against unequal
+     siblings, and the column assignments below are explicit rather than
+     left to auto-placement so the layout can't shift when the chip
+     itself is hidden (the single-node case).
+     ══════════════════════════════════════════════════════════════════ */
+  header { position: sticky; top: 0; z-index: 50; background: var(--bg); }
+  nav.tabs {
+    display: grid; grid-template-columns: auto 1fr auto;
+    align-items: center; gap: 6px;
+    padding: 8px 4px 8px 8px; border-bottom: 1px solid var(--border);
+    position: relative;
+  }
+  .brand {
+    grid-column: 1; display: flex; align-items: center; gap: 8px;
+    padding: 2px 0; white-space: nowrap; min-width: 0;
+    position: relative; cursor: default;
+    /* The shell's brand is a <div>, not an <a> — it has nothing to link to,
+       being the page every other brand links back to — so there is no
+       underline and no visited purple to suppress here today. The rule is
+       pinned anyway so that the day this becomes an anchor (every tab page's
+       .brand already is one) it does not quietly grow both. */
+    text-decoration: none; color: inherit;
+  }
+  .brand-tip {
+    /* #133. Bounded by the screen as well as by 340px: the box is laid out
+       whether or not it is shown, so a tip wider than the viewport is a page
+       wider than the viewport. Counted against 100vw, which includes a
+       scrollbar, plus the 12px the box starts in at. */
+    position: absolute; top: calc(100% + 4px); left: 4px;
+    width: 340px; max-width: calc(100vw - 32px); white-space: normal;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; padding: 10px 12px;
+    font-size: 12px; line-height: 1.5; color: var(--text-dim);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+    opacity: 0; pointer-events: none; transform: translateY(-4px);
+    transition: opacity 180ms ease 120ms, transform 180ms ease 120ms;
+    z-index: 100;
+  }
+  .brand:hover .brand-tip, .brand:focus-within .brand-tip { opacity: 1; transform: translateY(0); }
+  .brand-tip strong { color: var(--text); font-weight: 700; }
+  .brand-mark { width: 23px; height: 23px; flex-shrink: 0; object-fit: contain; display: block; }
+  .brand-text {
+    /* The login card's brand treatment, adopted for consistency (operator:
+       "I like the style of the login page"): uppercase, wide tracking,
+       strong white APERIRE, light dim ONE — no gradient fill. */
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--text);
+  }
+  .brand-one { color: var(--text); font-weight: 300; opacity: 0.7; }
+  /* Retired — the always-visible tab row this header used to draw above
+     720px. Kept in the DOM: index.html's own tab-switching script below
+     still queries `.tab[data-tab]` to drive the iframe swap and keep the
+     mobile dropdown's `.mtab` list in sync. Never painted, at any width. */
+  nav.tabs > .tab { display: none; }
+  .tab {
+    appearance: none; background: var(--bg-soft);
+    border: 1px solid var(--border); border-bottom: none;
+    border-radius: 9px 9px 0 0;
+    color: var(--text-dim); text-decoration: none; font-family: inherit;
+    padding: 5px 18px; margin-bottom: -1px; cursor: pointer;
+    display: flex; flex-direction: column; align-items: center; gap: 1px;
+    text-align: center; min-width: 150px; line-height: 1.15;
+    transition: background 160ms ease, color 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+    position: relative;
+  }
+  .tab .tab-title { font-size: 15px; font-weight: 600; letter-spacing: 0.01em; }
+  .tab .tab-sub   { font-size: 11.5px; font-weight: 400; color: var(--text-muted); }
+  .tab:hover { background: var(--surface); color: var(--text); border-color: var(--border-hi); }
+  .tab.active {
+    background: linear-gradient(180deg, rgba(var(--blue-rgb), 0.20) 0%, rgba(var(--blue-rgb), 0.05) 60%, var(--bg) 100%);
+    color: var(--text); border-color: var(--accent);
+    box-shadow: 0 0 0 1px rgba(var(--blue-rgb), 0.25), 0 -6px 28px rgba(var(--blue-rgb), 0.18);
+  }
+  .tab.active .tab-title { color: var(--text); }
+  .tab.active .tab-sub   { color: var(--accent); opacity: 0.75; }
+  .tab.active::after {
+    content: ''; position: absolute; left: 1px; right: 1px; bottom: -1px;
+    height: 2px; background: var(--bg);
+  }
+  .tabs-spacer { display: none; }
+
+  /* ── Node chip — grid column 2, true center. Reuses .hs-dot/.hs-stat
+     verbatim from the Overview NODES panel (see fleet-chip.js) so the
+     chip and the panel can never disagree in wording or color. Absent
+     fleet.yaml (or one that fails closed) means /api/fleet answers
+     `{ nodes: [] }`; fleet-chip.js leaves this whole wrapper `hidden` in
+     that case — the single-node regression guarantee — so this column
+     just sits empty and brand/right-group hold their edges exactly as
+     before. ──────────────────────────────────────────────────────── */
+  .node-chip-wrap { grid-column: 2; justify-self: center; position: relative; }
+  .node-chip {
+    display: flex; align-items: center; gap: 5px;
+    padding: 4px 8px; border: 1px solid var(--border); border-radius: 999px;
+    background: var(--surface); color: var(--text); font-family: var(--mono);
+    font-size: 11px; cursor: pointer; max-width: 46vw;
+    transition: border-color 140ms ease, background 140ms ease;
+  }
+  .node-chip:hover { border-color: var(--border-hi); background: var(--surface-hi); }
+  .node-chip:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 1px rgba(var(--blue-rgb), 0.4); }
+  .node-chip[aria-expanded="true"] { border-color: var(--accent); background: var(--surface-hi); }
+  .chip-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: var(--text-muted); border: 1px solid rgba(0,0,0,0.3); }
+  .chip-dot.ok   { background: var(--green); box-shadow: 0 0 4px rgba(var(--green-rgb), 0.55); }
+  .chip-dot.warn { background: var(--amber); box-shadow: 0 0 4px rgba(var(--amber-rgb), 0.55); }
+  .chip-name { font-weight: 700; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .chip-sep { color: var(--border-hi); }
+  .chip-roll { display: flex; align-items: center; gap: 4px; color: var(--text-dim); font-weight: 600; }
+  .chip-roll .hs-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--text-muted); border: 1px solid rgba(0,0,0,0.3); }
+  .chip-roll .hs-dot:not(:first-child) { margin-left: 3px; }
+  .chip-roll .hs-dot.ok   { background: var(--green); box-shadow: 0 0 4px rgba(var(--green-rgb), 0.55); }
+  .chip-roll .hs-dot.warn { background: var(--amber); box-shadow: 0 0 4px rgba(var(--amber-rgb), 0.55); }
+  .chip-roll .hs-dot.crit { background: var(--red);   box-shadow: 0 0 4px rgba(var(--red-rgb), 0.55); }
+  .chip-caret { color: var(--text-muted); font-size: 9px; }
+
+  /* ── Dropdown — unhealthy-first (task step E). Every row's primary
+     target is an <a href>, never a state-swapping button (D5). ────── */
+  .node-dd {
+    position: absolute; top: calc(100% + 8px); left: 50%; transform: translateX(-50%);
+    width: 320px; max-width: calc(100vw - 24px);
+    background: var(--surface-hi); border: 1px solid var(--border-hi); border-radius: var(--radius);
+    box-shadow: 0 20px 48px rgba(0,0,0,0.6); z-index: 60; overflow: hidden;
+  }
+  .node-dd[hidden] { display: none; }
+  /* The mobile two-row header rules live in the LAST 720px block of this
+     stylesheet (after .right-group's base grid-column) — a same-specificity
+     override earlier in the file silently loses to it. Measured, not
+     guessed: the wrap span read 1/-1 while the right-group sat in an
+     implicit third column the base rule created after this line. */
+  .ndd-head { padding: 10px 14px; border-bottom: 1px solid var(--border); }
+  .ndd-head .title { font-size: 11px; font-weight: 700; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-dim); font-family: var(--mono); }
+  .node-health-summary { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+  .node-health-summary .total { font-size: 11px; font-weight: 700; color: var(--text-muted); font-family: var(--mono); }
+  .node-health-summary .hs-div { color: var(--border-hi); }
+  .node-health-summary .hs-stat { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 700; color: var(--text-dim); font-family: var(--mono); }
+  .node-health-summary .hs-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-muted); border: 1px solid rgba(0,0,0,0.3); }
+  .node-health-summary .hs-dot.ok   { background: var(--green); box-shadow: 0 0 4px rgba(var(--green-rgb), 0.55); }
+  .node-health-summary .hs-dot.warn { background: var(--amber); box-shadow: 0 0 4px rgba(var(--amber-rgb), 0.55); }
+  .node-health-summary .hs-dot.crit { background: var(--red);   box-shadow: 0 0 4px rgba(var(--red-rgb), 0.55); }
+
+  .ndd-list { list-style: none; margin: 0; padding: 6px; display: flex; flex-direction: column; gap: 4px; }
+  .ndd-row { position: relative; display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 6px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg); }
+  .ndd-row.warn { border-color: rgba(var(--amber-rgb), 0.4); }
+  .ndd-row.crit { border-color: rgba(var(--red-rgb), 0.5); }
+  .ndd-row.unreach { border-color: var(--border-hi); }
+  .ndd-link {
+    display: grid; grid-template-columns: auto auto 1fr; align-items: center; gap: 9px;
+    padding: 7px 10px; text-decoration: none; color: inherit; min-height: 44px;
+    border-radius: var(--radius-sm);
+  }
+  .ndd-link:hover, .ndd-link:focus-visible { background: var(--surface); outline: none; }
+  button.ndd-link { appearance: none; background: none; border: none; font: inherit; width: 100%; text-align: left; cursor: pointer; color: inherit; }
+  .ndd-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; background: var(--text-muted); border: 1px solid rgba(0,0,0,0.3); }
+  .ndd-dot.ok   { background: var(--green); box-shadow: 0 0 5px rgba(var(--green-rgb), 0.6); }
+  .ndd-dot.warn { background: var(--amber); box-shadow: 0 0 5px rgba(var(--amber-rgb), 0.6); }
+  .ndd-dot.crit { background: var(--red); box-shadow: 0 0 5px rgba(var(--red-rgb), 0.6); }
+  /* The node's role, the same letter and colours as the FLEET panel's .node-role (#1256). */
+  .ndd-role { font-family: var(--mono); font-size: 9px; font-weight: 700; line-height: 1; width: 14px; height: 14px; display: inline-flex; align-items: center; justify-content: center; border-radius: 3px; color: var(--text-muted); background: rgba(139,148,158,0.12); border: 1px solid var(--border-hi); }
+  .ndd-role.validator { color: var(--accent); background: rgba(var(--blue-rgb), 0.14); border-color: rgba(var(--blue-rgb), 0.42); }
+  .ndd-role.node { color: var(--text-dim); }
+  .ndd-role:empty { visibility: hidden; }
+  .ndd-link.ndd-self { grid-template-columns: auto 1fr; }
+  .ndd-body { min-width: 0; }
+  .ndd-name { display: block; font-family: var(--mono); font-size: 12.5px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ndd-state { display: block; font-family: var(--mono); font-size: 11px; color: var(--text-dim); }
+  .ndd-state.warn { color: var(--amber); }
+  .ndd-state.crit { color: var(--red); }
+  .ndd-state.unreach { color: var(--text-muted); }
+  .ndd-cur-tag { font-size: 9px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: var(--accent); background: rgba(var(--blue-rgb), 0.12); border: 1px solid rgba(var(--blue-rgb), 0.4); border-radius: 999px; padding: 1px 6px; margin-left: 6px; }
+  span.ndd-link { cursor: default; }
+  span.ndd-link:hover { background: none; }
+  .ndd-ask {
+    justify-self: end; align-self: center; margin-left: 10px; margin-right: 10px; position: relative;
+    padding: 2px 8px; text-decoration: none; white-space: nowrap;
+    font-size: 10px; font-weight: 700; color: var(--amber);
+    background: var(--amber-soft); border: 1px solid rgba(var(--amber-rgb), 0.45);
+    border-radius: 20px;
+  }
+  /* No leftward bleed: the pseudo-element's own left inset moves INWARD
+     (4px) rather than extending past the ask link's true edge, and the
+     link itself now carries a real margin-left — together these leave a
+     genuine dead zone between the node button and this hit area, instead
+     of the two abutting with zero gap. */
+  .ndd-ask::before { content: ''; position: absolute; inset: -12px -6px -12px 4px; }
+  .ndd-ask:hover, .ndd-ask:focus-visible { background: rgba(var(--amber-rgb), 0.3); outline: none; }
+  .ndd-foot { padding: 8px 14px 10px; border-top: 1px solid var(--border); font-size: 10.5px; color: var(--text-muted); line-height: 1.5; }
+
+  /* Audio toggle — sits right of the spacer alongside the auth pill. */
+  .audio-toggle {
+    background: none; border: 1px solid var(--border);
+    border-radius: var(--radius-sm); cursor: pointer; padding: 3px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--text-dim);
+    transition: color 0.15s, border-color 0.15s;
+    width: 28px; height: 28px; flex-shrink: 0;
+    align-self: center; margin: 0;
+  }
+  .audio-toggle:hover { color: var(--text); border-color: var(--text-muted); }
+  .audio-toggle.playing { color: var(--green); border-color: var(--green); }
+  .audio-toggle svg { width: 16px; height: 16px; }
+
+  /* Authenticated-operator pill — replaces the old pubkey display. */
+  /* Lock icon + username; click or Cmd/Ctrl+Shift+L to lock the      */
+  /* dashboard. The pill is the only persistent visual cue of the     */
+  /* current session — when it disappears, you're not signed in.      */
+  .auth-pill {
+    display: flex; align-items: center; gap: 7px;
+    padding: 4px 10px;
+    border: 1px solid var(--border); border-radius: 999px;
+    font-family: var(--mono); font-size: 11.5px;
+    color: var(--text-dim); background: transparent;
+    cursor: pointer;
+    align-self: center; margin: 0 0 0 10px;
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
+  }
+  .auth-pill:hover {
+    color: var(--text); border-color: var(--text-muted);
+    background: rgba(110, 118, 129, 0.08);
+  }
+  .auth-pill svg { width: 12px; height: 12px; flex-shrink: 0; }
+  .auth-pill .name { letter-spacing: 0.02em; }
+  .auth-pill .name.empty { color: var(--text-muted); }
+  /* The @role suffix reads quieter than the name — same voice as the
+     header's ONE: present, not shouting. */
+  .auth-pill .name .role { color: var(--text-muted); }
+
+  /* ── Right-hand cluster — grid column 3. `order` sequences the pieces
+     within the flex wrapper below without depending on their DOM order —
+     unchanged from the pattern this promotes, just no longer scoped to
+     ≤720px. `.audio-toggle`/`.auth-pill` keep their full appearance rules
+     (colors, borders, hover) defined earlier in this stylesheet; only
+     size/position/order are set here. ─────────────────────────────── */
+  .right-group { grid-column: 3; justify-self: end; display: flex; align-items: center; gap: 6px; }
+  .navbg { order: 1; }
+  .audio-toggle { order: 2; width: 26px; height: 26px; flex: 0 0 auto; position: relative; margin: 0; }
+  .audio-toggle::before { content: ''; position: absolute; inset: -9px; }
+  .audio-toggle svg { width: 13px; height: 13px; }
+  .auth-pill { order: 3; margin: 0; padding: 6px 10px; flex: 0 0 auto; gap: 6px; }
+  .auth-pill svg { width: 13px; height: 13px; }
+  .auth-pill .name { white-space: nowrap; }
+  .navcur { order: 4; }
+  .hamburger { order: 5; }
+
+  .navbg {
+    display: flex; align-items: center; gap: 4px; flex: 0 0 auto;
+    padding: 4px 6px; border: 1px solid var(--amber); border-radius: 999px;
+    background: var(--amber-soft); font-family: var(--mono); font-size: 10.5px;
+    color: var(--amber); cursor: pointer;
+  }
+  .navbg[hidden] { display: none; }
+  .navbg-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--amber); flex: 0 0 auto; }
+  .navbg.warn { background: rgba(var(--amber-rgb), 0.16); }
+  .navbg.warn .navbg-dot { animation: navbgpulse 2.4s ease-in-out infinite; }
+  .navbg.stale { border-color: var(--text-muted); color: var(--text-muted); background: var(--surface); }
+  .navbg.stale .navbg-dot { background: var(--text-muted); animation: none; }
+  @keyframes navbgpulse {
+    0%, 100% { box-shadow: 0 0 0 0 var(--red-soft); }
+    50%      { box-shadow: 0 0 0 5px rgba(var(--red-rgb), 0); }
+  }
+
+  .navcur {
+    display: inline-block; flex: 0 1 auto; align-self: center;
+    font-size: 13px; font-weight: 600; letter-spacing: 0.04em; color: var(--accent);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    max-width: 140px; line-height: 1; text-align: right;
+  }
+  /* The chip occupies the header's one center slot on a phone (mock
+     frames d/e) — .navcur yields it there. The current tab stays
+     reachable as the active row inside the opened menu. */
+  @media (max-width: 720px) {
+    .navcur { display: none; }
+
+    /* The three-row grid itself (brand plus controls, tab name, fleet
+       chip) is theme.css's own `header nav.tabs` block (#236, #578): that
+       selector's specificity outranks this file's bare `nav.tabs`, and
+       this page keeps its own data-tabname current on every switch, so
+       the shell gets the same three rows the seven standalone pages do.
+       Nothing here needs to restate that grid. What IS unique to the
+       shell is the account pill (no other page carries one), and that
+       is what the rest of this block places.
+
+       #591 (operator, 2026-09-21). The pill used to sit in the right-hand
+       cluster on row one, crowded against the theme and sound buttons and
+       the menu until it truncated to "capt… @admin". It shares row two
+       with the tab name instead, right-aligned. Row one is unchanged:
+       .right-group keeps the buttons and the menu, and position: relative
+       here is only a positioning context for the pill below. It is not
+       what places the buttons, which theme.css's grid already does. */
+    /* The operator's iPhone, 2026-09-21: the tab name belongs on the RIGHT of
+       row two, under the menu that chooses it, and the account pill on the
+       left under the wordmark. The pill hangs off this group (top: 100% is
+       row one's bottom edge), so the group spans the header's full width on a
+       phone and the pill anchors to its LEFT edge. The buttons stay packed to
+       the right. The group's empty stretch lies over the wordmark, so it lets
+       pointer events through and only its own children take them. */
+    header nav.tabs .right-group {
+      position: relative;
+      grid-column: 1 / -1; justify-self: stretch; justify-content: flex-end;
+      pointer-events: none;
+    }
+    header nav.tabs .right-group > * { pointer-events: auto; }
+    /* top: 100% is row one's own bottom edge (row-gap: 0 between the grid
+       rows, so that IS row two's top); the extra 10px matches the tab
+       name's own margin-top (theme.css, header nav.tabs::after) so the two
+       sit on the same line without a shared parent to align them against.
+       right: 0 is right-group's own right edge, which (justify-self: end
+       inside the row's 1fr column) is already flush with nav.tabs's own
+       right padding, the same inset the fleet chip's row uses one row
+       down. */
+    .auth-pill {
+      position: absolute; top: calc(100% + 10px); left: 0; right: auto; margin: 0;
+      min-width: 0;
+    }
+    /* Row two's own height still comes from the tab name alone (the only
+       thing left in its normal flow, now that the pill is out of it), so
+       without a floor here the fleet chip's row started under the pill's
+       own bottom edge. 31px is the pill's measured height at this width;
+       the pseudo's own 10px margin-top still applies on top of this
+       min-height, landing row two's total height where the pill's own
+       bottom edge does. */
+    header nav.tabs::after { min-height: 31px; }
+    /* The room the pill's own name has left: row two's width, less the
+       nav's own padding (16), less what a page's longest tab name needs
+       ("Settings & Updates", measured at this font ~178px), less the
+       pill's own icon, padding and border (41). Unlike row one's old
+       budget this no longer competes with the wordmark at all, so a
+       narrow phone loses the OPERATOR half of the name to the ellipsis
+       (.uname, flex: 1 1 auto below) long before it has to touch the
+       role, which never shrinks (#557) and is never hidden outright.
+       The old sub-350px cutoff that hid the whole name, role included,
+       is gone with the row it was rationed against. */
+    .auth-pill .name {
+      display: flex; align-items: baseline; min-width: 0;
+      max-width: calc(100vw - 235px);
+    }
+    .auth-pill .name .uname {
+      flex: 1 1 auto; min-width: 0; overflow: hidden;
+      text-overflow: ellipsis; white-space: nowrap;
+    }
+    .auth-pill .name .role { flex: 0 0 auto; white-space: nowrap; }
+  }
+
+  .hamburger {
+    display: flex; align-items: center; justify-content: center; flex: 0 0 auto;
+    width: 26px; height: 26px; position: relative;
+    padding: 0; margin: 0; border: none; border-radius: 50%;
+    background: transparent; cursor: pointer; transition: background 0.16s ease;
+  }
+  .hamburger::before { content: ''; position: absolute; top: -9px; bottom: -9px; left: -9px; right: -4px; }
+  .hamburger:active { opacity: 0.6; }
+  .hamburger[aria-expanded="true"] { background: rgba(var(--blue-rgb), 0.14); }
+  .hamburger .bars { position: relative; width: 16px; height: 11px; }
+  .hamburger .bars i {
+    position: absolute; left: 0; right: 0; height: 1.5px; border-radius: 2px;
+    background: var(--text-muted);
+    transition: transform 0.2s ease, opacity 0.2s ease, top 0.2s ease, background 0.2s ease;
+  }
+  .hamburger .bars i:nth-child(1) { top: 0; }
+  .hamburger .bars i:nth-child(2) { top: 4.75px; }
+  .hamburger .bars i:nth-child(3) { top: 9.5px; }
+  .hamburger[aria-expanded="true"] .bars i { background: var(--accent); }
+  .hamburger[aria-expanded="true"] .bars i:nth-child(1) { top: 4.75px; transform: rotate(45deg); }
+  .hamburger[aria-expanded="true"] .bars i:nth-child(2) { opacity: 0; }
+  .hamburger[aria-expanded="true"] .bars i:nth-child(3) { top: 4.75px; transform: rotate(-45deg); }
+
+  .scrim {
+    display: block; position: fixed; inset: 0; background: rgba(var(--bg-rgb), 0.6); z-index: 48;
+    opacity: 0; pointer-events: none; transition: opacity 0.18s ease;
+  }
+  .scrim.on { opacity: 1; pointer-events: auto; }
+
+  .mobmenu {
+    display: block; position: absolute; top: 100%; left: auto; right: 8px; z-index: 49;
+    /* A content-appropriate card on every width, not a full-bleed sheet —
+       the labels are short and edge-to-edge buried the page (operator
+       feedback, 2026-08-12). Fixed width rather than max-content because
+       the foot hint is one long line that would otherwise drag the card
+       back to full width; 280px fits the widest row (title + sub + check)
+       with air, and the hint wraps. Desktop (>=721px) keeps its own
+       fixed-position max-content card via the media block below. */
+    width: min(280px, 100vw - 16px);
+    background: var(--bg-soft); border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+    transform: translateY(-6px); opacity: 0; pointer-events: none;
+    transition: transform 0.2s ease-out, opacity 0.2s ease-out;
+    max-height: calc(100dvh - 120px); overflow-y: auto;
+  }
+  /* Desktop: the menu is a wider card under the hamburger. Full-bleed at
+     1600px curtained the entire dashboard behind a nav list — the operator's
+     first report on the promoted header. The phone's full-width sheet went
+     the same way on 2026-08-12: the labels are short, so .mobmenu above is a
+     280px card at every width, and this block only widens it past 720px and
+     lightens the scrim so the page stays readable while the menu is up. */
+  @media (min-width: 721px) {
+    /* Fixed to the viewport, not absolute. In the shell, #mobMenu is a
+       SIBLING of nav.tabs (not nested inside it as on the tab pages), so
+       `top: 100%` resolved against the full-height shell and dropped the
+       menu to the bottom of the screen (reported 2026-08-10). Fixed at the
+       header's own height pins it just under the hamburger, top-right,
+       regardless of the containing block. */
+    .mobmenu {
+      position: fixed; left: auto; right: 10px; top: 52px;
+      /* Fit the widest item (a tab label or the Log out row) plus its padding,
+         not a fixed 340px slab — the labels are short, so the card was far
+         wider than its content (feedback #15). Clamped so it never gets absurdly
+         narrow or wider than the viewport. */
+      width: max-content; min-width: 168px; max-width: calc(100vw - 20px);
+      border: 1px solid var(--border); border-radius: 10px;
+      box-shadow: 0 16px 48px rgba(0, 0, 0, 0.55);
+    }
+    .scrim { background: rgba(var(--bg-rgb), 0.22); }
+  }
+  .mobmenu.on {
+    transform: translateY(0); opacity: 1; pointer-events: auto;
+    transition: transform 0.14s ease-in, opacity 0.14s ease-in;
+  }
+  .mobmenu ul { list-style: none; margin: 0; padding: 6px; }
+  .mobmenu li + li { border-top: 1px solid var(--border); }
+  .mtab {
+    display: flex; align-items: center; gap: 10px; padding: 11px 16px 11px 14px;
+    text-decoration: none; color: var(--text-dim); min-height: 44px; position: relative;
+  }
+  .mtab:hover, .mtab:focus-visible { background: var(--surface); color: var(--text); }
+  .mtab-body { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+  .mtab-title { font-size: 14.5px; font-weight: 600; color: var(--text); }
+  .mtab-sub { font-size: 11.5px; color: var(--text-muted); }
+  .mtab-check { margin-left: auto; flex: 0 0 auto; width: 16px; height: 16px; color: var(--accent); visibility: hidden; }
+  .mtab.active { background: rgba(var(--blue-rgb), 0.08); }
+  .mtab.active::before {
+    content: ''; position: absolute; left: 0; top: 6px; bottom: 6px; width: 3px;
+    border-radius: 0 3px 3px 0; background: var(--accent);
+  }
+  .mtab.active .mtab-title { color: var(--text); }
+  .mtab.active .mtab-check { visibility: visible; }
+  .mobmenu-foot { padding: 9px 14px; border-top: 1px solid var(--border); font-size: 11px; color: var(--text-muted); }
+  /* ADR 0016. The Advisor nav entry and the pointer row that replaces it are
+     BOTH default-hidden in the markup and revealed when the published fact
+     says so, mirroring #fleetChipWrap. Gating them by hiding after the fetch
+     lands would give a declined-Advisor install a flash of an Advisor tab on
+     every page load, which is the nag the record forbids.
+
+     The !important is load-bearing, not decoration: .mtab sets display:flex,
+     and a class rule beats the user-agent's [hidden] { display: none }. A
+     bare hidden attribute on one of these does nothing at all. */
+  [data-advisor-nav][hidden], [data-advisor-pointer][hidden] { display: none !important; }
+  /* .madd, the menu's secondary rows: styled by mobile-nav.js, which owns them. */
+
+  html.menu-open, body.menu-open { overflow: hidden; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .hamburger .bars i, .scrim, .mobmenu, .node-dd, .node-chip { transition: none; }
+    .navbg.warn .navbg-dot { animation: none; }
+  }
+
+  /* Iframe content area fills exactly the remaining viewport.
+     `flex: 1 1 0` (basis 0) is critical — `flex: 1 1 auto` makes
+     the iframe report its content height as its natural size, which
+     for same-origin iframes is the inner document height. Body then
+     grows to fit, the shell page becomes taller than viewport, and
+     the sticky nav covers the top of the iframe when the operator
+     scrolls. With basis 0 the iframe takes only the available space
+     and the inner document handles its own scroll. */
+  .content-frame {
+    flex: 1 1 0;
+    width: 100%;
+    border: 0;
+    display: block;
+    background: var(--bg);
+    min-height: 0;
+  }
+  /* Belt-and-suspenders: clamp the shell to viewport so even if a
+     descendant tries to overflow vertically, the body never grows
+     past 100dvh. Inner iframes manage their own scroll. */
+  /* overscroll-behavior none: the shell never scrolls, so any rubber-band
+     the OS wants to play at its edges is pure noise — on iOS it eats the
+     first flick aimed at the iframe's scroller (the gesture chains out of
+     the iframe, bounces the dead outer page, and the operator has to pull
+     again). Containment keeps every scroll gesture on the one real
+     scroller: the embedded tab document. */
+  html, body { overflow: hidden; overscroll-behavior: none; }
+
+  /* ── #129. The header cannot overlap itself ──────────────────────────
+   *
+   * Reported on a 390px iPhone: the theme toggle sat on top of the final E
+   * of APERIRE ONE. Measured rather than guessed, on the shell at 390: the
+   * wordmark ran to x=156 and the toggle started at x=152. Four pixels.
+   *
+   * The cause is that .brand sits in an `auto` grid track and carries
+   * white-space: nowrap, so it takes its min-content width and cannot give
+   * any of it back. Add one more control to the right cluster and the two
+   * simply pass through each other: nothing in the layout says they may
+   * not. The shell is where it showed first because only the shell carries
+   * the account pill, 134px of the 374 available.
+   *
+   * Two changes, in this order.
+   *
+   * 1. The wordmark is CLIPPED to its own box. That is the structural half:
+   *    whatever the width, whatever gets added to the right cluster, the
+   *    text can no longer paint outside the space it was given, so an
+   *    overlap is not a thing that can happen. min-width: 0 is what lets
+   *    the track shrink at all (a grid item's automatic minimum size is
+   *    min-content, which for nowrap text is the whole word). The clip
+   *    belongs on .brand-text, which is where the two words are. It was
+   *    on .brand as well until #238, and .brand is what positions the
+   *    hover explainer: a box that hangs entirely BELOW .brand's own
+   *    27px, so clipping there deleted the tip on every page at every
+   *    width and no operator ever saw it. .brand keeps min-width: 0,
+   *    which is the part that was doing the work.
+   *
+   * 2. Below 420px the word ONE steps out, leaving the mark and APERIRE.
+   *    Clipping alone would be honest but ugly, rendering "APERIRE O…".
+   *    Dropping ONE frees 37px where 4 were needed, so the wordmark is
+   *    whole rather than truncated on exactly the phones that were short.
+   *    430px and up keeps the full lockup.
+   *
+   * `header nav.tabs` rather than `nav.tabs` so this outranks each page's
+   * own header rules without depending on where it lands in the file, and
+   * so the seven tab pages and the shell get identical treatment.
+   * theme-walk.mjs asserts no two header boxes intersect, on every page, at
+   * every width, in both themes. */
+  header nav.tabs .brand { min-width: 0; }
+  header nav.tabs .brand-text {
+    min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  }
+  /* ONE steps out only when the row genuinely has no space for it. The
+     420px breakpoint this replaces was a guess calibrated to the longest
+     username, so every operator with a shorter one lost the brand's name
+     for nothing (reported: a wide empty gap between APERIRE and the
+     toggle). theme-toggle.js measures and sets data-fit; this rule is
+     what it toggles. Default is the full lockup, so a browser with no
+     JavaScript keeps the whole wordmark and the clip above stops it
+     overlapping anything. */
+  header nav.tabs .brand[data-fit="short"] .brand-one { display: none; }
+
+  /* ── The setup completion notice (#135 Step 1) ───────────────────────
+   *
+   * The operator described being "dumped" onto Overview: the passkey
+   * ceremony succeeded and then nothing acknowledged it. This is that one
+   * beat.
+   *
+   * .callout is the wizard mockup's own component
+   * (the setup-wizard mockup), copied rather than
+   * invented, because the shell had no banner of its own and this message
+   * IS the wizard's last line arriving here. It should look like the same
+   * voice that just spoke on the setup page.
+   *
+   * Shown at most once ever: the flag that reveals it is removed the moment
+   * it is read, so a refresh, a second tab, or another operator signing in
+   * on this machine all get nothing. */
+  .setup-done {
+    display: none;
+    margin: 10px clamp(10px, 1.4vw, 20px) 0;
+    border-left: 3px solid var(--green);
+    background: var(--green-soft);
+    border-radius: var(--radius-sm);
+    padding: 10px 12px;
+    font-size: 13px; line-height: 1.55; color: var(--text-dim);
+  }
+  .setup-done.on { display: flex; align-items: flex-start; gap: 10px; }
+  .setup-done b { color: var(--text); }
+  .setup-done .body { flex: 1 1 auto; min-width: 0; }
+  .setup-done .x {
+    flex: 0 0 auto; background: none; border: 0; cursor: pointer;
+    color: var(--text-muted); font: inherit; font-size: 16px; line-height: 1;
+    padding: 0 2px; border-radius: 4px;
+  }
+  .setup-done .x:hover { color: var(--text); }
+  .setup-done .x:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+</style>
+<script src="/theme-toggle.js" defer></script>
+</head>
+<body>
+
+<header>
+  <nav class="tabs" data-tabname="Overview">
+    <div class="brand">
+      <img class="brand-mark" src="/aperire-mark.svg" alt="Aperire One" />
+      <span class="brand-text">Aperire <span class="brand-one">One</span></span>
+      <span class="brand-tip" role="tooltip"><strong>Aperire One</strong>, from the Latin &ldquo;to open&rdquo; or &ldquo;to reveal&rdquo; — an XRPL validator and node dashboard that brings a whole fleet into one view.</span>
+    </div>
+
+    <!-- Fleet node picker — decisions.md D5, task step C; superseded for
+         VIEWING by D8 slice 3. Hidden by fleet-chip.js whenever /api/fleet
+         answers `{ nodes: [] }` (absent fleet.yaml, an invalid one, or
+         self-identification failure) — the single-node regression
+         guarantee. The dropdown is a SIBLING of the trigger button, never
+         nested inside it: a <button> cannot legally contain another
+         <button> — and every fleet row is now one (D8 slice 3 — a peer
+         pick swaps this dashboard's data in place rather than navigating
+         to the peer's own origin; only the currently-viewed row stays a
+         non-interactive <span aria-current="page">). -->
+    <div class="node-chip-wrap" id="fleetChipWrap" hidden>
+      <button type="button" class="node-chip" id="fleetChip" aria-expanded="false" aria-controls="fleetDD">
+        <span class="chip-dot" id="fleetChipDot" aria-hidden="true"></span>
+        <span class="chip-name" id="fleetChipName">&mdash;</span>
+        <span class="chip-sep" id="fleetChipSep" aria-hidden="true">&middot;</span>
+        <span class="chip-roll" id="fleetChipRoll"></span>
+        <span class="chip-caret" aria-hidden="true">&#9662;</span>
+      </button>
+      <div class="node-dd" id="fleetDD" aria-label="Fleet nodes" hidden>
+        <div class="ndd-head">
+          <div class="title">Fleet</div>
+          <div class="node-health-summary" id="fleetDDSummary"></div>
+        </div>
+        <ul class="ndd-list" id="fleetDDList"></ul>
+        <div class="ndd-foot">Switches this dashboard to that node. No second sign-in, no leaving this dashboard.</div>
+      </div>
+    </div>
+
+    <a class="tab" data-tab="overview"   href="/overview.html"><span class="tab-title">Overview</span><span class="tab-sub">Health at a glance</span></a>
+    <a class="tab" data-tab="consensus"  href="/consensus.html"><span class="tab-title">Consensus</span><span class="tab-sub">Voting on new ledgers</span></a>
+    <a class="tab" data-tab="network"    href="/network.html"><span class="tab-title">Network</span><span class="tab-sub">Peers &amp; connections</span></a>
+    <a class="tab" data-tab="system"     href="/system.html"><span class="tab-title">System</span><span class="tab-sub">Compute health</span></a>
+    <a class="tab" data-tab="governance" href="/governance.html"><span class="tab-title">Governance</span><span class="tab-sub">Rules &amp; votes</span></a>
+    <a class="tab" data-tab="insights"   href="/insights.html"><span class="tab-title">Insights</span><span class="tab-sub">Alerts &amp; audit</span></a>
+    <a class="tab" data-tab="advisor"    href="/advisor.html" hidden data-advisor-nav><span class="tab-title">Advisor</span><span class="tab-sub">Diagnosis &amp; guidance</span></a>
+    <div class="tabs-spacer"></div>
+    <span class="right-group">
+    <button class="audio-toggle" id="audio-toggle" title="Toggle ambient audio">
+      <svg class="audio-icon-off" viewBox="0 0 16 16" fill="currentColor" style="display:none"><path d="M6.717 3.55A.5.5 0 0 1 7 4v8a.5.5 0 0 1-.812.39L3.825 10.5H1.5A.5.5 0 0 1 1 10V6a.5.5 0 0 1 .5-.5h2.325l2.363-1.89a.5.5 0 0 1 .529-.06zM6 5.04 4.312 6.39A.5.5 0 0 1 4 6.5H2v3h2a.5.5 0 0 1 .312.11L6 10.96V5.04zm3.05.05a.5.5 0 0 1 .707 0c.652.652.978 1.486.978 2.41s-.326 1.758-.978 2.41a.5.5 0 1 1-.707-.707c.476-.476.685-1.073.685-1.703s-.21-1.227-.685-1.703a.5.5 0 0 1 0-.707z"/><path d="M1.5 14.5l13-13" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
+      <svg class="audio-icon-on" viewBox="0 0 16 16" fill="currentColor"><path d="M6.717 3.55A.5.5 0 0 1 7 4v8a.5.5 0 0 1-.812.39L3.825 10.5H1.5A.5.5 0 0 1 1 10V6a.5.5 0 0 1 .5-.5h2.325l2.363-1.89a.5.5 0 0 1 .529-.06zM6 5.04 4.312 6.39A.5.5 0 0 1 4 6.5H2v3h2a.5.5 0 0 1 .312.11L6 10.96V5.04zm3.05.05a.5.5 0 0 1 .707 0c.652.652.978 1.486.978 2.41s-.326 1.758-.978 2.41a.5.5 0 1 1-.707-.707c.476-.476.685-1.073.685-1.703s-.21-1.227-.685-1.703a.5.5 0 0 1 0-.707zm2.122-2.12a.5.5 0 0 1 .707 0C13.26 4.352 14 5.985 14 7.5c0 1.515-.74 3.148-2.12 4.53a.5.5 0 0 1-.708-.708C12.37 10.124 13 8.763 13 7.5c0-1.263-.63-2.624-1.828-3.822a.5.5 0 0 1 0-.707z"/></svg>
+    </button>
+    <button class="auth-pill" id="auth-pill" title="Signed in. Click for the account menu. Ctrl+Shift+L locks the dashboard." aria-label="Account: open the menu to log out">
+      <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6zm0 1.2c-2.6 0-5 1.3-5 3.6V14h10v-1.2c0-2.3-2.4-3.6-5-3.6z"/></svg>
+      <span class="name empty" id="authPillName"><span class="uname">—</span></span>
+    </button>
+
+    <!-- Break-glass nav marker — ui-design.md §4.6. Absent from the six
+         standalone pages' own <header> is never the case; absent from
+         rendering is the ordinary case (hidden until a window is open). -->
+    <button type="button" class="navbg" id="navBg" hidden aria-label="Break glass open">
+      <span class="navbg-dot" aria-hidden="true"></span>
+      <span id="navBgText">12m</span>
+    </button>
+
+    <!-- Current-tab label — sibling of the hamburger, not a child, so its
+         aria-hidden text never becomes part of the button's accessible
+         name (mobile-nav-notes.md §0.1). -->
+    <span class="navcur" id="navCur" aria-hidden="true">Overview</span>
+    <button type="button" class="hamburger" id="hamburgerBtn" aria-expanded="false" aria-controls="mobMenu" aria-label="Open navigation menu">
+      <span class="bars" aria-hidden="true"><i></i><i></i><i></i></span>
+    </button>
+    </span>
+  </nav>
+
+  <div class="scrim" id="scrim"></div>
+
+  <nav class="mobmenu" id="mobMenu" aria-label="Dashboard sections">
+    <ul>
+      <li><a class="mtab active" data-tab="overview" href="/overview.html" aria-current="page">
+        <span class="mtab-body"><span class="mtab-title">Overview</span><span class="mtab-sub">Health at a glance</span></span>
+        <svg class="mtab-check" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M13.7 3.7 6 11.4 2.3 7.7 3.7 6.3 6 8.6l6.3-6.3z"/></svg>
+      </a></li>
+      <li><a class="mtab" data-tab="consensus" href="/consensus.html">
+        <span class="mtab-body"><span class="mtab-title">Consensus</span><span class="mtab-sub">Voting on new ledgers</span></span>
+        <svg class="mtab-check" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M13.7 3.7 6 11.4 2.3 7.7 3.7 6.3 6 8.6l6.3-6.3z"/></svg>
+      </a></li>
+      <li><a class="mtab" data-tab="network" href="/network.html">
+        <span class="mtab-body"><span class="mtab-title">Network</span><span class="mtab-sub">Peers &amp; connections</span></span>
+        <svg class="mtab-check" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M13.7 3.7 6 11.4 2.3 7.7 3.7 6.3 6 8.6l6.3-6.3z"/></svg>
+      </a></li>
+      <li><a class="mtab" data-tab="system" href="/system.html">
+        <span class="mtab-body"><span class="mtab-title">System</span><span class="mtab-sub">Compute health</span></span>
+        <svg class="mtab-check" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M13.7 3.7 6 11.4 2.3 7.7 3.7 6.3 6 8.6l6.3-6.3z"/></svg>
+      </a></li>
+      <li><a class="mtab" data-tab="governance" href="/governance.html">
+        <span class="mtab-body"><span class="mtab-title">Governance</span><span class="mtab-sub">Rules &amp; votes</span></span>
+        <svg class="mtab-check" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M13.7 3.7 6 11.4 2.3 7.7 3.7 6.3 6 8.6l6.3-6.3z"/></svg>
+      </a></li>
+      <li><a class="mtab" data-tab="insights" href="/insights.html">
+        <span class="mtab-body"><span class="mtab-title">Insights</span><span class="mtab-sub">Alerts &amp; audit</span></span>
+        <svg class="mtab-check" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M13.7 3.7 6 11.4 2.3 7.7 3.7 6.3 6 8.6l6.3-6.3z"/></svg>
+      </a></li>
+      <li hidden data-advisor-nav><a class="mtab" data-tab="advisor" href="/advisor.html">
+        <span class="mtab-body"><span class="mtab-title">Advisor</span><span class="mtab-sub">Diagnosis &amp; guidance</span></span>
+        <svg class="mtab-check" width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M13.7 3.7 6 11.4 2.3 7.7 3.7 6.3 6 8.6l6.3-6.3z"/></svg>
+      </a></li>
+    </ul>
+    <!-- ADR 0016 decision 6. When `any` is false the Advisor tab is not
+         rendered, and this one quiet row takes its place at the BOTTOM of the
+         menu, below the tab list and styled as a secondary item rather than
+         as a tab. It is the only invitation anywhere in the product: not a
+         banner, not a toast, not a badge, and it appears on no other tab.
+         Reached only by deliberate navigation. -->
+    <a class="madd" href="/advisor.html" hidden data-advisor-pointer>
+      <span class="madd-title">Add the Advisor</span>
+      <span class="madd-sub">Optional. One command.</span>
+    </a>
+    <div class="mobmenu-foot">Tap a section to switch. Press Esc or tap outside to close.</div>
+  </nav>
+</header>
+
+<div class="setup-done" id="setupDone" role="status">
+  <span class="body" id="setupDoneBody"></span>
+  <button type="button" class="x" id="setupDoneClose" aria-label="Dismiss">&#215;</button>
+</div>
+
+<iframe class="content-frame" id="content-frame" title="Aperire dashboard content" tabindex="-1"></iframe>
+<div class="sr-only" id="tabAnnounce" role="status" aria-live="polite"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  // ── Tab routing (hash-based) ──────────────────────────────────────
+  // Hash like #/consensus keeps shell + iframe in sync. Direct link to
+  // /#/<tab> loads that tab on first paint. Browser back/forward works
+  // via the hashchange event.
+  // Settings is a route here and not a tab: no entry in the strip, reached
+  // from the menu's own row, and never peer-aware (it ignores the node
+  // picker, every one of its tables is per-node already). Framed like the
+  // tabs so the shell's header, with the operator pill and the audio toggle,
+  // is the one over it (the lab aggregator, 2026-09-03).
+  var TABS = ['overview', 'consensus', 'network', 'governance', 'system', 'insights', 'advisor', 'settings'];
+  var TITLES = {
+    overview: 'Overview', consensus: 'Consensus', network: 'Network', system: 'System',
+    governance: 'Governance', insights: 'Insights', advisor: 'Advisor', settings: 'Settings & Updates',
+  };
+  var frame = document.getElementById('content-frame');
+  var tabEls = document.querySelectorAll('.tab[data-tab]');
+  // The mobile dropdown's own list — kept in sync with tabEls by setActive
+  // below, same as the mock (mobile-nav-notes.md §8 flags this duplication
+  // as the thing to fix if a build step is ever introduced; there isn't
+  // one here, so both lists stay hand-written, same as every other pair of
+  // desktop/mobile lists this vanilla codebase already carries).
+  var mtabEls = document.querySelectorAll('.mtab[data-tab]');
+  var navCur = document.getElementById('navCur');
+  // #578. The phone header's tab-name row reads this attribute (theme.css,
+  // `header nav.tabs::after { content: attr(data-tabname) }`) rather than a
+  // second element, so the one place that generates it stays true on every
+  // switch the same way .navcur's own text does two lines below.
+  var navTabsEl = document.querySelector('nav.tabs');
+  var announce = document.getElementById('tabAnnounce');
+
+  function currentTabFromHash() {
+    var m = /^#\/([a-z]+)/.exec(location.hash);
+    var t = m ? m[1] : 'overview';
+    return TABS.indexOf(t) >= 0 ? t : 'overview';
+  }
+  function nodeFromHash() {
+    var m = /[?&#]node=([a-z0-9-]{1,32})/.exec(location.hash);
+    return m ? m[1] : null;
+  }
+
+  // The tab the frame has been ASKED to show — the shell's own intent, not a
+  // reading taken from the frame. `frame.contentWindow.location.pathname`
+  // names the document that has COMMITTED, which is still the OUTGOING one
+  // for as long as the next navigation is in flight; this shell used to read
+  // it to decide "am I already on that tab?", and that is the kept-vs-observed
+  // mistake in miniature. Two tab picks in quick succession and the second one
+  // saw the first one's not-yet-replaced document, concluded it was already
+  // there, and skipped BOTH the iframe swap and the hash write — after which
+  // the hash went on naming the PREVIOUS tab while the highlight named the new
+  // one, and the node picker (which asks the shell which tab is current) sent
+  // the operator to a third place neither of them named. Intent is the only
+  // answer that is true the instant it is needed; the frame's own load
+  // listener below reconciles it with reality for the one case intent cannot
+  // cover — a tab page that navigates its own frame (idle-tracker.js's session
+  // timeout, overview.html's peer jump, mobile-nav.js's break-glass chip).
+  var frameTab = null;
+
+  function setActive(tab, opts) {
+    opts = opts || {};
+    tabEls.forEach(function (el) {
+      el.classList.toggle('active', el.dataset.tab === tab);
+    });
+    mtabEls.forEach(function (el) {
+      var on = el.dataset.tab === tab;
+      el.classList.toggle('active', on);
+      if (on) el.setAttribute('aria-current', 'page'); else el.removeAttribute('aria-current');
+    });
+    // The menu's Settings row is injected by mobile-nav.js after the session
+    // read, so it is looked up here rather than held.
+    var mobSettings = document.getElementById('mobSettings');
+    if (mobSettings) {
+      if (tab === 'settings') mobSettings.setAttribute('aria-current', 'page');
+      else mobSettings.removeAttribute('aria-current');
+    }
+    if (navCur) navCur.textContent = TITLES[tab] || tab;
+    if (navTabsEl) navTabsEl.dataset.tabname = TITLES[tab] || tab;
+    if (announce && !opts.silent) announce.textContent = 'Now viewing ' + (TITLES[tab] || tab) + '.';
+  }
+
+  // D8 slice 4 — a peer selected on Overview must still be the active node
+  // after switching tabs (the cross-tab persistence that makes this one
+  // dashboard, not several). loadTab rewrites location.hash to plain
+  // '#/<tab>' below, which would otherwise drop a `?node=` an embedded
+  // page's own peer-view module had appended. An ALLOWLIST, not a blanket
+  // preserve: fleet-chip.js's own `isActive` check (`node.label ===
+  // activeLabel`) would mark a peer row aria-current on Network/System too
+  // if the param survived onto a tab that still only ever renders local
+  // data there — a new dishonesty in the other direction. Extend this only
+  // once a tab's own page actually reads and renders the hash, confirmed
+  // by driving the live lab, not assumed from the retrofit's own commit
+  // message: governance and insights joined after confirming both react to
+  // a top-window hashchange in place and paint real peer data (governance's
+  // per-amendment ballot table needed its own new read route first,
+  // `amendment-ballot` — see AmendmentBallotResponse's doc comment in
+  // read-contract.ts; insights needed nothing further, its existing
+  // read-route retrofit already worked). Network and System joined last —
+  // both react to the hash in place and stay honest about a peer without a
+  // relay: Network's Peer Pool/Peer Quality cards are genuinely rippled-RPC
+  // data and render for real via the existing `peers` route; Bandwidth
+  // Live/Errors & Budget (Network) and every card on System are relay-only
+  // and show a permanent "not served" note instead of an attempted fetch —
+  // no new route was built for data that does not exist yet.
+  // Advisor joined last, and its entry is the one that changed the rule
+  // rather than following it. The objection to it was never "this tab has no
+  // peer data" — it was that its four metric cards read this HOST's own
+  // store, so a preserved ?node= would have the chip claim a peer was being
+  // viewed while the numbers on screen came from somewhere else. The cards
+  // now read the node named here, name it above themselves, and put it into
+  // the question the "Check this" buttons compose, so the claim the chip
+  // makes is true. Everything BELOW those cards — Ask, the checks, the
+  // upgrade ceremony — is this host's own Advisor service and stays local
+  // whatever node is selected, which the strip's own source line says in as
+  // many words. Left out, the operator reported the reverse dishonesty and
+  // the worse one: selecting a node from the Advisor tab bounced them to
+  // Overview, and the cards went on showing one node's numbers while the
+  // header named another.
+  // Settings & Updates is on this list although it renders no node view:
+  // picking a node from it must not throw the operator off the page (the
+  // same bounce the Advisor tab had, reported again 2026-09-08 for
+  // Settings). The pick rides the hash and lands when they next open a tab
+  // that shows a node.
+  var PEER_AWARE_TABS = ['overview', 'consensus', 'governance', 'insights', 'network', 'system', 'advisor', 'settings'];
+  function loadTab(tab, pushHash, opts) {
+    setActive(tab, opts);
+    // ?embed=1 is the marker every tab page's own <head> reads, synchronously,
+    // before its body — and therefore its own <header> — is ever parsed. That
+    // is what closes the race this used to lose: the header-hiding below only
+    // ran once the WHOLE iframe document (every subresource) had finished
+    // loading, so the embedded page's own header painted, at native size, for
+    // the entire time it took to load — visible right alongside the shell's
+    // header — and only vanished once 'load' fired. See each tab page's own
+    // <head> for the other half (the inline script + the CSS rule it drives).
+    var target = '/' + tab + '.html?embed=1';
+    // Only swap src if we're not already on that tab, avoids a needless reload
+    // — decided against our own intent (above), never against the frame's
+    // committed path.
+    if (frameTab !== tab) {
+      frameTab = tab;
+      frame.src = target;
+    }
+    // The hash is written whenever we were asked to, INCLUDING when the frame
+    // needed no swap. It used to sit inside the swap branch, so any pick that
+    // found the frame already there left the hash naming something else — and
+    // the hash is what everything else in this shell reads back: the node
+    // picker's "which tab am I on", a reload, a bookmark, the browser's own
+    // back button. A tab that is highlighted but not written down is a tab
+    // this shell will disagree with itself about a moment later.
+    if (pushHash) {
+      var node = PEER_AWARE_TABS.indexOf(tab) >= 0 ? nodeFromHash() : null;
+      var next = '#/' + tab + (node ? '?node=' + encodeURIComponent(node) : '');
+      // Re-picking the tab you are already on is not a navigation: writing the
+      // identical hash back would push a history entry and fire a hashchange
+      // for a state that never changed.
+      if (location.hash !== next) location.hash = next;
+    }
+  }
+  // Exposed so mobile-nav.js's break-glass chip can jump to the Advisor tab
+  // without a full page navigation out of the shell.
+  window.__shellLoadTab = function (tab) { loadTab(tab, true); };
+  // Exposed so fleet-chip.js's goToNodeView can decide whether picking a
+  // peer needs to switch tabs at all, or can just swap the active node in
+  // place — reading PEER_AWARE_TABS through this hook rather than
+  // hand-duplicating the list a second time in fleet-chip.js, the same
+  // "one list, one file" discipline PEER_AWARE_TABS's own comment above
+  // already states for loadTab.
+  // Answers with the tab the operator is LOOKING AT (our own intent), falling
+  // back to the hash only before the first tab has been asked for. It used to
+  // re-parse the hash every time, which meant a node pick was routed by a
+  // string that could still be naming the previous tab — the "picking a node
+  // jumped me to Overview" defect: the stale hash named a tab with no peer
+  // view of its own, so goToNodeView took the bounce-to-Overview branch.
+  window.__shellCurrentTab = function () { return frameTab || currentTabFromHash(); };
+  window.__shellPeerAwareTab = function (tab) { return PEER_AWARE_TABS.indexOf(tab) >= 0; };
+
+  // Belt-and-suspenders, not the fix: each tab page now hides its own header
+  // before first paint, from its own <head>, keyed off ?embed=1 above — that
+  // is what actually closes the race. This listener still runs, for two
+  // reasons that have nothing to do with the header: it is what an operator
+  // with JavaScript disabled ON THE TAB PAGE (but not on this shell document,
+  // a different script entirely) would fall back to, same-origin DOM access
+  // needing no cooperation from the embedded page at all — and it is still
+  // the only thing sizing the iframe's own scroll behaviour (below), which
+  // this fix does not touch.
+  frame.addEventListener('load', function () {
+    // Reconcile intent with what actually committed. Everything above assumes
+    // this shell is the only thing that navigates the frame, and almost
+    // always it is — but a tab page can navigate its OWN frame out from under
+    // us (idle-tracker.js on session timeout, overview.html's peer jump,
+    // mobile-nav.js's break-glass chip when it can't see the shell). Left
+    // unreconciled, intent would go on claiming a tab the frame no longer
+    // shows and the next pick of that same tab would decide there was nothing
+    // to do. A path that isn't one of our tabs (login.html, say) clears the
+    // intent outright, so the next pick always re-navigates.
+    try {
+      var landed = /^\/([a-z]+)\.html$/.exec(frame.contentWindow.location.pathname);
+      frameTab = (landed && TABS.indexOf(landed[1]) >= 0) ? landed[1] : null;
+      // Reconcile the OPERATOR-FACING half too, not just the internal
+      // intent: Insights' investigate link navigates the frame straight to
+      // advisor.html, and the header went on reading "Insights" over an
+      // Advisor page (operator screenshot, 2026-08-14). Label, highlight
+      // and hash all follow what actually committed. replaceState, not a
+      // hash assignment — the state is being corrected, not navigated, so
+      // no hashchange loop and no history entry.
+      if (frameTab && frameTab !== currentTabFromHash()) {
+        setActive(frameTab);
+        var rNode = PEER_AWARE_TABS.indexOf(frameTab) >= 0 ? nodeFromHash() : null;
+        var rHash = '#/' + frameTab + (rNode ? '?node=' + encodeURIComponent(rNode) : '');
+        try { history.replaceState(null, '', location.pathname + location.search + rHash); }
+        catch (_) {}
+      }
+    } catch (_) { frameTab = null; }
+    try {
+      var doc = frame.contentDocument;
+      if (!doc || !doc.head) return;
+      // CSS rule first — survives any DOM rebuild + works even if the
+      // load event raced ahead of any inline-style toggle. Also ensure
+      // the iframe document doesn't try to be 100vh-tall (some pages
+      // imply that via min-height or implicit flex chains), which would
+      // overflow because the iframe slot is < 100vh after the shell nav.
+      //
+      // overflow:auto so the iframe scrolls its own content when the
+      // body is taller than the iframe slot — without this, any tab
+      // whose content exceeds (viewport - shell nav) is stuck and the
+      // operator can't reach the lower cards on tablet/mobile/narrow
+      // desktop. The scrollbar itself is hidden (scrollbar-width:none
+      // for Firefox; ::-webkit-scrollbar display:none for WebKit) so
+      // desktop stays visually clean even when content overshoots the
+      // slot by a few pixels — wheel + touch scroll still work, only
+      // the visual bar is suppressed. -webkit-overflow-scrolling:touch
+      // for iOS momentum scroll.
+      if (!doc.getElementById('aperire-shell-hide-header')) {
+        var style = doc.createElement('style');
+        style.id = 'aperire-shell-hide-header';
+        style.textContent =
+          'header{display:none!important}' +
+          'html,body{height:auto!important;min-height:0!important;' +
+            // A thin rail rather than none: a tab taller than the slot (the
+            // Advisor's Knowledge card with an article open, Settings with
+            // several sections open) gave no sign that anything lay below,
+            // and a wheel caught by an inner scroller never reached it
+            // (operator, 2026-09-22). thin is a rail, not a gutter.
+            '-webkit-overflow-scrolling:touch!important;scrollbar-width:thin!important}' +
+            // The document (html) is the frame's one scroller; body stays
+            // overflow:visible on BOTH axes (one axis hidden would turn the
+            // other into auto and make body a scroll container again). Both
+            // used to be overflow-y:auto, which made body a scroll container
+            // as well: as long as body's height was its content that changed
+            // nothing, but a tab whose main is a definite 100dvh (System, in
+            // the shell) with charts that cannot fit had that overflow
+            // scrolled by body, out of html's measure and out of the
+            // overscroll containment below. With body visible, the overflow
+            // is html's and the same wheel, flick and scrollTop reach it on
+            // every tab. The sideways clamp lives on html, which is enough
+            // for the viewport.
+          'html{overflow-y:auto!important;overflow-x:hidden!important}body{overflow:visible!important}' +
+            // overscroll-behavior-y contain — when this scroller hits its top or
+            // bottom edge on iOS, keep the bounce HERE instead of chaining the
+            // gesture out to the shell page (which is overflow:hidden and just
+            // rubber-bands uselessly, eating flicks — the reported "pulls and
+            // bounces, takes a couple tries to scroll" on iPhone).
+            //
+            // On html ONLY, never `html,body`. With height:auto the document
+            // scroller is <html> (its clientHeight is the frame, its
+            // scrollHeight the content); <body> becomes an inner scroll-container
+            // the same height as its content, so it never scrolls itself. Put
+            // `contain` on that non-scrolling body and a wheel or trackpad
+            // gesture landing anywhere in the page is consumed by body and
+            // blocked from chaining up to the html that CAN scroll — the tab
+            // reads as frozen even though programmatic scrollTop still works.
+            // (Observed on a tall Advisor peer view, 2026-08-14.)
+          'html{overscroll-behavior-y:contain!important}' +
+          // The thin rail the frame's own document draws, in the product's
+          // scrollbar colours (the rules at the top of this file), so a
+          // tab taller than the slot shows that it is.
+          'html::-webkit-scrollbar{width:7px!important}body::-webkit-scrollbar{display:none!important;width:0!important;height:0!important}';
+        doc.head.appendChild(style);
+      }
+      var header = doc.querySelector('header');
+      if (header) header.style.display = 'none';
+      // The gesture that scrolls (and so collapses/expands the browser
+      // toolbar, firing the shell's resize) happens INSIDE this document —
+      // the shell window never sees those touches. Track them here so the
+      // touch-aware sizeContentFrame deferral (below) actually covers the
+      // gestures that matter. Same-origin, re-attached on every tab load.
+      doc.addEventListener('touchstart', touchStart, { passive: true });
+      doc.addEventListener('touchend', touchEnd, { passive: true });
+      doc.addEventListener('touchcancel', touchEnd, { passive: true });
+    } catch (_) { /* ignore */ }
+  });
+
+  // Intercept tab clicks — keep the plain <a> so Cmd-click / right-click
+  // "open in new tab" still works with the standalone page. Covers both the
+  // desktop/tablet row (.tab) and the mobile dropdown (.mtab) — the same
+  // targets swap the same iframe; mobile-nav.js separately closes the menu
+  // on any .mtab click regardless of what this handler does with it.
+  //
+  // The "Add the Advisor" pointer row (ADR 0016) is the third target. It has
+  // no data-tab because it is not a tab entry, but it points at the same
+  // page the Advisor entry does, and it has to reach it the same way. As a
+  // plain link it navigated the TOP window to /advisor.html: the shell, and
+  // the audio element that lives in it, were gone, and every tab pick after
+  // that was a full page load on a page with no shell. The operator heard it
+  // as "the music stops on every tab change" on a fresh install (2026-09-01),
+  // and saw it as an Advisor header with no audio toggle. One row in this
+  // menu leaving the shell is one row too many; advisor-nav-walk.mjs §10
+  // keeps it in.
+  var ptrEls = document.querySelectorAll('[data-advisor-pointer]');
+  Array.prototype.slice.call(tabEls).concat(Array.prototype.slice.call(mtabEls), Array.prototype.slice.call(ptrEls)).forEach(function (el) {
+    el.addEventListener('click', function (e) {
+      // Let the browser handle modifier-clicks (new tab/window) normally.
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+      e.preventDefault();
+      loadTab(el.dataset.tab || 'advisor', true);
+    });
+  });
+
+  window.addEventListener('hashchange', function () {
+    loadTab(currentTabFromHash(), false);
+  });
+
+  // Make the hash well-formed BEFORE anything else can write into it. Landing
+  // on the bare URL leaves it empty, and fleet-chip.js's first fleet poll
+  // resolves about a quarter of a second later — on a fleet whose dashboard
+  // host runs no node of its own, that poll picks a node to land on and
+  // appends '?node=<label>' to whatever is already there. Appended to an empty
+  // hash that reads back as '#?node=<label>': no '#/<tab>' prefix at all, so
+  // from then on currentTabFromHash falls back to Overview no matter which tab
+  // is on screen, and every later hash write drags the shell back to it.
+  // replaceState rather than assignment — this is the same state written more
+  // precisely, not a navigation: no history entry, no hashchange.
+  (function normalizeHash() {
+    var want = '#/' + currentTabFromHash();
+    var node = nodeFromHash();
+    if (node) want += '?node=' + encodeURIComponent(node);
+    if (location.hash === want) return;
+    try { history.replaceState(null, '', location.pathname + location.search + want); }
+    catch (_) { location.hash = want; }
+  })();
+
+  // Initial load — silent, same as the mock: no SR announcement for the
+  // page's own first paint, only for a tab the operator actually switches to.
+  loadTab(currentTabFromHash(), false, { silent: true });
+
+  // Belt-and-suspenders: explicitly size the iframe to (viewport - nav)
+  // so flex math has no chance to disagree with what we want. Runs on
+  // load and on every viewport resize. Combined with `overflow: hidden`
+  // on html/body, this guarantees no outer scrollbar regardless of how
+  // tall the inner page tries to be.
+  // Never re-size the frame while a finger is down. On iOS the browser
+  // toolbar hides/shows as the operator scrolls the embedded document,
+  // firing window resize mid-gesture; changing the scroller's height at
+  // that moment cancels the in-flight touch scroll — the reported "it
+  // stops, then bounces, takes a couple of tries" on iPhone. Defer the
+  // re-measure to touch-end instead; desktop (no touch) is unaffected.
+  var touchActive = false;
+  var resizePending = false;
+  function sizeContentFrame() {
+    if (touchActive) { resizePending = true; return; }
+    var nav = document.querySelector('nav.tabs');
+    if (!nav || !frame) return;
+    var navH = Math.round(nav.getBoundingClientRect().height);
+    frame.style.height = (window.innerHeight - navH) + 'px';
+  }
+  function touchStart() { touchActive = true; }
+  function touchEnd() {
+    touchActive = false;
+    if (resizePending) { resizePending = false; sizeContentFrame(); }
+  }
+  window.addEventListener('touchstart', touchStart, { passive: true });
+  window.addEventListener('touchend', touchEnd, { passive: true });
+  window.addEventListener('touchcancel', touchEnd, { passive: true });
+  sizeContentFrame();
+  window.addEventListener('resize', sizeContentFrame);
+  // Re-measure once the nav has a chance to fully paint (web fonts,
+  // sticky-position recalc, etc. — covers first-load timing edges).
+  setTimeout(sizeContentFrame, 50);
+  setTimeout(sizeContentFrame, 250);
+
+
+  // ── Auth pill — populate with the current operator's username, ──
+  // wire click + Cmd/Ctrl+Shift+L to lock the dashboard. The shell is
+  // already gated by requireAuthGate, so reaching this script means
+  // there's a session; we just paint the username and bind the lock
+  // affordance. Reaching here unauthed should be impossible, but if
+  // /auth/session ever returns 401 we'd just route the user back to
+  // the lock-screen on the next click anyway.
+  (function setupAuthPill() {
+    var pill    = document.getElementById('auth-pill');
+    var nameEl  = document.getElementById('authPillName');
+    var unameEl = nameEl ? nameEl.querySelector('.uname') : null;
+    if (!pill || !nameEl || !unameEl) return;
+
+    fetch('/auth/session', { credentials: 'include' })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (j && j.authed && j.username) {
+          // The username column now stores the email. Show the
+          // local-part in the pill (short, fits the header) and put
+          // the full address on the hover title so the operator can
+          // confirm which account is signed in.
+          var atIdx = String(j.username).indexOf('@');
+          var displayed = atIdx > 0 ? j.username.slice(0, atIdx) : j.username;
+          unameEl.textContent = displayed;
+          // The role rides the pill as a quiet suffix — captain@admin —
+          // so who you are and what you may approve read in one glance.
+          // Only the two real roles render; an unassigned legacy value
+          // shows nothing rather than a word the docs don't define. It is
+          // a sibling of .uname rather than more text appended to it, so
+          // a narrow pill can ellipsis the name without ever touching the
+          // role (#557: the role is the one thing the pill is there to
+          // show, and a shrinking pill used to cut it first).
+          if (j.role === 'admin' || j.role === 'monitor') {
+            var roleEl = document.createElement('span');
+            roleEl.className = 'role';
+            roleEl.textContent = '@' + j.role;
+            nameEl.appendChild(roleEl);
+          }
+          nameEl.classList.remove('empty');
+          pill.title = j.username + (j.role ? ' (' + j.role + ')' : '') + '. Click for the account menu. Ctrl+Shift+L (Cmd+Shift+L on Mac) locks the dashboard.';
+        }
+      })
+      .catch(function () { /* shell stays usable; the pill is cosmetic */ });
+
+    function lockNow() {
+      // The Advisor tab keeps a conversation across tab changes, named after
+      // the session it belongs to. Signing out ends that session, so the
+      // conversation goes with it rather than waiting to be swept when
+      // somebody next opens the tab — locking the dashboard should not leave
+      // your questions one localStorage read away from whoever sits down next.
+      try {
+        var s = window.localStorage;
+        for (var i = s.length - 1; i >= 0; i--) {
+          var k = s.key(i);
+          if (k && k.indexOf('aperire.advisor.') === 0) s.removeItem(k);
+        }
+      } catch (e) { /* no storage, nothing kept, nothing to clear */ }
+      fetch('/auth/lock', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-aperire-csrf': '1' },
+        credentials: 'include',
+        body: '{}',
+      }).finally(function () {
+        // Land on the lock-screen with `next` set to the current path
+        // so re-auth returns the operator to where they were.
+        var next = encodeURIComponent(location.pathname + location.search + location.hash);
+        location.href = '/login.html?next=' + next;
+      });
+    }
+
+    // The pill shows who is signed in; it no longer signs out on click — that
+    // fired on the first accidental tap. Clicking it opens the menu, where
+    // Log out now lives as a deliberate button. The Ctrl+Shift+L shortcut
+    // below still locks immediately for anyone who wants the fast path.
+    pill.addEventListener('click', function () {
+      if (window.__mobileNav && typeof window.__mobileNav.openMenu === 'function') window.__mobileNav.openMenu();
+    });
+
+    // Keyboard shortcut: Ctrl+Shift+L (Cmd+Shift+L on macOS). Avoids
+    // browser-reserved Ctrl/Cmd+L which focuses the address bar.
+    document.addEventListener('keydown', function (ev) {
+      if ((ev.ctrlKey || ev.metaKey) && ev.shiftKey && (ev.key === 'L' || ev.key === 'l')) {
+        ev.preventDefault();
+        lockNow();
+      }
+    });
+  })();
+
+  // ── Audio toggle (lives in the shell, survives iframe navigation) ─
+  // The player itself is audio-toggle.js, included below with the shell's
+  // own key. Pin aperire-audio=off so a tab page opened on its own in this
+  // browser stays silent too; the framed pages carry no player at all.
+  localStorage.setItem('aperire-audio', 'off');
+})();
+</script>
+<script src="/audio-toggle.js" data-key="aperire-audio-shell" data-default="off" data-frame="content-frame" defer></script>
+<script src="/mobile-nav.js" defer></script>
+<script src="/fleet-chip.js" defer></script>
+<script src="/advisor-presence.js" defer></script>
+<script src="/idle-tracker.js" defer></script>
+<!-- Off unless the operator asks for it with /?debug=mem, and when it is off
+     this file installs nothing. It is how a retainer gets confirmed on a
+     device we cannot profile from here. -->
+<script src="/debug-mem.js" defer></script>
+<script>
+// ── The setup completion notice (#135 Step 1) ─────────────────────────
+//
+// setup.html leaves a token in sessionStorage on its way out. This reads it
+// exactly once and removes it in the same breath, so the notice appears on
+// the landing and never again: not on a refresh, not in a second tab, and
+// not for a colleague who signs in on this machine tomorrow.
+//
+// No token means nothing is shown, ever. There is no other way to reach it.
+//
+// The words live HERE, not in storage. The token only chooses between two
+// fixed sentences, so nothing that was in sessionStorage is ever rendered.
+(function () {
+  'use strict';
+  var KEY = 'aperire-setup-done';
+  var state = null;
+  try {
+    state = sessionStorage.getItem(KEY);
+    // Removed before rendering, not after: if anything below throws, the
+    // notice must still not come back on the next load.
+    if (state !== null) sessionStorage.removeItem(KEY);
+  } catch (e) { return; }        // storage unavailable: no notice, no error
+  if (state === null) return;
+
+  var el = document.getElementById('setupDone');
+  var body = document.getElementById('setupDoneBody');
+  var close = document.getElementById('setupDoneClose');
+  if (!el || !body) return;
+
+  // The second sentence is the state-aware half, and it says the true next
+  // thing. On a co-located box the relay and the node were wired by the
+  // installer before the browser was ever opened, so telling that operator
+  // to go and install a relay would be wrong. Both point at Settings &
+  // Updates now (#585): the wizard lives there, not in the menu.
+  var next = state === 'colocated'
+    ? 'Your node is already reporting, so the Advisor is the only optional piece left, from Settings & Updates → Add a node.'
+    : 'Next: add a node from Settings & Updates.';
+
+  var lead = document.createElement('b');
+  lead.textContent = 'Setup complete: ';
+  body.appendChild(lead);
+  body.appendChild(document.createTextNode(
+    'you are the administrator, and the setup window is closed. ' + next));
+
+  el.classList.add('on');
+  if (close) close.addEventListener('click', function () { el.classList.remove('on'); });
+})();
+</script>
+</body>
+</html>

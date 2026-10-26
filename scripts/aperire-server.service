@@ -1,0 +1,122 @@
+[Unit]
+Description=Aperire Dashboard Server
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+User=@RUN_USER@
+Group=@RUN_USER@
+WorkingDirectory=@REPO@/dashboard
+# `node --import tsx server.ts`, not `node .../tsx/dist/cli.mjs server.ts`.
+# The tsx CLI runs the program in a CHILD process and supervises it, so the
+# unit's MainPID belongs to the supervisor — which installs no SIGHUP handler
+# and therefore takes the default action for it: terminate. The reload below
+# then killed the service on every use. The server did log its reload first
+# (the handler lives in the child, and the child does get the signal through
+# the cgroup), which is what made this look like it worked: config re-read,
+# then the whole unit bounced and Restart=always brought it back on a new PID.
+# Loading tsx as an import hook keeps server.ts in the main process, where its
+# own SIGHUP handler is the one systemd is signalling.
+#
+# The two logs are opened by the shell below, after systemd has switched to
+# User=, and not by StandardOutput=append:. systemd opens an append: file as
+# root, before it drops privilege, and follows a link at that name. data/logs
+# belongs to this unit's own account, so that account could point
+# server-out.log at any file on the host and have root open it for append on
+# the next start, then write into it. Opened here, the worst a link can do is
+# reach a file this account could already write. `exec` replaces the shell,
+# so the main PID is still node and the reload below still reaches it.
+ExecStart=/bin/sh -c 'exec "@NODE_BIN@/node" --import tsx server.ts >>"@REPO@/data/logs/server-out.log" 2>>"@REPO@/data/logs/server-err.log"'
+Restart=always
+RestartSec=3
+
+# `systemctl reload aperire-server` sends SIGHUP; the server re-reads its
+# YAML config (rules/channels/digest, and fleet.yaml) in place without
+# restarting. Not authn.yaml — that one is cached for the process lifetime,
+# so a change there needs a restart.
+# Verified in place: MainPID unchanged across a reload, browsers still
+# connected, the new config parsed and logged by the same process.
+ExecReload=/bin/kill -HUP $MAINPID
+
+# Memory — cap the dashboard cgroup so a runaway can't OOM the host.
+# MemoryHigh throttles above the soft limit; MemoryMax is a hard cap that
+# kills only this unit's cgroup (not the whole host) and triggers Restart.
+#
+# Sized for the process AND its database's page cache: memory.current counts
+# every file page this cgroup touches, and the SQLite store is ~0.5-1 GB after
+# a month of 5 s samples. At 512M a lab node with a 440 MB DB sat over the
+# soft limit permanently (84,759 memory.high events), the kernel reclaimed
+# the DB pages as fast as queries re-read them, and the event loop stalled
+# 2-9 s at a time — every fleet read of that node timed out (2026-08-19).
+# 2G/3G leaves the DB cached with the process at ~350 MB and still catches
+# a runaway long before the host notices.
+MemoryHigh=2G
+MemoryMax=3G
+TasksMax=256
+
+# OOM — prefer killing other processes first at the system level. Ignored
+# once MemoryMax is active, but still helpful if the cap is ever relaxed.
+OOMScoreAdjust=-100
+
+# Hardening — least-privilege file system + kernel surface.
+# ProtectSystem=strict makes the whole FS read-only except ReadWritePaths,
+# so the service can still read its own code under dashboard/ but cannot
+# write it. ReadWritePaths is the data dir: the DB, the logs and the runtime
+# copy of the amendment library (data/amendments.yaml). The whole source
+# tree stays read-only, dashboard/knowledge included, removing the
+# overwrite-own-code persistence path.
+NoNewPrivileges=true
+PrivateTmp=true
+# 0027: files 0640, directories 0750. Without it the service creates
+# world-readable files by default, and what these services write includes
+# the operator database and the audit trail.
+UMask=0027
+ProtectSystem=strict
+ProtectHome=read-only
+# The last two are the aggregator's curation surface (ADR 0017 phase 2): the
+# Advisor tab promotes a proposal into knowledge-fleet/ and builds the signed
+# bundle under knowledge-bundles/. Both carry the `-` prefix because a plain
+# node has neither directory and a ReadWritePaths entry that does not exist
+# fails the unit — a dashboard that will not start is a worse outcome than a
+# curation surface that is not there.
+ReadWritePaths=@REPO@/data -@REPO@/advisor/knowledge-fleet -@REPO@/advisor/knowledge-bundles
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+RestrictNamespaces=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelLogs=true
+# Drop every capability — the Node process needs none (binds a high port).
+CapabilityBoundingSet=
+# Syscall allow-list: the @system-service set covers a normal long-running
+# daemon; the de-set strips privileged ops and resource-tuning syscalls.
+# Deliberately NOT MemoryDenyWriteExecute — it breaks the Node/V8 JIT.
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+
+# What reaches the journal is only what happens before the shell above has
+# its two logs open: a node that cannot be found, a log that cannot be opened.
+StandardOutput=journal
+StandardError=journal
+
+Environment=NODE_ENV=production
+# Force the session/challenge cookie's Secure flag ON regardless of the
+# inbound x-forwarded-proto header (MED-06). Production is always behind
+# TLS (the Cloudflare tunnel), so a cookie should never be issued without
+# Secure here; an attacker cannot strip it by forging the proxy header.
+Environment=APERIRE_FORCE_SECURE_COOKIES=true
+Environment=PATH=@NODE_BIN@:/usr/local/bin:/usr/bin:/bin
+# Secrets (RELAY_TOKENS) live in a root-owned 0640 env file so the unit
+# itself stays committable. Install script creates it on first run.
+EnvironmentFile=@ENV_FILE@
+
+[Install]
+WantedBy=multi-user.target

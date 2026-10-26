@@ -1,0 +1,54 @@
+# Aperire fleet trust file, the SHAPE only. Do not copy this into place.
+#
+# The real file, dashboard/config/fleet-trust.yaml, is written for you. On
+# an aggregator, scripts/install-fleet-broker-grant.sh makes this host's key
+# when there is no file (and never rewrites one that is there), and
+# scripts/aperire-fleet-add.sh makes it the first time a node is joined by
+# hand. Pairing places this host's public half on the node. This template
+# exists so the shape is documented next to the other config templates, and
+# so an operator joining a node on another machine by hand knows exactly
+# what to paste.
+#
+# Two top-level keys, both optional, nothing else:
+#
+#   private_key   this host's own Ed25519 seed, base64url, no padding. Only
+#                 an aggregator has one. It signs the trust bundle, the
+#                 knowledge bundle, a model seal job and nothing else, and it
+#                 never leaves this host.
+#   peers         public keys this host will accept a signature from, one
+#                 per line. A node joined to a fleet holds exactly one, under
+#                 the fixed label `aggregator`: every signer names that label
+#                 as its issuer, and the node looks up that label and no
+#                 other.
+#
+# Owner and mode depend on what it holds:
+#
+#   with a private_key   the dashboard account's, 0600. Only the dashboard
+#                        signs with it, and the Advisor never reads it.
+#                        scripts/fleet-trust-split.sh writes
+#                        fleet-trust.pub.yaml beside it: the same peers and
+#                        a public_key line in place of private_key, root's,
+#                        0640 to the group the dashboard and the Advisor
+#                        share. The Advisor reads that file to verify every
+#                        push. Edit this file, never that one; every
+#                        install, update and restore remakes it.
+#   peers only (a node)  root's (pairing makes it), 0640 to the group the
+#                        dashboard and the Advisor share. The Advisor reads
+#                        it where it is.
+#
+# Wider than 0640 is refused by the tools that touch it.
+#
+# The parser is strict on purpose: two-space indent under peers, one
+# `label: value` per line, bare values, no quotes, no flow syntax. Anything
+# else is skipped, and a label that is not found is a plain refusal
+# ("no key for aggregator"), never a guess.
+
+# On an aggregator:
+#
+# private_key: <base64url seed>
+# peers: {}
+
+# On a joined node:
+#
+# peers:
+#   aggregator: <base64url public key, printed by aperire-fleet-add.sh>

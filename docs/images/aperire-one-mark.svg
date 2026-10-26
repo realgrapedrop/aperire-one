@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" role="img" aria-label="Aperire One">
+  <circle cx="120" cy="120" r="84" fill="none" stroke="#1f6feb" stroke-width="12" stroke-linecap="round" stroke-dasharray="425 105" transform="rotate(-52 120 120)"/>
+  <circle cx="120" cy="120" r="66" fill="none" stroke="#1f6feb" stroke-width="7" opacity=".6" stroke-linecap="round" stroke-dasharray="310 105" transform="rotate(128 120 120)"/>
+  <g fill="none" stroke="#58a6ff" stroke-width="17" stroke-linecap="round"><path d="M87 100 Q120 149 153 100"/><path d="M87 147 Q120 97 153 147"/></g>
+  <circle cx="120" cy="122" r="9" fill="#8ec2ff"/>
+</svg>
