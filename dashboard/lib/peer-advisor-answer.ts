@@ -52,6 +52,62 @@ export function peerFailureStatus(error: string): number {
   return error === 'peer_integrity_mismatch' ? 409 : PEER_NO_ANSWER_STATUS;
 }
 
+/**
+ * Who is asking, for the one answer that names a file on this host. The
+ * `token_unreadable` sentence carries the token file's path, its owner and its
+ * mode (#1209). That is the administrator's to act on and nobody else's: any
+ * signed-in session, a monitor included, can read the overview, read, stream
+ * and Advisor routes, and a file path is a fact about this host they have no
+ * use for. So the rule is here, once, and every route that can answer
+ * `token_unreadable` passes who is asking: an administrator gets the full
+ * sentence, anyone else gets the code and a general one with no path, owner or
+ * mode. The full sentence always goes to the server log, where the failure is
+ * written (peer-advisor-proxy.ts, peer-read-proxy.ts and the others log the
+ * path, owner and mode as they refuse).
+ */
+export interface Viewer {
+  admin: boolean;
+  /** The node the answer is about, for the general sentence. */
+  label: string;
+}
+
+/** The sentence a session that is not an administrator gets. No path, no
+ *  owner, no mode, and the way out: ask the one who can read the file. */
+export function tokenUnreadableGeneral(label: string): string {
+  return `This dashboard cannot read its token for ${label}, so nothing was sent to it. Ask an administrator.`;
+}
+
+/** The one place the rule is applied. `full` is the lib's sentence. */
+export function tokenUnreadableFor(viewer: Viewer | undefined, full: string | undefined): string {
+  if (viewer?.admin && full) return full;
+  return tokenUnreadableGeneral(viewer?.label ?? 'this node');
+}
+
+/**
+ * What the overview, read and stream routes answer the browser when a peer
+ * read failed (#1305). The status is the one mapping above, and the body is
+ * the code, plus the two things that may ride with it: `detail`, only on
+ * `token_unreadable`, this host's own sentence about its own file (nothing
+ * was sent to the node, so it is not an upstream's text), and the peer's
+ * `upstream_status` on a stream the node refused. These routes sent
+ * `{ error }` alone, so the sentence a fixed file needed never reached the
+ * page and an unreadable token read as "unreachable" there.
+ */
+export function peerReadFailureAnswer(
+  failure: { error: string; detail?: string; upstreamStatus?: number },
+  viewer: Viewer,
+): BrowserAnswer {
+  const detail = failure.error === 'token_unreadable' ? tokenUnreadableFor(viewer, failure.detail) : failure.detail;
+  return {
+    status: peerFailureStatus(failure.error),
+    body: {
+      error: failure.error,
+      ...(detail ? { detail } : {}),
+      ...(failure.upstreamStatus !== undefined ? { upstream_status: failure.upstreamStatus } : {}),
+    },
+  };
+}
+
 /** What the edge in front of an aggregator replaces with a page of its own. */
 export const EDGE_REWRITTEN_STATUSES: ReadonlySet<number> =
   new Set([502, 504, 520, 521, 522, 523, 524, 525, 526, 527]);
@@ -87,7 +143,7 @@ export function edgeSafeRelay(status: number, text: string): { status: number; b
   return { status: PEER_NO_ANSWER_STATUS, body: JSON.stringify({ ...said, upstream_status: status }) };
 }
 
-export function peerAdvisorFailureAnswer(result: PeerAdvisorFailure): BrowserAnswer {
+export function peerAdvisorFailureAnswer(result: PeerAdvisorFailure, viewer?: Viewer): BrowserAnswer {
   // advisor_not_configured is a SUPPORTED state, not a failure: 200 with the
   // code, so the tab renders the honest degrade without treating it as
   // transport noise worth retry and backoff.
@@ -111,8 +167,13 @@ export function peerAdvisorFailureAnswer(result: PeerAdvisorFailure): BrowserAns
     body: {
       ok: false,
       error: result.error,
-      // The peer's own words, when it had any (#268, #1117).
-      ...(result.detail ? { detail: result.detail } : {}),
+      // The peer's own words, when it had any (#268, #1117). A token this host
+      // could not read is this host's, and names a file: for an administrator
+      // only (tokenUnreadableFor), and a caller that says nothing about who is
+      // asking is not one.
+      ...(result.error === 'token_unreadable'
+        ? { detail: tokenUnreadableFor(viewer, result.detail) }
+        : result.detail ? { detail: result.detail } : {}),
       // What the node itself answered, for the page to say beside its reason.
       ...(result.error === 'advisor_failed' && result.status ? { upstream_status: result.status } : {}),
     },

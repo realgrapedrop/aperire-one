@@ -74,6 +74,22 @@
 
 set -euo pipefail
 
+# As root the environment chooses no path (#1206): every APERIRE_* variable
+# is dropped except the ones a root caller passes on purpose:
+#   APERIRE_INSTALL_TREE    install.sh exports it; get-aperire.sh names the
+#                           tree a staged copy serves (#764)
+#   APERIRE_NODE_SERVICE, APERIRE_NODE_ADMIN_RPC, APERIRE_NODE_CONFIG,
+#   APERIRE_NODE_KIND       --run rotation-timer passes them from its
+#                           --service, --admin-rpc, --config and --kind
+# An account id(1) says is not root keeps them all, which is what every
+# suite is. id(1) at a fixed path, never the uid bash imports from its
+# environment (#1109).
+if ! [[ "$(/usr/bin/id -u 2>/dev/null)" =~ ^[1-9][0-9]*$ ]]; then
+  for _v in $(compgen -e); do
+    case "$_v" in APERIRE_INSTALL_TREE|APERIRE_NODE_SERVICE|APERIRE_NODE_ADMIN_RPC|APERIRE_NODE_CONFIG|APERIRE_NODE_KIND) ;; APERIRE_*) unset "$_v" ;; esac
+  done
+fi
+
 die() { printf 'install-can-delete-timer: %s\n' "$*" >&2; exit 1; }
 # Exit 3 means "this host has no node", an answer and not a failure: a host
 # with a relay and no node (an aggregator) has nothing to rotate, and install.sh

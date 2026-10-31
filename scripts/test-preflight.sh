@@ -1280,6 +1280,7 @@ cp "$REPO_DIR/scripts/term-style.sh" "$FAKE_REPO/scripts/term-style.sh"
 # install.sh also sources the aggregator-origin rule and refuses a tree
 # without it by name, so it sits beside term-style.sh here too.
 cp "$REPO_DIR/scripts/fleet-origin.sh" "$FAKE_REPO/scripts/fleet-origin.sh"
+cp "$REPO_DIR/scripts/authn-value.sh" "$FAKE_REPO/scripts/authn-value.sh"
 cat > "$FAKE_REPO/scripts/install-aperire-cli.sh" <<EOF
 #!/usr/bin/env bash
 printf 'cli ran\n' >> "$TMP/state/installer-steps"

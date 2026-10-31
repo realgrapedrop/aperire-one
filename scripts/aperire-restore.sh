@@ -4,7 +4,7 @@
 # restored, never over ssh.
 #
 #   curl -fsSL https://get.aperire.one | bash -s -- --restore --from DIR [--instance NAME]
-#       [--yes] [--overwrite] [--dry-run] [--db-path ABS]
+#       [--yes] [--overwrite] [--dry-run] [--db-path ABS] [--replace-trust-pin]
 #
 # That form runs the release's checked copy of this program as root, never the
 # one in your checkout, and the state helper it plants with is that copy's too
@@ -14,6 +14,11 @@
 # --overwrite is only ever needed alongside --yes, when this host's own
 # database has content the set does not (exit 7 below) and the run is not
 # interactive to answer the question asked instead.
+#
+# --replace-trust-pin is only ever needed when this host already has root's
+# pin of a fleet trust key (/etc/aperire/fleet-trust.pub) and the set carries
+# a different one: the restore refuses that (exit 9) rather than move the
+# key every paired node trusts, unless this says to (#1008).
 #
 # --db-path is only ever needed when the set's own env file names a database
 # path outside this install's own root (exit 8 below): a backup set names
@@ -86,6 +91,17 @@
 # put your rippled.cfg and compose file or unit back yourself, the same way
 # you set them aside.
 set -uo pipefail
+
+# As root the environment chooses no path or timing (#1206): every APERIRE_*
+# variable is dropped except the one a root caller passes on purpose:
+#   APERIRE_INSTALL_TREE  get-aperire.sh --restore names the install (#941)
+# An account id(1) says is not root keeps them all, which is what every
+# suite is. id(1) at a fixed path, never bash's $EUID (#1109).
+if ! [[ "$(/usr/bin/id -u 2>/dev/null)" =~ ^[1-9][0-9]*$ ]]; then
+  for _v in $(compgen -e); do
+    case "$_v" in APERIRE_INSTALL_TREE) ;; APERIRE_*) unset "$_v" ;; esac
+  done
+fi
 
 # Where this program and its libraries are (SELF_DIR), and the install it puts
 # the set back into (REPO_DIR): a directory and its parent from a checkout, two
@@ -342,7 +358,7 @@ validate_port() {  # <value> <source>
 }
 
 # ── args ──────────────────────────────────────────────────────────────
-FROM=""; INSTANCE=""; ASSUME_YES=0; DRY=0; OVERWRITE=0; DB_PATH_OVERRIDE=""
+FROM=""; INSTANCE=""; ASSUME_YES=0; DRY=0; OVERWRITE=0; DB_PATH_OVERRIDE=""; REPLACE_TRUST_PIN=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --from)      FROM=${2:?--from needs a path}; shift 2 ;;
@@ -350,6 +366,7 @@ while [[ $# -gt 0 ]]; do
     --yes|-y)    ASSUME_YES=1; shift ;;
     --overwrite) OVERWRITE=1; shift ;;
     --dry-run)   DRY=1; shift ;;
+    --replace-trust-pin) REPLACE_TRUST_PIN=1; shift ;;
     --db-path)   DB_PATH_OVERRIDE=${2:?--db-path needs an absolute path}; shift 2 ;;
     -h|--help)
       awk '/^[^#]/{exit} NR>1{sub(/^# ?/,""); print}' "$0"
@@ -1242,6 +1259,80 @@ if [[ $SET_HAS_ARM_PRIV -eq 1 ]]; then
   fi
 fi
 
+# ── root's pin of the fleet trust key (#1008) ───────────────────────────
+# The set carries root's own pin, and the restore pins from that copy, never
+# from the set's fleet-trust.yaml, which is the dashboard account's file. A
+# pin already here that differs is the key every node paired to this host
+# trusts, so it is replaced only when --replace-trust-pin says so. Checked
+# here, before anything stops.
+SET_PIN=""
+PIN_LOCAL="$ETC_APERIRE/fleet-trust.pub"
+# The public half of the key in the set's own fleet-trust.yaml, when it holds
+# one, derived the split's way (fts_render). Compared, never pinned from.
+SET_YAML_PUB=""
+if [[ -f "$FROM/config/fleet-trust.yaml" && -r "$SELF_DIR/fleet-trust-split.sh" ]]; then
+  # shellcheck source=scripts/fleet-trust-split.sh
+  . "$SELF_DIR/fleet-trust-split.sh"
+  SET_YAML_PUB="$(fts_render < "$FROM/config/fleet-trust.yaml" 2>/dev/null | sed -n 's/^public_key: //p'; exit "${PIPESTATUS[0]}")" || SET_YAML_PUB=""
+fi
+if [[ -f "$FROM/fleet-trust.pub" ]]; then
+  SET_PIN="$(head -c 128 -- "$FROM/fleet-trust.pub" 2>/dev/null)" || SET_PIN=""
+  [[ "$SET_PIN" =~ ^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$ ]] \
+    || refuse 3 "the set at $FROM_DISPLAY carries a fleet-trust.pub that is not one 32-byte
+       public key. Nothing was touched."
+  if [[ -L "$PIN_LOCAL" ]] || { [[ -e "$PIN_LOCAL" ]] && [[ ! -f "$PIN_LOCAL" ]]; }; then
+    refuse 9 "$PIN_LOCAL exists and is not a plain file (it may be a symlink).
+       This restore never writes through it or over it. Look at it by hand.
+       Nothing was touched."
+  elif [[ -f "$PIN_LOCAL" ]]; then
+    _pin_here="$(head -c 128 -- "$PIN_LOCAL" 2>/dev/null)" || _pin_here=""
+    if [[ "$_pin_here" != "$SET_PIN" && $REPLACE_TRUST_PIN -ne 1 ]]; then
+      refuse 9 "this host already pins a fleet trust key, and it is not the one in the set.
+
+               on this host:  $PIN_LOCAL  ${_pin_here:-(unreadable)}
+               in the set:    fleet-trust.pub  $SET_PIN
+
+           Every node paired to this host trusts the key pinned here, so this
+           restore never replaces it on its own. If the set's key is the one you
+           mean this aggregator to use, run this again with --replace-trust-pin.
+           Nodes paired to the key here will need pairing again. Nothing was touched."
+    fi
+  fi
+  # The set's own key file was the dashboard account's when the set was
+  # taken. A key in it that is not root's pin was planted or changed after
+  # the pin, and restoring it would leave a key root refuses to vouch for.
+  if [[ -n "$SET_YAML_PUB" && "$SET_YAML_PUB" != "$SET_PIN" ]]; then
+    refuse 3 "the set at $FROM_DISPLAY carries a fleet trust key that is not the one
+       root pinned when the set was taken.
+
+               root's pin in the set:     $SET_PIN
+               key in the set's yaml:     $SET_YAML_PUB
+
+       The dashboard account could write that file, so this restore will not put
+       it back. Restore from a set taken while the two agreed. Nothing was touched."
+  fi
+elif [[ -n "$SET_YAML_PUB" ]]; then
+  # A set taken before root pinned the key (#1008) carries no pin. Its key is
+  # pinned on first sight, the same reach an update has, and said so here.
+  if [[ -e "$PIN_LOCAL" || -L "$PIN_LOCAL" ]]; then
+    _pin_here="$(head -c 128 -- "$PIN_LOCAL" 2>/dev/null)" || _pin_here=""
+    if [[ "$_pin_here" != "$SET_YAML_PUB" ]]; then
+      refuse 9 "this host already pins a fleet trust key, and the set, taken before
+       root pinned one, carries a different key and no pin of its own.
+
+               on this host:  $PIN_LOCAL  ${_pin_here:-(unreadable)}
+               in the set:    fleet-trust.yaml  $SET_YAML_PUB
+
+           Every node paired to this host trusts the key pinned here. Restore from
+           a set taken after this host pinned its key. Nothing was touched."
+    fi
+  else
+    info "note  this set was taken before root pinned the fleet trust key, so it carries no pin."
+    info "      Root will pin the key in its fleet-trust.yaml on first sight ($SET_YAML_PUB):"
+    info "      compare it with the key a paired node holds before you trust it."
+  fi
+fi
+
 # ── the numeric groups /etc/aperire's files are planted with (#965) ─────
 # state-file.py takes numbers only, and every file below lands through it,
 # so the names are turned into numbers here, before anything stops.
@@ -1692,9 +1783,15 @@ if [[ -e "$REPO_DIR/dashboard/config/fleet-trust.yaml" ]]; then
   if [[ -r "$SELF_DIR/fleet-trust-split.sh" ]]; then
     # shellcheck source=scripts/fleet-trust-split.sh
     . "$SELF_DIR/fleet-trust-split.sh"
+    # Root's pin of the trust key (#1008): root's own copy from the set,
+    # checked above, never a key read out of the set's fleet-trust.yaml. A
+    # set made before the pin existed carries none, and the split then pins
+    # on first sight or compares with the pin here, as an update does.
+    _fts_pin_from="$SET_PIN"
     # The Advisor is stopped above and started on its unit's binary below,
     # so that binary is the one asked whether it reads the public file.
     _fts_out="$(FTS_UNIT_DIR="$UNIT_DIR" FTS_ADVISOR_UNIT="${ADVISOR_UNIT:-aperire-advisord}" FTS_ADVISOR_RESTARTING=1 \
+      FTS_PIN_FILE="$ETC_APERIRE/fleet-trust.pub" FTS_PIN_FROM="$_fts_pin_from" \
       fts_converge "$REPO_DIR" "$DASH_USER" "$_fts_group" "$STATE_FILE_TOOL" 2>&1)" || _fts_rc=$?
   else
     _fts_rc=1; _fts_out="scripts/fleet-trust-split.sh is missing from this checkout"

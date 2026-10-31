@@ -256,8 +256,19 @@ Description=x
 ExecStart=/bin/true
 CollectMode=inactive-or-failed
 KEEPUNIT
+# As root the installer drops every APERIRE_* variable but APERIRE_INSTALL_TREE
+# (#1206), so the rows that run it under fakeroot run a copy of the scripts
+# with its unit directory rewritten to this suite's, the way the other root
+# fixtures pin a constant in their own copy.
+INST_ROOT="$TMP/rootgrant/scripts/install-trust-sync-grant.sh"
+mkdir -p "$TMP/rootgrant"
+cp -a "$REPO_DIR/scripts" "$TMP/rootgrant/"
+# shellcheck disable=SC2016  # the installer's own text, matched as text
+sed -i 's#^UNIT_DIR="\${APERIRE_UNIT_DIR:-/etc/systemd/system}"$#UNIT_DIR='"$UD"'#' "$INST_ROOT"
+grep -qxF "UNIT_DIR=$UD" "$INST_ROOT" \
+  || { echo "the root copy of install-trust-sync-grant.sh was not rewritten (UNIT_DIR); the rows below would prove nothing"; exit 1; }
 if command -v fakeroot >/dev/null 2>&1; then
-  APERIRE_UNIT_DIR="$UD" fakeroot bash "$INST" --remove --if-stale >/dev/null 2>&1
+  fakeroot bash "$INST_ROOT" --remove --if-stale >/dev/null 2>&1
   if [[ -f "$UD/aperire-trust-sync@.service" ]]; then ok "and the unit is still there after --remove --if-stale as root"
   else bad "--remove --if-stale as root removes nothing" "the unit was deleted"; fi
 fi
@@ -269,14 +280,14 @@ rm -f "$UD/aperire-trust-sync@.service"
 # first thing past the gate, which is the check for systemctl.
 if command -v fakeroot >/dev/null 2>&1; then
   awk '/^cat > "\$TMPV" <<EOF$/{on=1; next} on && /^EOF$/{exit} on' "$INST" > "$UD/aperire-trust-sync@.service"
-  out="$(APERIRE_UNIT_DIR="$UD" fakeroot bash "$INST" --if-stale 2>&1)"; rc=$?
+  out="$(fakeroot bash "$INST_ROOT" --if-stale 2>&1)"; rc=$?
   if [[ $rc -eq 0 ]] && grep -q 'is current, so nothing was changed' <<<"$out"; then
     ok "--if-stale over a current unit changes nothing and exits 0"
   else
     bad "--if-stale leaves a current unit alone" "exit $rc: $out"
   fi
   rm -f "$UD/aperire-trust-sync@.service"
-  out="$(APERIRE_UNIT_DIR="$UD" fakeroot bash "$INST" --if-stale 2>&1)"; rc=$?
+  out="$(fakeroot bash "$INST_ROOT" --if-stale 2>&1)"; rc=$?
   if [[ $rc -eq 0 ]] && grep -q 'not installed here' <<<"$out"; then
     ok "--if-stale on a host without the grant does not install one"
   else
@@ -291,7 +302,7 @@ ExecStart=/bin/true
 CollectMode=inactive-or-failed
 OLDUNIT2
   mkdir -p "$TMP/emptytree"
-  out="$(APERIRE_UNIT_DIR="$UD" APERIRE_INSTALL_TREE="$TMP/emptytree" fakeroot bash "$INST" --if-stale 2>&1)"; rc=$?
+  out="$(APERIRE_INSTALL_TREE="$TMP/emptytree" fakeroot bash "$INST_ROOT" --if-stale 2>&1)"; rc=$?
   if [[ $rc -ne 0 ]] && grep -q 'is out of date, so it is written again' <<<"$out" && grep -q 'no sync program' <<<"$out"; then
     ok "--if-stale over the old unit goes on to the install (it stops at the first thing it needs, the sync program)"
   else

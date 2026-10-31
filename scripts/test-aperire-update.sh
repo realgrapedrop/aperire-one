@@ -1239,6 +1239,32 @@ else
   bad "a rewritten install.sh in the restored tree is never run" "exit $(status_of "$out") ran=$(cat "$TMP/state/TREE-RAN" 2>/dev/null): $out"; fi
 rm -rf "${DIR}.previous-C" "${DIR}.rolled-back-"*
 
+# #1355: on a host with no python3 the check on every file cannot run, and the
+# stage says so once. The rollback's own sentence then says that too, and not
+# that a file in the tree is not the one its release shipped. _tp_python's two
+# fixed paths are pointed at nothing in root's copy of the library: that is the
+# one way to make a host with no python3 here.
+# The rollback puts the tree back before it stages it, so the tree is made again.
+mkdir -p "${DIR}.previous-C/dashboard/config"
+cp "$DIR/install.sh" "${DIR}.previous-C/install.sh"
+printf '{\n  "tag": "t",\n  "commit": "c",\n  "sha256": "%s",\n  "published_at": "",\n  "source_url": "",\n  "installed_at": ""\n}\n' \
+  "$OLD_SHA" > "${DIR}.previous-C/.release"
+point_previous "${DIR}.previous-C" "$OLD_SHA"
+kept_record "${DIR}.previous-C" "the OLD release" "$OLD_SHA" > "$TMP/lib/release.sha256.kept/$OLD_SHA"
+rm -f "$TMP/state/TREE-RAN"
+cp -p "$TMP/lib/trusted-path-lib.sh" "$TMP/lib/trusted-path-lib.sh.keep"
+sed -i 's#^  for p in /usr/bin/python3 /bin/python3; do$#  for p in /nonexistent/python3; do#' "$TMP/lib/trusted-path-lib.sh"
+out="$(printf 'rollback\n' | run_sut 2>&1)"
+mv "$TMP/lib/trusted-path-lib.sh.keep" "$TMP/lib/trusted-path-lib.sh"
+if [[ "$(status_of "$out")" == 6 && ! -e "$TMP/state/TREE-RAN" ]] \
+   && grep -q 'refused: this host has no python3 at /usr/bin or /bin' <<<"$out" \
+   && grep -q 'root would not run its installers: this host has no python3' <<<"$out" \
+   && ! grep -q 'is not the one its release shipped' <<<"$out"; then
+  ok "no python3: the rollback says so, and does not blame a file in the tree (#1355)"
+else
+  bad "the rollback names a missing python3, not a changed file" "exit $(status_of "$out"): $out"; fi
+rm -rf "${DIR}.previous-C" "${DIR}.rolled-back-"*
+
 echo
 echo "── rollback: the fleet broker's pin comes with the tree (#828) ────"
 #

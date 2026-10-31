@@ -62,7 +62,7 @@ import {
   brokerAttachAdvisorPayload, brokerAttachAdvisorOutcome,
   brokerDetachAdvisorPayload, brokerDetachAdvisorOutcome,
   brokerOutcomeUnknown, brokerUnknownDetail, inheritFleetModel, attachModelSentence,
-  type AttachModelState, type InheritOutcome, type BrokerStoreHeadOutcome, type BrokerPushOutcome, type BrokerPushGrant, type StoreWriteNote,
+  type AttachModelState, type InheritOutcome, type BrokerStoreHeadOutcome, storeHeadRefusal, type BrokerPushOutcome, type BrokerPushGrant, type StoreWriteNote,
 } from './lib/fleet-broker.js';
 import {
   fetchPeerAdvisorState, revealPeerAdvisorToken, advisorWatchState,
@@ -89,6 +89,7 @@ import {
 } from './lib/fleet-model-record.js';
 import type { ArmStateResponse } from './types/fleet-write-contract.js';
 import { trustSyncRemedy } from './lib/trust-sync.js';
+import { edgeSafeStatus } from './lib/peer-advisor-answer.js';
 import {
   trustPushRows, annotatePushFailures, pushResultsByNode, pushFailureLine, pushCauseLine, pushFailedLine,
   PUSH_SUMMARY_RE, lastLine, type PushRow, type PushReason,
@@ -141,7 +142,10 @@ export interface NodeAdvisorSettings {
 }
 
 export interface NodeSettings {
+  /** The registry label, the key every Settings control addresses. */
   label: string;
+  /** The self row only: the name the page prints (#1284). */
+  display_name?: string;
   role: string | null;
   is_self: boolean;
   reachable: boolean;
@@ -165,6 +169,13 @@ export interface NodeSettings {
    *  Null is "not said": unreachable, a peer older than the field, or a
    *  host with no name. The page prints a dash, never a guess. */
   host_name: string | null;
+  /** The relay's build on that machine (#593): this host's own relay for the
+   *  self row, the peer's `relay_version` off the fleet poll for any other
+   *  (commit-shaped, validated). Null is "not reported" and covers every
+   *  cause, so the page prints those words and never a blank: no relay has
+   *  pushed, an unstamped relay, a node older than the field, an unreachable
+   *  node. */
+  relay_version: string | null;
   pubkey_node: string | null;
   /** Only meaningful for a pinned row: true when that node proved its
    *  identity, false when it is pinned and did not, null when unpinned. */
@@ -233,6 +244,10 @@ export interface SettingsAdminDeps {
   /** The resolved peers, and this node's own registry row. */
   peers: () => FleetNodeConfig[];
   selfNode: () => FleetNodeConfig | null;
+  /** The name this host goes by on every page (pairing label, then fleet
+   *  label, then host: lib/alert-identity.ts). Display only; `selfNode().label`
+   *  stays the key (#1284). Absent or '' falls back to that label. */
+  selfDisplayName?: () => string;
   /** #1057: the registry rows this dashboard read and could not use, because
    *  none of them is this host (resolveFleet's fail-closed answer). Empty
    *  whenever the registry resolved. They are not peers: nothing polls them
@@ -251,6 +266,9 @@ export interface SettingsAdminDeps {
   /** This host's own OS hostname, the value node-status serves as
    *  host_name. Sampled by server.ts, which owns node:os. */
   selfHostName: () => string | null;
+  /** This host's own relay build, the same reading its System tab prints
+   *  (#593). Optional so a caller that has no relay reading gets null. */
+  selfRelayVersion?: () => string | null;
   /** This host's own arm state, from lib/model-arm.ts. */
   selfArmState: () => ArmStateResponse;
   /** What the fleet link hub observes about one node, or null when this
@@ -513,8 +531,17 @@ const MAX_TARGETS = 64;
  */
 const OVERVIEW_CACHE_MS = 5_000;
 
+/**
+ * Every answer this page's routes write goes through here, and here is where
+ * an edge-rewritten status is moved (#1209). In front of an aggregator the
+ * edge replaces an origin 502, 504 or 52x with its own HTML page, so the
+ * sentence in `error` and `detail` never reached Settings, which then read the
+ * edge's page instead. Moved here rather than at each route, so a status a
+ * route relays from a node or a broker cannot carry one back either. The page
+ * decides by the body's keys, never by the status.
+ */
 function send(res: ServerResponse, status: number, body: unknown): void {
-  res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+  res.writeHead(edgeSafeStatus(status), { 'content-type': 'application/json', 'cache-control': 'no-store' });
   res.end(JSON.stringify(body));
 }
 
@@ -933,7 +960,9 @@ export async function handleSettingsAdmin(
       repoDir: deps.repoDir,
       operator: user?.username ?? `user:${session.userId}`,
       role: session.role,
-      selfLabel: deps.selfNode()?.label ?? null,
+      // The source line's name for this host's own entries: the page name,
+      // never the key (#1284). The mirror lookup is keyed by `node` itself.
+      selfLabel: deps.selfDisplayName?.() || deps.selfNode()?.label || null,
       log: deps.log ?? ((line: string) => console.log(line)),
       lookup: memoryMirrorRow,
       stamp: memoryMirrorMarkPromoted,
@@ -1171,7 +1200,12 @@ async function buildOverview(deps: SettingsAdminDeps): Promise<Record<string, un
 
   const selfNode = deps.selfNode();
   const selfLabel = selfNode?.label ?? 'this node';
-  const selfRow = rowFor(selfLabel);
+  // By the row's own self flag, not by name: the label is a key and the
+  // display name is not, and this must find the row whichever the page holds.
+  const selfRow = rows.find((n) => n.self);
+  // #1284. What the page prints for this host. `label` above is what Settings
+  // and the Add an Advisor deep link match it by, so it stays the registry's.
+  const selfDisplay = deps.selfDisplayName?.() || selfRow?.display_name || selfLabel;
   let selfStatus: AdvisorStatusDoc | null = null;
   let selfReason: string | undefined;
   try {
@@ -1197,6 +1231,7 @@ async function buildOverview(deps: SettingsAdminDeps): Promise<Record<string, un
 
   const self: NodeSettings = {
     label: selfLabel,
+    display_name: selfDisplay,
     role: selfNode?.role ?? null,
     is_self: true,
     // This process is answering the request, so it is reachable by
@@ -1206,6 +1241,7 @@ async function buildOverview(deps: SettingsAdminDeps): Promise<Record<string, un
     transport: 'self',
     link_last_held_ms: null,
     host_name: deps.selfHostName(),
+    relay_version: deps.selfRelayVersion?.() ?? null,
     // On a peer this column holds what the registry PINS; here it holds what
     // this node reports, because this row had no comparison to show until
     // #488 and the key an operator wants beside "this one" is the node's own.
@@ -1256,6 +1292,7 @@ async function buildOverview(deps: SettingsAdminDeps): Promise<Record<string, un
       transport: node.transport === 'link' ? 'link' : 'loopback',
       link_last_held_ms: link ? link.last_held_ms : null,
       host_name: row?.host_name ?? null,
+      relay_version: row?.relay_version ?? null,
       pubkey_node: node.expected_pubkey_node ?? null,
       pin_ok: node.expected_pubkey_node ? (row?.verified ?? false) : null,
       ...pinFacts(node, row),
@@ -1434,6 +1471,7 @@ async function buildOverview(deps: SettingsAdminDeps): Promise<Record<string, un
     // it rides the body the page already polls instead of a route.
     this_dashboard: {
       ...thisDash,
+      display_name: selfDisplay,
       install_join_command: installJoinCommandLine(thisDash.public_url),
       // What a relay on the node's own box must dial to reach this
       // dashboard (#135). Built here, beside the join line, so both come
@@ -2113,37 +2151,6 @@ function startCatchup(
     }
   })();
   return job;
-}
-
-/** What a head that is not `held` means to the two catch-up routes.
- *
- *  Five states in, four refusals out, and none of them says "there is no
- *  store" unless the broker positively said so. A busy socket answered as
- *  `none` would tell an operator to paste a live provider key over a store
- *  that was fine. */
-function storeHeadRefusal(
-  head: BrokerStoreHeadOutcome,
-): { status: number; body: Record<string, unknown> } | null {
-  switch (head.state) {
-    case 'held': return null;
-    case 'none': return {
-      status: 409,
-      body: {
-        error: 'no_sealed_model',
-        detail: 'this aggregator holds no sealed fleet model, so there is nothing to send. Seal the '
-          + 'fleet model from here with the key.',
-      },
-    };
-    case 'unreadable': return {
-      status: 409,
-      body: {
-        error: 'store_unreadable',
-        detail: `${head.detail} Seal the fleet model from here again with the key.`,
-      },
-    };
-    case 'predates': return { status: 501, body: { error: 'broker_predates_store', detail: head.detail } };
-    default: return { status: 503, body: { error: 'broker_busy', detail: head.detail } };
-  }
 }
 
 /**

@@ -14,6 +14,9 @@
 
   var KEY = 'aperire-theme';
   var root = document.documentElement;
+  // The attribute that gives a header control its hover help. See the
+  // popover block below.
+  var TIP = 'data-hdr-tip';
 
   // The attribute always names the theme. It is never removed for dark:
   // "absent or dark" would be an ambiguity the boot script, this file and
@@ -66,7 +69,8 @@
       // labelled with. Labelling it with the current one reads as a status
       // light and an operator clicks expecting nothing to happen.
       b.setAttribute('aria-pressed', light ? 'true' : 'false');
-      b.setAttribute('title', light ? 'Switch to dark' : 'Switch to light');
+      // Hover help is the header popover below, never a native title=.
+      b.setAttribute(TIP, light ? 'Switch to dark' : 'Switch to light');
       b.setAttribute('aria-label', light ? 'Switch to dark theme' : 'Switch to light theme');
       var sun = b.querySelector('.theme-icon-sun');
       var moon = b.querySelector('.theme-icon-moon');
@@ -189,6 +193,154 @@
     });
   }
 
+  // ── Header hover help ────────────────────────────────────────────────
+  //
+  // The header's icon controls need a name on hover, and the project's rule
+  // is the popover, never a native title=: a title waits about two seconds,
+  // does nothing on a phone, and is not styled. Any element carrying
+  // data-hdr-tip gets one, so a control (or idle-tracker.js, which turns the
+  // account pill into "Session idle, tap to stay signed in") only sets an
+  // attribute.
+  //
+  // One shared element, not one per control. It is appended to <body> and
+  // placed with position:fixed from the control's rect, so no header
+  // overflow can clip it, it adds no scroll extent when hidden (the #133
+  // trap that centred resting tips fall into on the right edge), and the
+  // markup of eleven pages does not change. It is text only and keeps
+  // pointer-events:none, so a pointer can never land on it instead of the
+  // button underneath.
+  //
+  // How it opens:
+  //   mouse     hover (pointerover/out; touch's own pointer events are
+  //             ignored, because a phone fires pointerover on a tap and the
+  //             tip would stay up with nothing to dismiss it)
+  //   keyboard  focus-visible only, so a mouse click's focus does not matter
+  //   touch     a tap. WebKit does not focus a button on tap, so :focus
+  //             cannot be the trigger. It closes after a moment, on a tap
+  //             elsewhere, on scroll or on Escape.
+  // A control whose tap already does something else the operator is reading
+  // the result of (the account pill opens its menu, or keeps the session
+  // signed in) carries data-hdr-tip-notap: it still opens on hover and
+  // focus, and a tap just does its job.
+  //
+  // When the header is hidden (a tab embedded in the shell) its controls
+  // cannot be hovered, focused or tapped, so nothing here ever runs.
+  var TIP_ID = 'hdrTip';
+  var TIP_TOUCH_MS = 2600;
+  var tipEl = null, tipAnchor = null, tipTimer = 0, tipObs = null, lastPointer = '';
+
+  function tipOwner(el) {
+    return el && el.closest ? el.closest('[' + TIP + ']') : null;
+  }
+
+  function tipNode() {
+    if (tipEl) return tipEl;
+    tipEl = document.createElement('div');
+    tipEl.id = TIP_ID;
+    tipEl.className = 'hdr-tip';
+    tipEl.setAttribute('role', 'tooltip');
+    document.body.appendChild(tipEl);
+    return tipEl;
+  }
+
+  // Right edge of the tip on the right edge of the control (every header
+  // control sits at the right or near it), pulled inside the viewport, below
+  // the control, or above it when there is no room below.
+  function tipPlace() {
+    if (!tipEl || !tipAnchor) return;
+    var r = tipAnchor.getBoundingClientRect();
+    var vw = document.documentElement.clientWidth;
+    var vh = window.innerHeight;
+    var gap = 8, margin = 8;
+    var w = tipEl.offsetWidth, h = tipEl.offsetHeight;
+    var left = Math.min(r.right - w, vw - w - margin);
+    if (left < margin) left = margin;
+    var top = r.bottom + gap;
+    if (top + h > vh - margin && r.top - gap - h >= margin) top = r.top - gap - h;
+    tipEl.style.left = Math.round(left) + 'px';
+    tipEl.style.top = Math.round(top) + 'px';
+  }
+
+  function tipClose() {
+    clearTimeout(tipTimer);
+    tipTimer = 0;
+    if (tipObs) { tipObs.disconnect(); tipObs = null; }
+    if (tipAnchor) tipAnchor.removeAttribute('aria-describedby');
+    tipAnchor = null;
+    if (tipEl) tipEl.classList.remove('is-open');
+  }
+
+  function tipOpen(a, autoClose) {
+    var text = a.getAttribute(TIP);
+    if (!text) { tipClose(); return; }
+    if (tipAnchor && tipAnchor !== a) tipClose();
+    clearTimeout(tipTimer);
+    tipTimer = 0;
+    var el = tipNode();
+    el.textContent = text;
+    tipAnchor = a;
+    a.setAttribute('aria-describedby', TIP_ID);
+    tipPlace();
+    el.classList.add('is-open');
+    // The text changes under an open tip: the theme button flips its label on
+    // the click that opened it, and the account pill swaps in the idle
+    // warning. Follow the attribute rather than make each caller poke us.
+    if (tipObs) tipObs.disconnect();
+    if (typeof MutationObserver === 'function') {
+      tipObs = new MutationObserver(function () {
+        var t = a.getAttribute(TIP);
+        if (!t) { tipClose(); return; }
+        tipEl.textContent = t;
+        tipPlace();
+      });
+      tipObs.observe(a, { attributes: true, attributeFilter: [TIP] });
+    }
+    if (autoClose) tipTimer = setTimeout(tipClose, TIP_TOUCH_MS);
+  }
+
+  function bindTips() {
+    var opts = true;   // capture: runs before a control's own handlers can stop the event
+    document.addEventListener('pointerdown', function (e) {
+      lastPointer = e.pointerType || '';
+      if (tipAnchor && !tipAnchor.contains(e.target)) tipClose();
+    }, opts);
+    document.addEventListener('pointerover', function (e) {
+      if (e.pointerType === 'touch') return;
+      var a = tipOwner(e.target);
+      if (a) tipOpen(a, false);
+    }, opts);
+    document.addEventListener('pointerout', function (e) {
+      if (e.pointerType === 'touch' || !tipAnchor) return;
+      if (tipAnchor.contains(e.relatedTarget)) return;
+      if (tipAnchor.contains(e.target)) tipClose();
+    }, opts);
+    document.addEventListener('focusin', function (e) {
+      var a = tipOwner(e.target);
+      if (!a) return;
+      var visible = false;
+      try { visible = a.matches(':focus-visible'); } catch { /* old engine: no tip on focus */ }
+      if (visible) tipOpen(a, false);
+    }, opts);
+    document.addEventListener('focusout', function (e) {
+      if (tipAnchor && tipAnchor.contains(e.target)) tipClose();
+    }, opts);
+    document.addEventListener('click', function (e) {
+      var kind = e.pointerType !== undefined ? e.pointerType : lastPointer;
+      if (kind !== 'touch') return;
+      var a = tipOwner(e.target);
+      if (!a || a.hasAttribute('data-hdr-tip-notap')) return;
+      tipOpen(a, true);
+    }, opts);
+    document.addEventListener('keydown', function (e) {
+      lastPointer = '';
+      if (e.key === 'Escape') tipClose();
+    }, opts);
+    window.addEventListener('scroll', tipClose, opts);
+    window.addEventListener('resize', tipClose);
+    window.addEventListener('blur', tipClose);
+  }
+
+
   function mount() {
     if (document.getElementById('themeToggle')) return;
     var b = button();
@@ -213,6 +365,7 @@
   function start() {
     mount();
     reflect();
+    bindTips();
     // Same task as the mount, so the row is measured in the shape it will
     // paint in: this button is inserted by the line above, and measuring
     // before it existed would answer for a narrower row than the operator

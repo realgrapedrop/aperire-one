@@ -687,6 +687,14 @@
   // ("Re-record it: sudo bash ... (the full installer, ...)"). The command
   // gets its own copy box, so the sentence points at the box instead of
   // printing it twice.
+  // settings.html owns how a server sentence opens a line (window.ApRefusal,
+  // #1195). That script runs before this deferred one; the fallback is only
+  // for a page that does not carry it.
+  function asLine(text) {
+    var R = window.ApRefusal;
+    return R && typeof R.capFirst === 'function' ? R.capFirst(text) : String(text || '');
+  }
+
   function sentenceOnly(detail, command) {
     var d = String(detail || '');
     var c = command ? String(command) : '';
@@ -743,7 +751,9 @@
         return;
       }
       if (r.status === 200 && b && b.ok === false && typeof b.detail === 'string') {
-        fpNotReady(sentenceOnly(b.detail, b.command), typeof b.command === 'string' ? b.command : null);
+        // The broker's clause can open the line ("the fleet broker is busy
+        // ..."): capitalised by the page's one composer (#1195).
+        fpNotReady(asLine(sentenceOnly(b.detail, b.command)), typeof b.command === 'string' ? b.command : null);
         return;
       }
       var why = b && typeof b.error === 'string' ? b.error : 'it answered ' + r.status;
@@ -988,7 +998,24 @@
         } else if (h.relayAgeMs !== null) {
           v.add('warn', 'A relay reported here before', 'the last frame was ' + ago(h.relayAgeMs) + ', so it has stopped');
         }
-        if (waited > 90) {
+        // On another box the wait is shorter and the answer is longer. The
+        // relay dials OUT, so a minute of nothing means something between the
+        // two is in the way, and the relay itself can say which (#586).
+        if (WHERE === 'remote' && waited >= 60) {
+          stopWatching();
+          $('anWatchBtn').disabled = false;
+          $('anWatchBtn').textContent = 'Watch again';
+          v.add('bad', 'Nothing arrived in a minute', 'the relay on that host dials out to this dashboard, so one of these is in the way');
+          v.add('warn', 'That host cannot find this dashboard by name', 'the name in dashboard_url does not resolve there');
+          v.add('warn', 'The connection is refused or times out', 'a firewall is in the way, or the port in dashboard_url is wrong');
+          v.add('warn', 'The TLS handshake fails', 'the certificate does not match the name, has expired, or is not trusted by that host');
+          v.add('warn', 'This dashboard refuses the token (401)', 'the auth_token in relay.conf is not in this dashboard\u2019s RELAY_TOKENS');
+          v.add('warn', 'This dashboard refuses a plain ws:// push from another host (403)', 'use a tunnel to ws://127.0.0.1, or wss://');
+          v.add('warn', 'The relay is not running there, or is standing by with an empty dashboard_url');
+          v.add('note', 'On that host, one command tries this dashboard once and says which of these it is');
+          $('anWatchVerdicts').insertAdjacentHTML('beforeend', '<div id="anWatchPathCmd" style="min-width:0"></div>');
+          cmdInto($('anWatchPathCmd'), 'sudo aperire-relay --check-dashboard');
+        } else if (waited > 90) {
           stopWatching();
           $('anWatchBtn').disabled = false;
           $('anWatchBtn').textContent = 'Watch again';

@@ -64,7 +64,6 @@ var (
 	ErrTooLarge    = errors.New("the bundle is larger than a knowledge bundle may be")
 	ErrArchive     = errors.New("the archive could not be read")
 	ErrNoIssuer    = errors.New("the manifest names no issuer")
-	ErrEmptyBundle = errors.New("the bundle carries no knowledge files")
 )
 
 // ManifestFile is one file: its path relative to knowledge-fleet/ (so
@@ -103,6 +102,14 @@ type Manifest struct {
 func (m *Manifest) SigningBytes() ([]byte, error) {
 	files := append([]ManifestFile(nil), m.Files...)
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
+	// An empty list signs as "files":null, never []. Every released node
+	// computes null here (append to nil of nothing is nil), and the twin
+	// matches it, so an empty bundle (#1219) verifies on a node from before
+	// empty bundles were accepted and is refused there by name, not as a bad
+	// signature. Explicit, so a tidy-up cannot change it by accident.
+	if len(files) == 0 {
+		files = nil
+	}
 	ordered := struct {
 		Seq         int64          `json:"seq"`
 		Files       []ManifestFile `json:"files"`
@@ -217,12 +224,14 @@ type Stats struct {
 // manifest with a matching hash — otherwise an unsigned file rides along
 // inside a signed bundle — and every manifest entry must appear in the
 // archive, or a file the signature promises is silently missing.
+//
+// A manifest with no files is a bundle (#1219): it is how an aggregator
+// withdraws the last note it promoted. It grants nothing a one-file bundle
+// does not, since any bundle already replaces the whole corpus, and the
+// archive is held to the same rule, so it must carry no file either.
 func Extract(gz []byte, m *Manifest, dest string) error {
 	if len(gz) > MaxBundleBytes {
 		return fmt.Errorf("%w: %d bytes, the limit is %d", ErrTooLarge, len(gz), MaxBundleBytes)
-	}
-	if len(m.Files) == 0 {
-		return ErrEmptyBundle
 	}
 	want := map[string]string{}
 	for _, f := range m.Files {

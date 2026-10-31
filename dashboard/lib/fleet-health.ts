@@ -21,13 +21,14 @@
  * caller (server.ts) computes that row's verdict from state it already has
  * (node reachability, firing alerts) and merges it in via `mergeSelf`.
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import type { FleetNodeConfig } from './fleet-registry.js';
 import type { ReadFiringStateRow, ReleaseIdentityWire } from '../types/read-contract.js';
 import { parseIdentityWire } from './release-stamp.js';
 import { gradeWithFloor, releaseFloor, type UpdateLatest } from './update-check.js';
 import type { PeerConcernInput } from './concerns.js';
 import { compareVersions, readVersion } from './version-compare.js';
+import { parseInstallDir, parseRelayBuild, parseRunAs, NO_INSTALL_FACTS, type PeerInstallFacts } from './peer-install-facts.js';
 import { parseDeployRef, compareDeployRefs, type DeployRefState, type DeployComparison } from './deploy-ref.js';
 
 // 'critical' is the fourth verdict both sortFleetForDisplay's VERDICT_RANK
@@ -83,7 +84,14 @@ function refusedTriple(status: number, route: string | null): {
 
 /** What the browser is allowed to see. No read_origin, no token_path. */
 export interface FleetPeerPublic {
+  /** The registry's name for the row, and the KEY: routes, the Inbox and
+   *  every self test match by it. Never renamed for display. */
   label: string;
+  /** The self row only: the name the pages print for this host, from the one
+   *  resolver (pairing label, then fleet label, then host; lib/alert-identity.ts).
+   *  On a paired node whose fleet.yaml self entry is older than its pairing the
+   *  two differ, and `label` above still routes (#1284). */
+  display_name?: string;
   /** Optional — absent when this fleet does not know where that node's own
    *  dashboard is (#339). Nothing in the browser navigates to it today (D8
    *  slice 3 moved node picking to a label in the shell's hash), so this is
@@ -115,10 +123,17 @@ export interface FleetPeerPublic {
   release_detail?: string;
   build_version?: string | null;
   latest_available?: string | null;
-  /** The machine the node runs on: its OS hostname as its own dashboard
-   *  reports it. Gated like build_version (null when unreachable or when the
+  /** The machine the node runs on, as its own dashboard reports it in
+   *  node-status (the relay's host on a split install, #1284). Gated like build_version (null when unreachable or when the
    *  wrong node answered), and null for a host that never said. */
   host_name?: string | null;
+  /** What the node said about its own install on the same node-status body
+   *  (#593, #615): the relay's build, the directory its dashboard is
+   *  installed in, and the account that dashboard runs as. Gated like
+   *  `host_name`, and null for a host that never said, which includes every
+   *  peer older than the fields. Absent on this host's own row, which reads
+   *  them directly. */
+  relay_version?: string | null;
   /** Epoch ms of the last successful poll (or, for the self row, always
    *  "now" while the row exists). Null only if this peer has never once
    *  answered since this process started. The browser formats "Xm ago" from
@@ -173,6 +188,21 @@ export interface FleetPeerPublic {
    *  wire: the sentence that tells an operator what to do about it is
    *  composed in the browser from the label it already has. */
   refused_status?: number;
+  /** True only on a row this dashboard could not poll because it could not
+   *  read the peer's read token (#1305). The verdict is still 'unreachable'
+   *  (nothing was read), but nothing was asked of the node either, so a page
+   *  that prints "unreachable" for it says something untrue. Absent on every
+   *  other row. The file's path, owner and mode are not carried: they are for
+   *  the pages that name the file to an admin (Settings, the Advisor tab). */
+  token_unreadable?: true;
+  /** The peer's own `amendment_blocked`, read from its governance route on
+   *  the last poll (#1308). Present only when that reading was taken from a
+   *  node that answered and was the node it should be: an unreachable row, a
+   *  pin mismatch, or a poll that has not read the field yet publishes no key
+   *  at all, so a page can tell "not blocked" (false) from "not read" (absent)
+   *  and never draws a banner off a kept value. The Overview's amendment
+   *  banner reads this for a peer on screen. */
+  amendment_blocked?: boolean;
   /** The identity verdict, named. Present together, and only on a row whose
    *  pinned key was READ this cycle and disagreed (#273) — never on a row
    *  that merely could not be checked, and never on one that has since gone
@@ -471,6 +501,12 @@ export interface PeerPollResult {
    *  peer predates the field, or the host reports no name; all three are
    *  "not said", and the page prints a dash for them. */
   hostName: string | null;
+  /** The peer's relay build, install directory and dashboard account, off
+   *  the same node-status body, each re-validated here (#593, #615). Every
+   *  member is null when the read did not answer, the peer predates the
+   *  member, or the value was not shaped like the thing it names; those are
+   *  all "not said". */
+  install: PeerInstallFacts;
   /** The peer's release identity, off the SAME node-status body deployRef
    *  comes from. `{kind:'unknown'}` when the read did not answer, the peer
    *  is older than the field, or the host carries no stamp. All three are
@@ -550,7 +586,7 @@ export function sanitiseFiringRows(raw: unknown): ReadFiringStateRow[] {
  *  different shape of "we learned nothing" as fields are added to the result. */
 const UNREACHABLE_POLL: PeerPollResult = {
   reachable: false, sampleAgeMs: null, firingCount: 0, firing: null,
-  serverState: null, buildVersion: null, amendmentBlocked: null, deployRef: null, release: { kind: 'unknown' }, hostName: null,
+  serverState: null, buildVersion: null, amendmentBlocked: null, deployRef: null, release: { kind: 'unknown' }, hostName: null, install: NO_INSTALL_FACTS,
   refusedStatus: null, refusedRoute: null,
 };
 
@@ -660,9 +696,19 @@ export async function pollOnePeer(
     // absence as a peer too old to send the key.
     const hostName = typeof nsBody?.host_name === 'string' && nsBody.host_name !== '' ? nsBody.host_name : null;
 
+    // Three more facts off the same body (#593, #615). Node-authored and, for
+    // the directory and the account, destined for a command an operator runs
+    // under sudo, so each goes through a whitelist before it is kept. A peer
+    // that sends something else, or nothing, reports nothing.
+    const install: PeerInstallFacts = {
+      relayVersion: parseRelayBuild(nsBody?.relay_version),
+      installDir: parseInstallDir(nsBody?.install_dir),
+      runAs: parseRunAs(nsBody?.run_as),
+    };
+
     return {
       reachable: true, sampleAgeMs, firingCount, firing, serverState, buildVersion,
-      amendmentBlocked, deployRef, release, hostName, refusedStatus: null, refusedRoute: null,
+      amendmentBlocked, deployRef, release, hostName, install, refusedStatus: null, refusedRoute: null,
     };
   } catch {
     return UNREACHABLE_POLL;
@@ -727,6 +773,94 @@ export function readTokenFresh(tokenPath: string): string | null {
     const t = readFileSync(tokenPath, 'utf8').trim();
     return t.length > 0 ? t : null;
   } catch { return null; }
+}
+
+/**
+ * Why a token file could not be used, for a caller that has to say so (#1209).
+ *
+ * readTokenFresh answers null for every way a read fails, and a caller that
+ * turned that null into "could not reach the node" said something untrue:
+ * nothing was sent. This reads the same way, fresh and never cached, and on a
+ * failure names the file, who owns it and its mode. The token itself is never
+ * in the failure, and never in anything this returns but `token`.
+ */
+export type TokenFileRead =
+  | { ok: true; token: string }
+  | {
+    ok: false;
+    path: string;
+    /** missing: no such file. denied: this account may not read it. empty:
+     *  read, and nothing in it. not_a_file: a directory or something else.
+     *  unreadable: any other error, named in `code`. */
+    why: 'missing' | 'denied' | 'empty' | 'not_a_file' | 'unreadable';
+    code: string | null;
+    /** The owning account's name, or `uid N` when this host has no name for
+     *  it. Null when the file could not even be looked at. */
+    owner: string | null;
+    /** Octal permission bits, e.g. `0600`. Null with `owner`. */
+    mode: string | null;
+  };
+
+export function readTokenFileExplained(tokenPath: string): TokenFileRead {
+  const fail = (why: Extract<TokenFileRead, { ok: false }>['why'], code: string | null): TokenFileRead => {
+    let owner: string | null = null;
+    let mode: string | null = null;
+    try {
+      const st = statSync(tokenPath);
+      owner = accountName(st.uid);
+      mode = `0${(st.mode & 0o777).toString(8).padStart(3, '0')}`;
+    } catch { /* not even a stat: the path or a directory above it */ }
+    return { ok: false, path: tokenPath, why, code, owner, mode };
+  };
+  let text: string;
+  try {
+    text = readFileSync(tokenPath, 'utf8');
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code ?? null;
+    if (code === 'ENOENT') return fail('missing', code);
+    if (code === 'EACCES' || code === 'EPERM') return fail('denied', code);
+    if (code === 'EISDIR') return fail('not_a_file', code);
+    return fail('unreadable', code);
+  }
+  const t = text.trim();
+  return t.length > 0 ? { ok: true, token: t } : fail('empty', null);
+}
+
+/** The account name for a uid, from /etc/passwd, or `uid N`. */
+function accountName(uid: number): string {
+  try {
+    for (const line of readFileSync('/etc/passwd', 'utf8').split('\n')) {
+      const f = line.split(':');
+      if (f.length >= 3 && Number(f[2]) === uid && f[0]) return f[0];
+    }
+  } catch { /* no passwd to read: the number is still a fact */ }
+  return `uid ${uid}`;
+}
+
+/**
+ * The sentence for a token this host could not use, said by this host about
+ * itself: the file, its owner and mode, and what was not sent (#1209).
+ * `which` is `read` or `Advisor`. The read token comes first, so with it
+ * nothing went to the node at all. The Advisor token is read after the
+ * identity pin, which on a pinned row has already asked the node who it is,
+ * so that sentence says only that nothing went to its Advisor.
+ */
+export function tokenUnreadableDetail(label: string, which: 'read' | 'Advisor', r: Extract<TokenFileRead, { ok: false }>): string {
+  const what = r.why === 'missing' ? 'the file is not there'
+    : r.why === 'denied' ? 'this dashboard\u2019s account may not read it'
+    : r.why === 'empty' ? 'the file is empty'
+    : r.why === 'not_a_file' ? 'it is not a file'
+    : `reading it failed (${r.code ?? 'no reason given'})`;
+  const held = r.owner ? ` It is owned by ${r.owner}, mode ${r.mode}.` : '';
+  return `This dashboard cannot read its ${which} token for ${label} at ${r.path}: ${what}.${held} `
+    + (which === 'read' ? `Nothing was sent to ${label}.` : `Nothing was sent to ${label}\u2019s Advisor.`);
+}
+
+/** What the server log says about a token it could not use: the path, why, and
+ *  the owner and mode. The browser gets this only as an administrator's
+ *  sentence (peer-advisor-answer.ts, tokenUnreadableFor); the log always has it. */
+export function tokenUnreadableLog(r: Extract<TokenFileRead, { ok: false }>): string {
+  return `${r.path} ${r.why}${r.owner ? `, owner ${r.owner} ${r.mode}` : ''}`;
 }
 
 /** True when a peer's read_origin is this process's own loopback bind — the
@@ -835,6 +969,9 @@ interface PeerHealthState {
   /** Follows deployRef: not retained, refused on a pin mismatch. A name
    *  nobody confirmed this cycle is not a name. */
   hostName: string | null;
+  /** Follows hostName: not retained, refused on a pin mismatch. A build, a
+   *  path or an account nobody confirmed this cycle is not one. */
+  install: PeerInstallFacts;
   lastSeenMs: number | null;
   verified?: boolean;
   unreachableReason: PeerUnreachableReason;
@@ -952,7 +1089,7 @@ export class FleetHealthPoller {
         // Nothing has been read, so R has nothing to grade — and because
         // these are the poller's only un-retained fields, every branch that
         // reads nothing has to say so explicitly rather than inherit it.
-        buildVersion: null, amendmentBlocked: null, deployRef: null, release: { kind: 'unknown' }, hostName: null,
+        buildVersion: null, amendmentBlocked: null, deployRef: null, release: { kind: 'unknown' }, hostName: null, install: NO_INSTALL_FACTS,
         refusedStatus: null, refusedRoute: null,
         pinMismatch: false, pinExpected: null, pinReported: null,
         lastPollAtMs: null, signalsChecked: 0, missStreak: 0,
@@ -1024,7 +1161,7 @@ export class FleetHealthPoller {
         this.state.set(node.label, {
           verdict: 'unreachable', detail: 'token unreadable', ...UNREACHABLE_TRIPLE,
           ...retained,
-          buildVersion: null, amendmentBlocked: null, deployRef: null, release: { kind: 'unknown' }, hostName: null,
+          buildVersion: null, amendmentBlocked: null, deployRef: null, release: { kind: 'unknown' }, hostName: null, install: NO_INSTALL_FACTS,
           refusedStatus: null, refusedRoute: null,
           unreachableReason: 'token_unreadable',
           lastPollAtMs: Date.now(),
@@ -1052,7 +1189,7 @@ export class FleetHealthPoller {
           verdict, detail,
           ...refusedTriple(poll.refusedStatus, poll.refusedRoute),
           ...retained,
-          buildVersion: null, amendmentBlocked: null, deployRef: null, release: { kind: 'unknown' }, hostName: null,
+          buildVersion: null, amendmentBlocked: null, deployRef: null, release: { kind: 'unknown' }, hostName: null, install: NO_INSTALL_FACTS,
           // Dropped exactly as the unreachable branch drops it: a token this
           // node rejects cannot confirm an identity either.
           verified: undefined,
@@ -1078,7 +1215,7 @@ export class FleetHealthPoller {
         this.state.set(node.label, {
           verdict, detail, ...UNREACHABLE_TRIPLE,
           ...retained,
-          buildVersion: null, amendmentBlocked: null, deployRef: null, release: { kind: 'unknown' }, hostName: null,
+          buildVersion: null, amendmentBlocked: null, deployRef: null, release: { kind: 'unknown' }, hostName: null, install: NO_INSTALL_FACTS,
           refusedStatus: null, refusedRoute: null,
           // Deliberately NOT carried forward: an unreachable poll has always
           // dropped `verified` from the public row, and /api/fleet's shape is
@@ -1195,6 +1332,7 @@ export class FleetHealthPoller {
         deployRef: pinMismatch ? null : poll.deployRef,
         release: pinMismatch ? { kind: 'unknown' as const } : poll.release,
         hostName: pinMismatch ? null : poll.hostName,
+        install: pinMismatch ? NO_INSTALL_FACTS : poll.install,
         lastSeenMs: refreshLastSeen ? Date.now() : (prev?.lastSeenMs ?? null),
         verified,
         // A peer that answered is not unreachable for ANY reason, including
@@ -1224,6 +1362,27 @@ export class FleetHealthPoller {
         signalsChecked,
       });
     }));
+  }
+
+  /**
+   * What one peer said about where its dashboard is installed and who it
+   * runs as (#615), or nothing. Its own accessor and NOT a member of
+   * FleetPeerPublic, because that row is served to every signed-in role and
+   * these two are for the administrator's commands: the only caller is the
+   * admin-only update card.
+   *
+   * Gated exactly like the graded fields on that row: a peer that did not
+   * answer, or whose answer came from the wrong node, says nothing, so the
+   * page never prints another box's directory under this label. Both members
+   * were whitelisted when they came off the wire (peer-install-facts.ts).
+   * They are information for the page to show beside a command, never text
+   * for the command itself; null means "not said" and the page shows nothing
+   * about it.
+   */
+  installFactsFor(label: string): PeerInstallFacts {
+    const s = this.state.get(label);
+    if (!s || s.unreachableReason !== null || s.pinMismatch) return NO_INSTALL_FACTS;
+    return s.install;
   }
 
   /** Non-self peers only, in registry order. `mergeSelf` adds the current
@@ -1300,6 +1459,13 @@ export class FleetHealthPoller {
         // a key to every row on a fleet where nothing carries a stamp yet.
         ...(releasePublic(reachable && !pinRefused ? s?.release : null)),
         host_name: (reachable && !pinRefused) ? (s?.hostName ?? null) : null,
+        // Behind the same gate as every graded field on this row (#593): a
+        // peer that did not answer, or whose answer came from the wrong node,
+        // reports no build. The install directory and the account are NOT
+        // here: this row is what /api/fleet serves to every signed-in role,
+        // and a path and an account name are for an administrator's commands
+        // only. See installFactsFor.
+        relay_version: (reachable && !pinRefused) ? (s?.install.relayVersion ?? null) : null,
         last_seen_ms: s?.lastSeenMs ?? null,
         // Present only on a refused row. `reachable` above is already false
         // for one, so every graded field (build_version, deploy_ref,
@@ -1307,6 +1473,13 @@ export class FleetHealthPoller {
         // gate: a node that will not let this dashboard read it publishes no
         // release, and unknown is the honest grade.
         ...(s?.refusedStatus ? { refused_status: s.refusedStatus } : {}),
+        // Same shape as refused_status, for the other way a poll never starts:
+        // this host could not read the token (#1305).
+        ...(s?.unreachableReason === 'token_unreadable' ? { token_unreadable: true as const } : {}),
+        // Behind the same gate as every graded field here: a node that did not
+        // answer, or answered as the wrong node, reports no reading (#1308).
+        ...((reachable && !pinRefused && typeof s?.amendmentBlocked === 'boolean')
+          ? { amendment_blocked: s.amendmentBlocked } : {}),
         // Behind the SAME gate the refused fields above are behind, and the
         // same gate every graded field on this row is behind: `pinRefused`,
         // which is reachable AND mismatched. A row that mismatched and then

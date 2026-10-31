@@ -49,6 +49,30 @@
 # The public file is always written BEFORE the key file is narrowed, so there
 # is no moment where the Advisor has neither.
 #
+# ---- root's pin (#1008) ----------------------------------------------
+#
+# /etc/aperire/fleet-trust.pub, root:root 0644, one line: the public half of
+# this aggregator's fleet trust key. It is the only place root takes that key
+# from. aperire-fleet-arm prints the pairing fingerprint over it, and the
+# fleet broker refuses to sign a model push with a seed whose public half is
+# not it. The dashboard account owns fleet-trust.yaml and can write it, so a
+# key planted there is one root ignores, and this program refuses to make a
+# public file from it.
+#
+# It lives in /etc/aperire and not beside the key: on a host that has not
+# moved to a dashboard account of its own, the dashboard owns
+# dashboard/config and could delete a pin kept there, which resets it.
+# /etc/aperire is root's on every host, so the pin is written there by name.
+#
+# Made the first time this program sees a key and there is no pin, which is
+# the next update on a host that predates it. Replaced only from a key root
+# holds itself (FTS_PIN_FROM): the grant right after it makes a new key from
+# its own bytes, and a restore from the pin root carried in the backup set.
+# The first pin takes whatever key the file holds at that update, so a
+# dashboard already compromised before it could have planted one. That is an
+# accepted reach (ADR 0024, amendment 2026-10-26 for #1008): such a dashboard
+# holds the real key by design anyway, and the pin stops every later swap.
+#
 # ---- who runs it -----------------------------------------------------
 #
 #   install-advisor-account.sh   on the Advisor's own account move
@@ -79,6 +103,114 @@ FTS_LEAF=fleet-trust.yaml
 FTS_PUB_LEAF=fleet-trust.pub.yaml
 FTS_KEY_MODE=0600
 FTS_PUB_MODE=0640
+
+# FTS_PIN_FROM and FTS_PIN_FILE are a caller's to set after it sources this,
+# never something root takes from the environment it was started with: as
+# root they are dropped here, the rule #1123 keeps for root's other hooks.
+# The account is asked of id(1), never bash's $EUID (#1109).
+if [[ "$(/usr/bin/id -u 2>/dev/null || echo 0)" == 0 ]]; then
+  unset FTS_PIN_FROM FTS_PIN_FILE
+fi
+
+# ---- BEGIN read_fleet_trust_pin (one rule, three copies: #1008) ---------
+# Sets FLEET_TRUST_PIN to the fleet trust public key root pinned at $1 and
+# returns 0, or returns 1 with FLEET_TRUST_PIN_WHY. No subshell, so call it
+# bare and read the two variables. The same text is in aperire-fleet-arm.sh,
+# aperire-fleet-broker.sh and fleet-trust-split.sh, and
+# scripts/test-fleet-trust-split.sh fails if the copies differ: the installed
+# programs source nothing out of the tree.
+#
+# A pin is a plain file, never a link, owned by the account running this
+# (root, on a host), writable by nobody else, holding one line: 32 bytes as
+# canonical unpadded base64url. Anything else is no pin at all.
+# shellcheck disable=SC2034
+FLEET_TRUST_PIN='' FLEET_TRUST_PIN_WHY=''
+read_fleet_trust_pin() {  # $1 = the pin's path
+  local pin="$1" mode line
+  FLEET_TRUST_PIN='' FLEET_TRUST_PIN_WHY=''
+  if [[ ! -e "$pin" && ! -L "$pin" ]]; then
+    FLEET_TRUST_PIN_WHY="there is no $pin"; return 1
+  fi
+  if [[ -L "$pin" || ! -f "$pin" || ! -O "$pin" ]]; then
+    FLEET_TRUST_PIN_WHY="$pin is not a plain file this account owns"; return 1
+  fi
+  mode="$(stat -c '%a' -- "$pin" 2>/dev/null)" || mode=777
+  if (( (8#$mode & 8#022) != 0 )); then
+    FLEET_TRUST_PIN_WHY="$pin can be written by another account"; return 1
+  fi
+  line="$(head -c 128 -- "$pin" 2>/dev/null)" || line=''
+  if [[ ! "$line" =~ ^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$ ]]; then
+    FLEET_TRUST_PIN_WHY="$pin does not hold one 32-byte public key"; return 1
+  fi
+  FLEET_TRUST_PIN="$line"
+}
+# ---- END read_fleet_trust_pin --------------------------------------------
+
+# fts_pin_file : where root's pin is. FTS_PIN_FILE names it outright (a
+# caller with its own /etc/aperire, or a test); else APERIRE_ETC, which the
+# root programs here already read for /etc/aperire.
+fts_pin_file() {
+  printf '%s' "${FTS_PIN_FILE:-${APERIRE_ETC:-/etc/aperire}/fleet-trust.pub}"
+}
+
+# fts_pin_write <path> <public key> <replace: 0 or 1>
+# Writes the pin 0644, owned by the account running this (root on a host),
+# through a temp file in the same directory. With 0 it is linked into place
+# with `ln -T`, which never replaces a name that is there, so two first
+# sights cannot each think they won. With 1 it is renamed over the name. The
+# directory must already exist: it is /etc/aperire, which an install makes.
+fts_pin_write() {
+  local pin="$1" key="$2" replace="$3" dir tmp rc=0
+  dir="$(dirname -- "$pin")"
+  [[ "$key" =~ ^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$ ]] || return 1
+  [[ -d "$dir" && ! -L "$dir" ]] || return 1
+  tmp="$(umask 022; mktemp "$dir/.fleet-trust.pub.XXXXXX" 2>/dev/null)" || return 1
+  [[ -n "$tmp" ]] || return 1
+  if printf '%s\n' "$key" > "$tmp" && chmod 0644 -- "$tmp"; then
+    if [[ "$replace" == 1 ]]; then
+      mv -fT -- "$tmp" "$pin" 2>/dev/null || rc=1
+    else
+      ln -T -- "$tmp" "$pin" 2>/dev/null || rc=1
+    fi
+  else
+    rc=1
+  fi
+  rm -f -- "$tmp"
+  return "$rc"
+}
+
+# fts_pin_settle <public key derived from fleet-trust.yaml> <trust file path>
+# 0 when root's pin is that key, after making the pin if there was none (or
+# replacing it, when FTS_PIN_FROM names the key root vouches for). 1, with
+# the reason on stderr, when the file's key is not the pinned one or the pin
+# could not be read or made. Prints one line when it wrote a pin.
+fts_pin_settle() {
+  local have="$1" trust="$2" pin
+  pin="$(fts_pin_file)"
+  if [[ -n "${FTS_PIN_FROM:-}" ]]; then
+    if ! fts_pin_write "$pin" "$FTS_PIN_FROM" 1; then
+      printf '%s\n' "could not write root's pin $pin, so $trust was not touched" >&2
+      return 1
+    fi
+    printf '%s\n' "$(basename -- "$pin") -> root's pin of this aggregator's fleet trust key, from the key root placed"
+  elif [[ ! -e "$pin" && ! -L "$pin" ]]; then
+    if ! fts_pin_write "$pin" "$have" 0 && [[ ! -e "$pin" && ! -L "$pin" ]]; then
+      printf '%s\n' "could not write root's pin $pin, so $trust was not touched" >&2
+      return 1
+    fi
+    read_fleet_trust_pin "$pin" && [[ "$FLEET_TRUST_PIN" == "$have" ]] \
+      && printf '%s\n' "$(basename -- "$pin") -> root's pin of this aggregator's fleet trust key, taken from $FTS_LEAF once"
+  fi
+  if ! read_fleet_trust_pin "$pin"; then
+    printf '%s\n' "root's pin of the fleet trust key is not usable ($FLEET_TRUST_PIN_WHY), so $trust was not touched" >&2
+    return 1
+  fi
+  if [[ "$FLEET_TRUST_PIN" != "$have" ]]; then
+    printf '%s\n' "the key in $trust is not the fleet trust key root pinned in $pin, so nothing was changed, and root will not vouch for that key or sign with it. Every paired node trusts the pinned key. Put that key back from a backup set: curl -fsSL https://get.aperire.one | bash -s -- --restore --from <backup set>. To start a new fleet key on purpose, move $FTS_LEAF aside and run the pairing grant with --new-fleet-keys, which pins the key it makes, then pair every node again." >&2
+    return 1
+  fi
+  return 0
+}
 
 # ── the pure part ────────────────────────────────────────────────────────
 
@@ -214,6 +346,27 @@ fts_render_meta() {
 # Puts this host's trust file in the shape above. Prints one line per thing
 # it did or found. Returns 0 when the file is in that shape (or there is no file), 1 when it
 # could not be put there; what it says names why.
+# fts_pin_only <repo> <state-file.py>
+# Root's pin on its own (#1008), ahead of every check the split makes about
+# accounts and groups: a host whose split refuses on one of those still gets
+# its pin, so the fingerprint and model pushes keep working. Reads the trust
+# file the same safe way the split does. 0 when there is nothing to pin (no
+# file, or no usable key in it, which the split itself reports) or the pin is
+# settled; 1, with the reason on stderr, when fts_pin_settle refuses.
+fts_pin_only() {
+  local repo="$1" tool="$2" trust out rc_read rc_render
+  trust="$repo/dashboard/config/$FTS_LEAF"
+  [[ -e "$trust" || -L "$trust" ]] || return 0
+  [[ -r "$tool" ]] || return 0
+  # The key crosses from the read into the render on a pipe; only the public
+  # half comes out, and only from a render that found a usable key (exit 0).
+  out="$(python3 -I "$tool" read "$trust" --root "$repo/dashboard" 2>/dev/null | fts_render 2>/dev/null
+         echo "rc=${PIPESTATUS[0]}:${PIPESTATUS[1]}")"
+  rc_read="${out##*rc=}"; rc_render="${rc_read#*:}"; rc_read="${rc_read%%:*}"
+  [[ "$rc_read" == 0 && "$rc_render" == 0 ]] || return 0
+  fts_pin_settle "$(sed -n 's/^public_key: //p' <<<"$out")" "$trust"
+}
+
 fts_converge() {
   local repo="$1" dash="$2" pubgrp="$3" tool="$4"
   local cfg="$repo/dashboard/config" trust pub dash_uid dash_gid pub_gid work rc=0 rc_read rc_render
@@ -224,6 +377,8 @@ fts_converge() {
     return 0
   fi
   [[ -r "$tool" ]] || { printf '%s\n' "state-file.py is not at $tool, so $trust was not touched" >&2; return 1; }
+  # Root's pin first, before any check about accounts or groups (#1008).
+  fts_pin_only "$repo" "$tool" || return 1
   if ! dash_uid="$(id -u "$dash" 2>/dev/null)" || ! dash_gid="$(id -g "$dash" 2>/dev/null)"; then
     printf '%s\n' "the dashboard account '$dash' does not exist here, so $trust was not touched" >&2
     return 1
@@ -250,6 +405,13 @@ fts_converge() {
   expect="$t_dev:$t_ino"
   case "$rc_render" in
     0)
+      # Root's pin first (#1008), ahead of the public file and the narrowing
+      # gate, so a host on an older Advisor is pinned too. A key that is not
+      # the pinned one makes no public file: the Advisor would follow it.
+      if ! fts_pin_settle "$(sed -n 's/^public_key: //p' "$work/pub")" "$trust"; then
+        rm -rf -- "$work"
+        return 1
+      fi
       if ! python3 -I "$tool" plant "$pub" "" "$pub_gid" "$FTS_PUB_MODE" --stdin --root "$repo/dashboard" < "$work/pub"; then
         rm -rf -- "$work"
         printf '%s\n' "could not write $pub, so $trust was left as it was" >&2
@@ -311,21 +473,38 @@ fts_converge() {
   return "$rc"
 }
 
-# fts_fingerprint <trust> <pub>: owner, group, mode and content hash of the
-# public file, and owner, group and mode of the key file. Metadata only for
-# the key file, so its bytes are never read here.
+# fts_fingerprint <trust> <pub> [<pin>]: owner, group, mode and content hash
+# of the public file (and of root's pin, when named), and owner, group and
+# mode of the key file. Metadata only for the key file, so its bytes are
+# never read here.
 fts_fingerprint() {
   local f out=""
   for f in "$1" "$2"; do
     out+="$(stat -c '%u:%g:%a:%F' -- "$f" 2>/dev/null || printf 'absent');"
   done
   out+="$(sha256sum -- "$2" 2>/dev/null | cut -d' ' -f1)"
+  if [[ -n "${3:-}" ]]; then
+    out+=";$(stat -c '%u:%g:%a:%F' -- "$3" 2>/dev/null || printf 'absent');$(sha256sum -- "$3" 2>/dev/null | cut -d' ' -f1)"
+  fi
   printf '%s' "$out"
 }
 
 # Run directly, or be sourced. ${BASH_SOURCE[0]} != $0 when sourced.
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   set -uo pipefail
+  # Run as root, the environment chooses no path (#1206): every APERIRE_*
+  # variable is dropped except the one a root caller passes on purpose:
+  #   APERIRE_INSTALL_TREE  get-aperire.sh names the tree a staged copy serves (#764)
+  # Only here, where this file is the program. Sourced, it leaves the
+  # caller's environment to the caller, and each root program that sources
+  # it drops its own first. An account id(1) says is not root keeps them
+  # all, which is what every suite is. id(1) at a fixed path, never bash's
+  # $EUID (#1109).
+  if ! [[ "$(/usr/bin/id -u 2>/dev/null)" =~ ^[1-9][0-9]*$ ]]; then
+    for _v in $(compgen -e); do
+      case "$_v" in APERIRE_INSTALL_TREE) ;; APERIRE_*) unset "$_v" ;; esac
+    done
+  fi
   FTS_SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   # The install: the one APERIRE_INSTALL_TREE names when root runs a copy the
   # bootstrap staged (--run fleet-trust-split), else this checkout. --repo wins.
@@ -340,6 +519,14 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     esac
   done
   [[ $EUID -eq 0 ]] || { printf 'error: run it as root: sudo bash %s\n' "$0" >&2; exit 2; }
+  # Root's pin first (#1008), before anything below can refuse on an account
+  # or a group: those refusals are about the split, not about the key.
+  if (( ! FTS_DRY )); then
+    FTS_PIN_RC=0
+    FTS_PIN_OUT="$(fts_pin_only "$FTS_REPO" "$FTS_SELF/state-file.py" 2>&1)" || FTS_PIN_RC=$?
+    [[ -n "$FTS_PIN_OUT" ]] && printf '%s\n' "$FTS_PIN_OUT"
+    (( FTS_PIN_RC == 0 )) || exit 1
+  fi
   # shellcheck source=scripts/fleet-trust-perms.sh
   # shellcheck disable=SC1091  # resolved at runtime, beside this file
   . "$FTS_SELF/fleet-trust-perms.sh" || exit 2
@@ -372,7 +559,7 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
     || { printf 'error: the dashboard account %s and the Advisor account %s share no group, so no public file could be read by both\n' "$FTS_DASH" "$FTS_ADV" >&2; exit 2; }
   read -r _ FTS_GROUP _ <<<"$FTS_PLAN"
   [[ -n "$FTS_GROUP" ]] || { printf 'error: no group for the public file\n' >&2; exit 2; }
-  FTS_BEFORE="$(fts_fingerprint "$FTS_REPO/dashboard/config/$FTS_LEAF" "$FTS_REPO/dashboard/config/$FTS_PUB_LEAF")"
+  FTS_BEFORE="$(fts_fingerprint "$FTS_REPO/dashboard/config/$FTS_LEAF" "$FTS_REPO/dashboard/config/$FTS_PUB_LEAF" "$(fts_pin_file)")"
   if (( FTS_DRY )); then
     printf 'would split %s/dashboard/config/%s: key %s:%s %s, public file root:%s %s\n' \
       "$FTS_REPO" "$FTS_LEAF" "$FTS_DASH" "$(id -gn "$FTS_DASH")" "$FTS_KEY_MODE" "$FTS_GROUP" "$FTS_PUB_MODE"
@@ -381,8 +568,8 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   FTS_OUT="$(fts_converge "$FTS_REPO" "$FTS_DASH" "$FTS_GROUP" "$FTS_SELF/state-file.py" 2>&1)"; FTS_RC=$?
   # Quiet when nothing moved: an update runs this every time, and a line
   # that says the same thing on every run is a line nobody reads.
-  if (( FTS_RC == 0 )) && [[ "$FTS_OUT" != *"nothing to split"* && "$FTS_OUT" != *"not yet narrowed"* ]] \
-     && [[ "$(fts_fingerprint "$FTS_REPO/dashboard/config/$FTS_LEAF" "$FTS_REPO/dashboard/config/$FTS_PUB_LEAF")" == "${FTS_BEFORE:-}" ]]; then
+  if (( FTS_RC == 0 )) && [[ -z "${FTS_PIN_OUT:-}" ]] && [[ "$FTS_OUT" != *"nothing to split"* && "$FTS_OUT" != *"not yet narrowed"* ]] \
+     && [[ "$(fts_fingerprint "$FTS_REPO/dashboard/config/$FTS_LEAF" "$FTS_REPO/dashboard/config/$FTS_PUB_LEAF" "$(fts_pin_file)")" == "${FTS_BEFORE:-}" ]]; then
     printf '%s\n' "fleet-trust.yaml is already in shape, nothing changed"
   else
     printf '%s\n' "$FTS_OUT"

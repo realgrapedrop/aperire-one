@@ -291,7 +291,11 @@ export async function appendFleetRecord(
   }
   return {
     ok: false, reason: 'unreachable',
-    detail: `“${node.label}” did not answer, so its Advisor has no copy of this.`,
+    // #1209: a token this host could not read is not a node that did not
+    // answer; the proxy's sentence names the file and what was not sent.
+    detail: answer.error === 'token_unreadable' && answer.detail
+      ? `${answer.detail.replace(/[.\s]+$/, '')}, so its Advisor has no copy of this.`
+      : `“${node.label}” did not answer, so its Advisor has no copy of this.`,
   };
 }
 

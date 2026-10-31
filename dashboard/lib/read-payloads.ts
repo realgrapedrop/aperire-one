@@ -43,6 +43,7 @@ import {
 } from './amendments.js';
 import type { CountedAmendmentSupport } from './amendment-votes.js';
 import { buildPublisherSummary, type ValidatorListSiteEntry } from './publishers.js';
+import { parseInstallDir, parseRelayBuild, parseRunAs } from './peer-install-facts.js';
 
 type AnyObj = Record<string, unknown>;
 
@@ -53,7 +54,8 @@ export interface NodeStatusInput {
   info: AnyObj | null;
   /** snapshot.domain_status?.domain ?? null */
   domain: string | null;
-  /** `os.hostname()` from the call site, not read here — `node:os` stays
+  /** The node's machine (server.ts's hostnameForAlerts(): override, relay's
+   *  host, then `os.hostname()`), from the call site, not read here. `node:os` stays
    *  out of lib/ so this builder remains a pure function of its input (the
    *  same reason `nowMs` and `clock` are passed in rather than sampled). */
   hostName: string | null;
@@ -96,6 +98,16 @@ export interface NodeStatusInput {
    *  by a call site that has no reader, and an omitted member is `unknown` to
    *  whoever reads it, which is exactly what it is. */
   release?: ReleaseIdentityWire;
+  /** This host's relay build, as the System tab's own Relay row reads it
+   *  (the last relay push's `relay_version`, already commit-shaped or null).
+   *  Passed in like `deployRef`: this builder reads no state of its own.
+   *  Omitted is null, "not reported" (#593). */
+  relayVersion?: string | null;
+  /** The directory this dashboard is installed in, and the account it runs
+   *  as, so a fleet aggregator can print this box's real path (#615).
+   *  Omitted is null. */
+  installDir?: string | null;
+  runAs?: string | null;
 }
 
 // Number(), not a typeof==='number' guard — matches the project's own
@@ -195,6 +207,13 @@ export function buildNodeStatusFields(input: NodeStatusInput): Omit<NodeStatusRe
     // unknown mean the same thing to a consumer, and only one of them adds
     // bytes to every poll on hosts that never wired it.
     ...(input.release ? { release: input.release } : {}),
+    // Re-checked on the way out as well as on the way in: this route is the
+    // wire, and a caller that handed in an unchecked string must not get it
+    // onto the wire as a build, a path or an account. Null, never `''` and
+    // never a placeholder, for the same reason deploy_ref above is.
+    relay_version: parseRelayBuild(input.relayVersion),
+    install_dir: parseInstallDir(input.installDir),
+    run_as: parseRunAs(input.runAs),
   };
 }
 
@@ -908,10 +927,14 @@ export interface FleetRosterInputNode {
  * empty". A host with no registry has no standing to make a claim about a
  * fleet.
  *
- * `selfLabel` is what this host calls itself when there is no registry to
- * name it (deriveSelfLabel's answer, which falls back to the hostname). When
- * there IS a registry the roster's own self row wins, because the label a
- * fleet knows a host by is the one every other surface in that fleet uses.
+ * `selfLabel` is what this host calls itself: server.ts's selfDisplayLabel,
+ * the one order the alerts use as well (the name its aggregator knows it by,
+ * then its registry row, then the host's short name). It names this host's
+ * row and `self_label` whether or not there is a registry, so one node has
+ * one name on the roster and in its alerts (#1240): a paired node whose
+ * fleet.yaml still holds the name it had before it joined must not be listed
+ * under that name. Only a caller with nothing to name it by passes '', and
+ * then the registry row's own label stands.
  */
 export function buildFleetRosterFields(
   rows: FleetRosterInputNode[] | null,
@@ -939,10 +962,10 @@ export function buildFleetRosterFields(
   const selfRow = rows.find((r) => r.self);
   return {
     registered: true,
-    self_label: selfRow?.label ?? selfLabel,
+    self_label: selfLabel || selfRow?.label || '',
     now_ms: nowMs,
     nodes: rows.map((r) => ({
-      label: r.label,
+      label: r.self && selfLabel ? selfLabel : r.label,
       role: typeof r.role === 'string' ? r.role : '',
       self: r.self,
       verdict: r.verdict,

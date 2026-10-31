@@ -138,6 +138,32 @@ set -uo pipefail
 
 [[ $EUID -eq 0 ]] || { echo "refused: must run as root; reading a sealed credential and reloading systemd are root-only" >&2; exit 1; }
 
+# As root the environment chooses no path or program (#1206): every
+# APERIRE_* variable is dropped except the ones a root caller passes on
+# purpose:
+#   APERIRE_INSTANCE       this program's own unit sets it (advisord-credcheck-lib.sh);
+#                          checked below
+#   APERIRE_ADVISOR_STATE  the same unit sets it, to the instance's advisor/state;
+#                          every write there is by descriptor (state-file.py)
+# An account id(1) says is not root keeps them all, which is what every
+# suite is. id(1) at a fixed path, never bash's $EUID (#1109).
+if ! [[ "$(/usr/bin/id -u 2>/dev/null)" =~ ^[1-9][0-9]*$ ]]; then
+  for _v in $(compgen -e); do
+    case "$_v" in APERIRE_INSTANCE|APERIRE_ADVISOR_STATE) ;; APERIRE_*) unset "$_v" ;; esac
+  done
+fi
+# The instance names a unit file and a drop-in path, so it is held to the
+# rule advisor-owner-lib.sh holds it to, under the C locale (under
+# en_US.UTF-8, [a-z] matches é), and anything else is refused.
+instance_name_ok() { # $1 = a name; [a-z] is held to ASCII, whatever the locale
+  local LC_ALL=C
+  [[ "$1" =~ ^[a-z0-9][a-z0-9-]{0,30}$ && "$1" != credcheck && "$1" != credcheck-* ]]
+}
+if [[ -n "${APERIRE_INSTANCE:-}" ]] && ! instance_name_ok "$APERIRE_INSTANCE"; then
+  printf 'refused: APERIRE_INSTANCE=%q is not an instance name (a-z, 0-9 and -, at most 31, not credcheck)\n' "$APERIRE_INSTANCE" >&2
+  exit 2
+fi
+
 UNIT_DIR="${APERIRE_UNIT_DIR:-/etc/systemd/system}"
 ADVISORD_UNIT="aperire-advisord${APERIRE_INSTANCE:+-$APERIRE_INSTANCE}"
 UNIT="$UNIT_DIR/${ADVISORD_UNIT}.service"

@@ -86,6 +86,12 @@ Options, accepted anywhere after the subcommand:
   --meta        read prints one line first, "<uid> <gid> <octal mode>", taken
                 from the same descriptor the bytes come from, so a caller
                 that must judge the file and use it judges the file it read.
+  --meta-acl    --meta with two fields added: "acl G" when the descriptor
+                carries a POSIX ACL with a named user or group entry, G
+                being the owning group's own permission from it (the mode's
+                group bits are then the mask), or "noacl -". For a caller
+                that writes a new file in the old one's place and has to say
+                what does not come across (#1295).
   --meta-ino    --meta with the descriptor's device and inode added:
                 "<uid> <gid> <octal mode> <st_dev> <st_ino>". For a caller
                 that judges a file by what it reads and then re-owns it: it
@@ -716,6 +722,37 @@ def own_many(uid, gid, mode, root, owner, data, listing=None):
     return 0
 
 
+META_ACL = False
+
+
+def _fd_named_acl(fd):
+    """None when the descriptor's access ACL has no named user or group entry,
+    else the owning group's own permission (0-7) from that ACL.
+
+    The xattr is a 4-byte version, then 8-byte entries: a 16-bit tag, a
+    16-bit permission and a 32-bit id. Tag 2 is a named user, 8 a named
+    group, 4 the owning group. With a named entry present, the group bits
+    stat reports are the mask, not the owning group's permission, so a
+    caller that writes the mode onto a file without the ACL needs this one.
+    No xattr, or a filesystem without them, is no ACL.
+    """
+    try:
+        raw = os.getxattr(fd, "system.posix_acl_access")
+    except OSError:
+        return None
+    named = False
+    group_obj = None
+    for off in range(4, len(raw) - 7, 8):
+        tag = int.from_bytes(raw[off:off + 2], "little")
+        if tag in (2, 8):
+            named = True
+        elif tag == 4:
+            group_obj = int.from_bytes(raw[off + 2:off + 4], "little") & 7
+    if not named or group_obj is None:
+        return None
+    return group_obj
+
+
 def read_file(path, root, owner, limit, meta=False, file_uids=None, ino=False):
     """Print a file's bytes, having proved it is the file and not a link to one.
 
@@ -748,6 +785,7 @@ def read_file(path, root, owner, limit, meta=False, file_uids=None, ino=False):
                   % (path, st.st_uid, ",".join(str(u) for u in sorted(file_uids))))
         if st.st_size > limit:
             _fail("%s is %d bytes, past the %d this will read" % (path, st.st_size, limit))
+        named_acl = _fd_named_acl(fd) if META_ACL else None
         out = b""
         while True:
             chunk = os.read(fd, 65536)
@@ -765,6 +803,9 @@ def read_file(path, root, owner, limit, meta=False, file_uids=None, ino=False):
         line = "%d %d %o" % (st.st_uid, st.st_gid, stat.S_IMODE(st.st_mode))
         if ino:
             line += " %d %d" % (st.st_dev, st.st_ino)
+        if META_ACL:
+            # "acl <owning group's own permission>", or "noacl -".
+            line += " noacl -" if named_acl is None else " acl %d" % named_acl
         sys.stdout.buffer.write((line + "\n").encode())
     sys.stdout.buffer.write(out)
     sys.stdout.buffer.flush()
@@ -1711,6 +1752,19 @@ def mkdir_one(path, uid, gid, mode, root, owner, only_if_new=False):
             # the shared corpus has a group write and a setgid bit that a
             # mode set here would take back (#248).
             return 0
+        if created:
+            # os.mkdir() succeeded, so this call made a directory at the name,
+            # but the name was open to whoever can write the parent until the
+            # descriptor above was taken: a directory of theirs renamed into
+            # place in that gap has the same shape (a real directory, the same
+            # inode on both looks) and would be re-owned below. What this call
+            # made is owned by this process and has nothing in it.
+            if now.st_uid != os.geteuid():
+                _fail("%s is not owned by the account that made it; it was "
+                      "swapped while it was being created, nothing was changed" % path)
+            if os.listdir(fd):
+                _fail("%s is not empty although it was just made; it was "
+                      "swapped while it was being created, nothing was changed" % path)
         if uid_n != -1 or gid_n != -1:
             os.fchown(fd, uid_n, gid_n)
         if mode:
@@ -1729,7 +1783,7 @@ USAGE = ("usage: state-file.py own      PATH UID GID MODE   [--root DIR] [--owne
          "       state-file.py copy-tree SRC DST UID GID     --root DIR  [--owner UID] [--judge-root]\n"
          "       state-file.py mkdir    PATH UID GID MODE   [--root DIR] [--owner UID] [--mode-if-new]\n"
          "       state-file.py read     PATH                [--root DIR] [--owner UID] [--max N]\n"
-         "                                                  [--meta|--meta-ino] [--file-uid UID,UID]\n"
+         "                                                  [--meta|--meta-ino|--meta-acl] [--file-uid UID,UID]\n"
          "       state-file.py ancestors PATH               [--root DIR] [--owner UID] [--judge-root]\n"
          "       state-file.py unlink   PATH                 --root DIR  [--owner UID]\n"
          "       state-file.py remove-tree PATH              --root DIR  [--owner UID]\n"
@@ -1759,6 +1813,10 @@ def _options(argv):
         elif a == "--meta-ino":
             meta = True
             ino = True
+        elif a == "--meta-acl":
+            global META_ACL
+            meta = True
+            META_ACL = True
         elif a == "--mode-if-new":
             if_new = True
         elif a == "--judge-root":
@@ -1815,6 +1873,8 @@ def main(argv):
         _fail("--expect is for own only\n\n%s" % USAGE)
     if ino and action != "read":
         _fail("--meta-ino is for read only\n\n%s" % USAGE)
+    if META_ACL and (action != "read" or ino):
+        _fail("--meta-acl is for read only, without --meta-ino\n\n%s" % USAGE)
     if JUDGE_ROOT and action not in ("ancestors", "copy-tree", "own-many"):
         _fail("--judge-root is for ancestors, copy-tree and own-many only\n\n%s" % USAGE)
 

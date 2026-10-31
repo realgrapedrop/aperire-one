@@ -20,6 +20,7 @@
 //     bundle_path: "…/knowledge-7.tar.gz",
 //     private_key: "<b64url seed>",
 //     replace_fleet_corpus: true | false,
+//     withdraw_all: true | false,   (an empty corpus on purpose, #1219)
 //     targets: [{label, origin, token}] }
 //
 // The private key signs and is never logged or forwarded. Per-target result
@@ -81,6 +82,7 @@ const guarded = await pushGuarded(job.targets || [], JSON.stringify({ bundle, ma
   paths: manifest.files.map((f) => f.path),
   bundleDir: dirname(job.bundle_path),
   replace: job.replace_fleet_corpus === true,
+  withdrawAll: job.withdraw_all === true,
 });
 if (guarded.refusal) {
   console.error(guarded.refusal);

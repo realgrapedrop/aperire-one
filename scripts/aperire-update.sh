@@ -1037,7 +1037,7 @@ stage_restored_tree() {
     rm -rf -- "$stage_out" && mkdir -m 0755 -- "$stage_out" || exit 2
     rd_stage_tree "$INSTALL_DIR" "$stage_out" || {
       # 6: the account check could not run, which is not a finding about a file (#1111).
-      why="${RD_REFUSED_WHY:-}"; rm -rf -- "$stage_out"; [[ "$why" == accounts ]] && exit 6; exit 1
+      why="${RD_REFUSED_WHY:-}"; rm -rf -- "$stage_out"; [[ "$why" == accounts ]] && exit 6; [[ "$why" == python3 ]] && exit 7; exit 1
     }
   ) || return $?
   chmod 0755 "$WORK_DIR"
@@ -1462,6 +1462,9 @@ verb_rollback() {
     fact step "failed"
     fact rolled_back "$rolled"
     journal failed "root would not run the restored tree's installers"
+    if [[ $strc -eq 7 ]]; then
+      die 6 "the tree came back, and root would not run its installers: this host has no python3 at /usr/bin or /bin, and the check on every file runs in it, so no file in it was judged. Nothing was installed from it. $INSTALL_DIR holds the earlier release and $rolled holds the one you left; install python3 (sudo apt-get install -y python3), then run the rollback again before restarting anything."
+    fi
     if [[ $strc -eq 6 ]]; then
       die 6 "the tree came back, and root would not run its installers: the account check could not run (systemd did not answer), so no file in it was judged, and nothing says it changed. Nothing was installed from it. $INSTALL_DIR holds the earlier release and $rolled holds the one you left; run the rollback again to retry the check before restarting anything."
     fi

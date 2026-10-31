@@ -6032,6 +6032,41 @@ func (s *server) execute(w http.ResponseWriter, r *http.Request) {
 		steps = executorSteps(rb, params, req.Target, len(diff.Before), st)
 	}
 
+	// An approval that will run out before this run reaches a step that
+	// needs it (#772). Refused here, before the grant is claimed, so nothing
+	// is spent and nothing on the host has moved. A merged run is held to
+	// the restart at its end, never quietly turned into a prepare on its
+	// own: running half of what the operator approved is the bug, not the
+	// fallback.
+	runStages := []string{req.Stage}
+	if chaining {
+		runStages = append(runStages, approval.StageCutover)
+	}
+	if chainingRestart {
+		runStages = append(runStages, approval.StageRestart)
+	}
+	if serr := execute.ApprovalLasts(approvalsDir, planID, fp, node, runStages, steps, time.Now()); serr != nil {
+		release()
+		var short *execute.ShortApprovalError
+		data := map[string]any{"error": serr.Error()}
+		if errors.As(serr, &short) {
+			data = short.Data()
+		}
+		data["door"] = "run"
+		if l, lerr := ledger.Open(s.ledgerPath()); lerr == nil && l != nil {
+			l.AppendAs(ledger.KindRefusal, planID,
+				"run refused: the approval would run out before the run reached its last step that needs it",
+				data, serviceActor("executor"))
+		}
+		resp := map[string]any{"error": serr.Error(), "reason": "approval_too_short"}
+		if short != nil {
+			resp["expires_in"] = int(short.Left.Seconds())
+			resp["needs_seconds"] = int(short.Need.Seconds())
+		}
+		writeJSON(w, http.StatusConflict, resp)
+		return
+	}
+
 	creds, err := host.LoadCredentials(filepath.Join(s.stateDir, "credentials.json"))
 	if err != nil {
 		release()

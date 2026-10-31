@@ -170,14 +170,23 @@ const code = await new Promise((resolve) => {
     end(3);
   });
 
+  // #849: set once `pair_done` has gone out, to the exit code the pairing
+  // itself earned. From then on the exchange is finished, and the hub closing
+  // the socket (at once, in lingerPairing, often before the beat below runs
+  // out) is the end of it rather than a failure. The answer is decided by the
+  // shell's report, never by which of the two sides closed first.
+  let finished = null;
+
   ws.on('error', (err) => {
     if (settled) return;
+    if (finished !== null) { end(finished); return; }
     emit({ ev: 'failed', detail: `the connection to the aggregator failed: ${err.message}` });
     end(1);
   });
 
   ws.on('close', () => {
     if (settled) return;
+    if (finished !== null) { end(finished); return; }
     emit({ ev: 'failed', detail: 'the aggregator closed the connection without finishing the exchange' });
     end(1);
   });
@@ -518,10 +527,12 @@ const code = await new Promise((resolve) => {
           ok: Boolean(report.ok),
           wrote: Array.isArray(report.wrote) ? report.wrote.slice(0, 16).map(String) : [],
         }));
+        finished = report.ok ? 0 : 1;
         emit({ ev: 'closed' });
         // A beat for the frame to leave before the socket goes, and the beat
-        // is bounded: nothing after this waits on the aggregator.
-        setTimeout(() => end(report.ok ? 0 : 1), 250);
+        // is bounded: nothing after this waits on the aggregator. A hub that
+        // closes first ends it sooner, with the same code (#849).
+        setTimeout(() => end(finished), 250);
         return;
       }
 

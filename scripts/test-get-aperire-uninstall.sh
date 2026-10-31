@@ -31,7 +31,8 @@
 #      handover happened, and the old script exited 2. So the current
 #      uninstall.sh is fetched, checked whole, installed over the old one and
 #      run. Asserted in several directions, because most of them are silent: a
-#      current install must NOT be overwritten and must fetch nothing, and a
+#      current install must NOT be overwritten and must fetch no uninstall.sh
+#      unless a newer release is on offer (8 below), and a
 #      copy that arrives short, stale or not at all must be refused with
 #      nothing run.
 #
@@ -41,6 +42,16 @@
 #      when its sha256 is the signed uninstaller_sha256. A changed download, a
 #      release signed by another key or by nobody, and a host with no key are
 #      each refused with nothing run.
+#
+#   8. A wipe runs the newest uninstaller when it is newer (#1027). A host a
+#      release behind carries an uninstall.sh that lacks the removals the next
+#      release added, so the one-line wipe left them (the verified-images
+#      marker on a lab host, 2026-10-12). Root compares the signed publish date
+#      of the release on offer with this host's kept release and high-water
+#      mark, and runs the newer uninstall.sh only when it is strictly newer and
+#      its bytes are the ones that release signed. Not newer, the install's own
+#      runs; served and unverifiable, nothing runs; not served, the install's
+#      own runs with a warning.
 #
 #   6. Root never runs the checkout's own uninstall.sh (#943). The bootstrap
 #      stages it, with the rest of the install's scripts, against root's own
@@ -164,7 +175,7 @@ make_install "$TMP/op/other-checkout" "the-lookalike"
 # promises never to do, so it is recorded and refused.
 cat > "$TMP/bin/curl" <<EOF
 #!/usr/bin/env bash
-out=""; url=""
+out=""; url=""; all=" \$* "
 while [[ \$# -gt 0 ]]; do
   case "\$1" in
     -o) out="\$2"; shift 2 ;;
@@ -172,6 +183,11 @@ while [[ \$# -gt 0 ]]; do
     *) shift ;;
   esac
 done
+# Who asked, and how (#1027 review): the fake sudo is the only thing that sets
+# SUDO_USER, so a fetch with it set is root's; and whether https was enforced.
+who=login; [[ -n "\${SUDO_USER:-}" ]] && who=root
+proto="\$(sed -nE 's/.* --proto ([^ ]+) .*/\1/p' <<<"\$all")/\$(sed -nE 's/.* --proto-redir ([^ ]+) .*/\1/p' <<<"\$all")"
+printf '%s\n' "\$who \$proto \$out \$url" >> "$TMP/state/curl-how"
 if [[ -n "\$out" ]]; then
   case "\$url" in
     */release.json|*/release-*.json|*/release-*.json.sig)
@@ -196,11 +212,14 @@ EOF
 # the endpoint serves. A row bends one thing at a time:
 #   state/signed-uninstaller  the file whose sum is signed, when it is not the
 #                             one served (a changed download)
+#   state/served-at           the publish date it signs, 2026-10-01T00:00:00Z
+#                             when not set (#1027)
 #   state/sig-mode            stranger (another key signs), tampered (the
 #                             signed text changes after signing), missing (no
 #                             .sig), unsigned (no release-<sha>.json at all),
 #                             other-archive (a genuine signed release for an
-#                             archive release.json does not name)
+#                             archive release.json does not name), no-date (a
+#                             signed release with no publish date, #1027)
 cat > "$TMP/fake-release" <<EOF
 #!/usr/bin/env bash
 url="\$1"; out="\$2"; name="\${url##*/}"
@@ -210,8 +229,21 @@ signed="$TMP/state/signed-uninstaller"
 [[ -f "\$signed" ]] || exit 22
 unish="\$(sha256sum "\$signed" | cut -d' ' -f1)"
 mode="\$(cat "$TMP/state/sig-mode" 2>/dev/null || true)"
+at="\$(cat "$TMP/state/served-at" 2>/dev/null || echo 2026-10-01T00:00:00Z)"
+# An endpoint that changes its answer between two reads: once one read has
+# fetched its signature, every fetch after it signs state/served-at-next.
+# An endpoint that stops answering after one whole read.
+if [[ -f "$TMP/state/gone-after-first" ]]; then
+  [[ ! -f "$TMP/state/served-once" ]] || exit 22
+  [[ "\$name" != *.sig ]] || : > "$TMP/state/served-once"
+fi
+if [[ -f "$TMP/state/served-at-next" ]]; then
+  if [[ -f "$TMP/state/served-once" ]]; then at="\$(cat "$TMP/state/served-at-next")"
+  elif [[ "\$name" == *.sig ]]; then : > "$TMP/state/served-once"; fi
+fi
 json() { # \$1 = the archive it names
-  printf '{\n  "tag": "snapshot-fixture",\n  "commit": "0a1b2c3",\n  "sha256": "%s",\n  "published_at": "2026-10-01T00:00:00Z",\n  "uninstaller_sha256": "%s"\n}\n' "\$1" "\$unish"
+  printf '{\n  "tag": "snapshot-fixture",\n  "commit": "0a1b2c3",\n  "sha256": "%s",\n  "published_at": "%s",\n  "uninstaller_sha256": "%s"\n}\n' "\$1" "\$at" "\$unish" \
+    | if [[ "\$mode" == no-date ]]; then grep -v published_at; else cat; fi
 }
 doc="\$arch"
 [[ "\$mode" != other-archive ]] || doc=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
@@ -250,9 +282,11 @@ done
 [[ \$# -eq 0 ]] && exit 0
 # The one constant directory root reads its checking libraries from is mapped
 # to the fixture's, here and only here: the product has no override for it.
+# So is the release store root reads this host's floor from (#1027).
 args=( "\$@" )
 for i in "\${!args[@]}"; do
   [[ "\${args[\$i]}" == /usr/local/lib/aperire ]] && args[\$i]="\${FAKE_ROOTLIB_MAP:-/nonexistent}"
+  [[ "\${args[\$i]}" == /var/lib/aperire/release ]] && args[\$i]="\${FAKE_STORE_MAP:-/nonexistent}"
 done
 set -- "\${args[@]}"
 printf '%s\n' "\$*" | cut -c1-200 >> "$TMP/state/sudo-exec"
@@ -271,23 +305,6 @@ if [[ -f "$TMP/state/tamper-before-stage" ]]; then
       done < "$TMP/state/tamper-before-stage"
       rm -f "$TMP/state/tamper-before-stage"
       break
-    fi
-  done
-fi
-# state/tamper-before-install and state/tamper-after-install: the login's own
-# file in /tmp is rewritten just before root copies it, or just after.
-if [[ -f "$TMP/state/tamper-before-install" || -f "$TMP/state/tamper-after-install" ]]; then
-  args=( "\$@" )
-  for i in "\${!args[@]}"; do
-    if [[ "\${args[\$i]}" == 0755 && "\${args[\$((i - 1))]}" == -m && "\${args[\$((i + 1))]}" == /*aperire-uninstall.*.sh ]]; then
-      src="\${args[\$((i + 1))]}"
-      if [[ -f "$TMP/state/tamper-before-install" ]]; then
-        cp "$TMP/state/tampered-uninstall" "\$src"
-        exec env -i PATH="\$PATH" "\$@"
-      fi
-      env -i PATH="\$PATH" "\$@" || exit \$?
-      cp "$TMP/state/tampered-uninstall" "\$src"
-      exit 0
     fi
   done
 fi
@@ -336,8 +353,9 @@ run_sut() {
       HOME="$RUN_HOME" \
       TERM=dumb \
       APERIRE_UNINSTALL_GET_SELF_URL="https://example.invalid/uninstall" \
-      APERIRE_UNINSTALL_GET_SCRIPT_URL="https://example.invalid/uninstall.sh" \
+      ${LOGIN_SCRIPT_URL_FOR_RUN:+APERIRE_UNINSTALL_GET_SCRIPT_URL="$LOGIN_SCRIPT_URL_FOR_RUN"} \
       FAKE_ROOTLIB_MAP="${ROOTLIB_FOR_RUN:-$TMP/rootlib}" \
+      FAKE_STORE_MAP="${STORE_FOR_RUN:-$TMP/no-store}" \
       ${LOGIN_LIBVARS_FOR_RUN:+APERIRE_UNINSTALL_GET_TESTING=1 APERIRE_UNINSTALL_GET_ROOT_LIB_DIR="$TMP/rootlib"} \
       APERIRE_RELEASE_DIGESTS="${RECORD_FOR_RUN:-$TMP/no-release-record}" \
       ${APERIRE_LEAK:+APERIRE_LEAK="$APERIRE_LEAK"} \
@@ -551,11 +569,11 @@ if grep -q 'uninstall from=the-fetched-one args=--wipe --yes' "$TMP/state/calls"
 else
   bad "the fetched copy is what runs" "$(cat "$TMP/state/calls" 2>/dev/null)"; fi
 if grep -q "predates the keep/wipe question" <<<"$out" \
-   && grep -q 'using the current one from https://example.invalid/uninstall.sh' <<<"$out"; then
+   && grep -q 'using the current one from https://get.aperire.one/uninstall.sh' <<<"$out"; then
   ok "and it says so on screen, with the address it took it from"
 else
   bad "the replacement is announced" "$(tail -10 <<<"$out")"; fi
-if grep -q 'script-fetch https://example.invalid/uninstall.sh' "$TMP/state/curl-calls" 2>/dev/null; then
+if grep -q 'script-fetch https://get.aperire.one/uninstall.sh' "$TMP/state/curl-calls" 2>/dev/null; then
   ok "the uninstaller is fetched from beside this script, not from a guess"
 else
   bad "the uninstaller is fetched" "$(cat "$TMP/state/curl-calls" 2>/dev/null)"; fi
@@ -594,10 +612,12 @@ if ! grep -q 'script-fetch' "$TMP/state/curl-calls" 2>/dev/null; then
   ok "and nothing is downloaded for it, which is what the plan claims"
 else
   bad "a current install downloads nothing" "$(cat "$TMP/state/curl-calls")"; fi
-if grep -q 'downloads  nothing' <<<"$out"; then
-  ok "and the plan says so"
+# Since #1027 the plan says it reads the signed release first, because a newer
+# release's uninstall.sh is the one that knows that release's removals.
+if grep -q 'downloads  the signed release.json, to see whether it is newer, and only then the' <<<"$out"; then
+  ok "and the plan says it reads only the signed release, and the uninstall.sh only when that is newer"
 else
-  bad "the plan says nothing is downloaded" "$(grep -F 'downloads' <<<"$out")"; fi
+  bad "the plan says what a current install downloads" "$(grep -F 'downloads' <<<"$out")"; fi
 
 # A copy that arrives short is refused, and NOTHING runs. This is the whole
 # reason uninstall.sh carries a sentinel now: it is a flat script, so a
@@ -669,8 +689,8 @@ if [[ $rc -eq 0 ]] && grep -q 'uninstall from=the-fetched-one args=--wipe --yes'
   ok "signed: the fetched uninstall.sh is the one the signed release names, so it runs, and says so"
 else
   bad "a signed fetched uninstaller runs" "exit $rc: $(tail -6 <<<"$out")"; fi
-if grep -q "release-fetch https://example.invalid/release-c\{64\}\.json$" "$TMP/state/curl-calls" 2>/dev/null \
-   && grep -q "release-fetch https://example.invalid/release-c\{64\}\.json\.sig$" "$TMP/state/curl-calls" 2>/dev/null; then
+if grep -q "release-fetch https://get.aperire.one/release-c\{64\}\.json$" "$TMP/state/curl-calls" 2>/dev/null \
+   && grep -q "release-fetch https://get.aperire.one/release-c\{64\}\.json\.sig$" "$TMP/state/curl-calls" 2>/dev/null; then
   ok "  and the signed release.json and its signature were fetched under the names that never change"
 else
   bad "the signed pair is fetched by its immutable names" "$(cat "$TMP/state/curl-calls" 2>/dev/null)"; fi
@@ -761,6 +781,233 @@ if [[ "$(tail -n 1 "$REPO_DIR/uninstall.sh")" == '# --- end of uninstall.sh ---'
   ok "uninstall.sh still ends with the line this script checks for"
 else
   bad "uninstall.sh carries its sentinel" "$(tail -n 1 "$REPO_DIR/uninstall.sh")"; fi
+
+echo
+echo "── a wipe runs the newest uninstaller when it is newer (#1027) ────"
+
+# The lab failure: a host on one release, a wipe from the next one's one-liner,
+# and a removal only the next one's uninstall.sh knows (the verified-images
+# marker, #1005). The install's own uninstall.sh is current in every way the
+# probe checks, so nothing before #1027 fetched the newer one. The newest stub
+# here removes a planted marker; the installed one does not.
+mkdir -p "$TMP/var"
+plant_marker() { mkdir -p "$TMP/var/verified-images"; echo 'version=3.4.1' > "$TMP/var/verified-images/marker"; }
+serve_newest() {
+  write_uninstaller "$TMP/state/served-uninstall" "the-newest-one"
+  sed -i "2i rm -f '$TMP/var/verified-images/marker'" "$TMP/state/served-uninstall"
+}
+# This host's record, the way the install and update keep it: current naming
+# an archive, that release's signed release.json under it, and the high-water
+# mark. $2 the kept release's date, $3 the high-water date or "", $4 the key
+# that signs the kept copy.
+make_store() { # $1 = directory, $2 = kept date, $3 = high-water or "", $4 = key
+  local d="$1" arch=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  rm -rf "$d"; mkdir -p "$d/$arch"
+  printf '%s\n' "$arch" > "$d/current"
+  printf '{\n  "tag": "snapshot-kept",\n  "commit": "0a1b2c2",\n  "sha256": "%s",\n  "published_at": "%s"\n}\n' "$arch" "$2" > "$d/$arch/release.json"
+  ssh-keygen -Y sign -q -f "${4:-$TMP/keys/release}" -n aperire-release "$d/$arch/release.json" 2>/dev/null
+  [[ -z "$3" ]] || printf '%s\n' "$3" > "$d/high-water"
+  chmod 0755 "$d" "$d/$arch"; chmod 0644 "$d/current" "$d/$arch/"*; [[ -z "$3" ]] || chmod 0644 "$d/high-water"
+}
+marker_left() { [[ -f "$TMP/var/verified-images/marker" ]]; }
+nothing_ran() { ! grep -q 'uninstall from=' "$TMP/state/calls" 2>/dev/null && [[ ! -f "$TMP/state/TAMPERED-RAN" ]]; }
+
+# The guard row. Kept release and high-water a release behind the one served.
+reset_state; plant_marker; serve_newest
+make_store "$TMP/store" 2026-09-20T00:00:00Z 2026-09-20T00:00:00Z
+out="$(STORE_FOR_RUN="$TMP/store" run_sut --wipe --yes)"; rc=$?
+if [[ $rc -eq 0 ]] && grep -q 'uninstall from=the-newest-one args=--wipe --yes' "$TMP/state/calls" 2>/dev/null && ! marker_left; then
+  ok "a host a release behind: the one-line wipe runs the newer uninstall.sh, and the removal only it knows happens"
+else
+  bad "the newer uninstaller runs on an older current install" "exit $rc: $(tail -6 <<<"$out") calls=$(cat "$TMP/state/calls" 2>/dev/null)"; fi
+if ! grep -q 'from=the-real-one' "$TMP/state/calls" 2>/dev/null \
+   && grep -q "tree=$TMP/op/aperire-one .*helper=beside" "$TMP/state/where" 2>/dev/null; then
+  ok "  in place of the installed one, beside the install's staged helper, told which install it removes"
+else
+  bad "the newer copy replaces the staged one" "where=$(cat "$TMP/state/where" 2>/dev/null)"; fi
+if grep -q 'older than the release on offer (2026-10-01T00:00:00Z; this host.s newest is 2026-09-20T00:00:00Z)' <<<"$out" \
+   && grep -q 'signed by the release key: release cccccccccccc, and its uninstall.sh is the one fetched' <<<"$out"; then
+  ok "  and it says why, with both dates, and that the release key vouched for the file it ran"
+else
+  bad "the newer run is announced" "$(tail -14 <<<"$out")"; fi
+
+# A kept release root's key set does not verify is no floor, and a high-water
+# mark another account can write is none either: held the way the updater
+# holds them. Here each forged record would say "not newer".
+for shape in writable-high-water stranger-kept; do
+  reset_state; plant_marker; serve_newest
+  if [[ $shape == writable-high-water ]]; then
+    make_store "$TMP/store" 2026-09-20T00:00:00Z 2026-10-05T00:00:00Z
+    chmod 0666 "$TMP/store/high-water"
+  else
+    make_store "$TMP/store" 2026-10-05T00:00:00Z 2026-09-20T00:00:00Z "$TMP/keys/stranger"
+  fi
+  out="$(STORE_FOR_RUN="$TMP/store" run_sut --wipe --yes)"; rc=$?
+  if [[ $rc -eq 0 ]] && grep -q 'from=the-newest-one' "$TMP/state/calls" 2>/dev/null && ! marker_left; then
+    ok "a forged floor ($shape) is not believed, so the newer copy runs"
+  else
+    bad "a forged floor ($shape) is ignored" "exit $rc: $(tail -4 <<<"$out") calls=$(cat "$TMP/state/calls" 2>/dev/null)"; fi
+done
+
+# The endpoint changes its answer between the first look and the read that
+# checks the fetched bytes. The second read is the one that counts.
+reset_state; plant_marker; serve_newest
+make_store "$TMP/store" 2026-09-20T00:00:00Z ""
+echo 2026-09-01T00:00:00Z > "$TMP/state/served-at-next"
+out="$(STORE_FOR_RUN="$TMP/store" run_sut --wipe --yes)"; rc=$?
+if [[ $rc -eq 0 ]] && grep -q 'uninstall from=the-real-one' "$TMP/state/calls" 2>/dev/null \
+   && ! grep -q 'from=the-newest-one' "$TMP/state/calls" && grep -q 'on the second read' <<<"$out"; then
+  ok "a release that is newer on the first look and not on the checked read leaves the install's own uninstall.sh"
+else
+  bad "the checked read decides" "exit $rc: $(tail -5 <<<"$out") calls=$(cat "$TMP/state/calls" 2>/dev/null)"; fi
+
+# The controls: the same release, an older one replayed, and a high-water mark
+# past the release on offer. Each runs the install's own copy and fetches no
+# uninstall.sh. These go red when the date comparison is taken out.
+for shape in same replayed high-water; do
+  reset_state; plant_marker; serve_newest
+  case $shape in
+    same)       make_store "$TMP/store" 2026-10-01T00:00:00Z "" ;;
+    replayed)   make_store "$TMP/store" 2026-09-20T00:00:00Z ""; echo 2026-09-01T00:00:00Z > "$TMP/state/served-at" ;;
+    high-water) make_store "$TMP/store" 2026-09-20T00:00:00Z 2026-10-05T00:00:00Z ;;
+  esac
+  out="$(STORE_FOR_RUN="$TMP/store" run_sut --wipe --yes)"; rc=$?
+  if [[ $rc -eq 0 ]] && grep -q 'uninstall from=the-real-one args=--wipe --yes' "$TMP/state/calls" 2>/dev/null \
+     && ! grep -q 'from=the-newest-one' "$TMP/state/calls" && ! grep -q 'script-fetch' "$TMP/state/curl-calls" 2>/dev/null \
+     && grep -q 'it is not newer than the newest release this host has installed' <<<"$out"; then
+    ok "control ($shape): a release on offer that is not newer leaves the install's own uninstall.sh, and no uninstall.sh is fetched"
+  else
+    bad "control ($shape): not newer runs the installed copy" "exit $rc: $(tail -5 <<<"$out") calls=$(cat "$TMP/state/calls" 2>/dev/null) curl=$(cat "$TMP/state/curl-calls" 2>/dev/null)"; fi
+done
+
+# Fail closed. A newer release whose uninstall.sh is not the one it signed, and
+# a release that does not verify at all: refused, nothing run, not even the
+# install's own copy, and the marker is where it was.
+reset_state; plant_marker; serve_newest
+make_store "$TMP/store" 2026-09-20T00:00:00Z ""
+cp "$TMP/state/served-uninstall" "$TMP/state/signed-uninstaller"
+sed -i "2i echo TAMPERED >> '$TMP/state/TAMPERED-RAN'" "$TMP/state/served-uninstall"
+out="$(STORE_FOR_RUN="$TMP/store" run_sut --wipe --yes)"; rc=$?
+if [[ $rc -ne 0 ]] && grep -q 'is not the one the signed release names, so it was not run. Nothing was removed.' <<<"$out" \
+   && grep -q 'run it again with --no-upgrade' <<<"$out" && nothing_ran && marker_left; then
+  ok "a changed uninstall.sh beside a newer signed release is refused on a current install: nothing runs, nothing is removed"
+else
+  bad "a tampered newer uninstaller is refused" "exit $rc: $(tail -6 <<<"$out") calls=$(cat "$TMP/state/calls" 2>/dev/null)"; fi
+for mode in stranger tampered unsigned; do
+  reset_state; plant_marker; serve_newest
+  make_store "$TMP/store" 2026-09-20T00:00:00Z ""
+  echo "$mode" > "$TMP/state/sig-mode"
+  out="$(STORE_FOR_RUN="$TMP/store" run_sut --wipe --yes)"; rc=$?
+  if [[ $rc -ne 0 ]] && grep -q 'Nothing was removed' <<<"$out" && nothing_ran && marker_left \
+     && ! grep -q 'script-fetch' "$TMP/state/curl-calls" 2>/dev/null; then
+    ok "a release on offer that does not verify ($mode) is refused on a current install before any uninstall.sh is fetched, and nothing runs"
+  else
+    bad "an unverifiable release ($mode) is refused" "exit $rc: $(tail -5 <<<"$out") calls=$(cat "$TMP/state/calls" 2>/dev/null)"; fi
+done
+
+# A signed release with no publish date cannot be told apart from an older one.
+reset_state; plant_marker; serve_newest
+make_store "$TMP/store" 2026-09-20T00:00:00Z ""
+echo no-date > "$TMP/state/sig-mode"
+out="$(STORE_FOR_RUN="$TMP/store" run_sut --wipe --yes)"; rc=$?
+if [[ $rc -ne 0 ]] && grep -q 'states no publish date' <<<"$out" && nothing_ran && marker_left; then
+  ok "a signed release with no publish date is refused, and nothing runs"
+else
+  bad "a release with no date is refused" "exit $rc: $(tail -4 <<<"$out")"; fi
+
+# A current install with no release key has nothing to check a newer copy
+# against, and nothing was served to refuse: its own copy runs, with a warning.
+reset_state; plant_marker; serve_newest
+make_store "$TMP/store" 2026-09-20T00:00:00Z ""
+mkdir -p "$TMP/rootlib-nokey"; chmod 0755 "$TMP/rootlib-nokey"
+cp -p "$TMP/rootlib/release-digests-lib.sh" "$TMP/rootlib/trusted-path-lib.sh" "$TMP/rootlib-nokey/"
+out="$(STORE_FOR_RUN="$TMP/store" ROOTLIB_FOR_RUN="$TMP/rootlib-nokey" run_sut --wipe --yes)"; rc=$?
+if [[ $rc -eq 0 ]] && grep -q 'uninstall from=the-real-one' "$TMP/state/calls" 2>/dev/null \
+   && grep -q 'no release key root can check a newer uninstall.sh against' <<<"$out" \
+   && ! grep -q 'script-fetch' "$TMP/state/curl-calls" 2>/dev/null; then
+  ok "a current install with no release key runs its own uninstall.sh, fetches none, and says why"
+else
+  bad "no key on a current install falls back with a warning" "exit $rc: $(tail -5 <<<"$out")"; fi
+
+# An endpoint that does not answer served nothing to refuse. The install's own
+# copy runs, and the run says what that can leave behind.
+reset_state; plant_marker
+make_store "$TMP/store" 2026-09-20T00:00:00Z ""
+out="$(STORE_FOR_RUN="$TMP/store" run_sut --wipe --yes)"; rc=$?
+if [[ $rc -eq 0 ]] && grep -q 'uninstall from=the-real-one' "$TMP/state/calls" 2>/dev/null \
+   && grep -q 'could not fetch release.json from https://get.aperire.one' <<<"$out" \
+   && grep -q 'If a newer release removes something this one does not know about, it stays' <<<"$out"; then
+  ok "an endpoint that does not answer leaves the install's own uninstall.sh, and the run says what that can leave"
+else
+  bad "an unreachable endpoint falls back with a warning" "exit $rc: $(tail -6 <<<"$out")"; fi
+
+# After "newer", the endpoint stops answering: uninstall.sh never arrives, or
+# the second read of the release does not. Nothing was served to refuse, and a
+# current install still has its own copy, so it runs, with the same warning as
+# the first look (#1027 review).
+for shape in no-uninstall second-read-gone; do
+  reset_state; plant_marker; serve_newest
+  make_store "$TMP/store" 2026-09-20T00:00:00Z ""
+  if [[ $shape == no-uninstall ]]; then
+    mv "$TMP/state/served-uninstall" "$TMP/state/signed-uninstaller"
+  else
+    : > "$TMP/state/gone-after-first"
+  fi
+  out="$(STORE_FOR_RUN="$TMP/store" run_sut --wipe --yes)"; rc=$?
+  if [[ $rc -eq 0 ]] && grep -q 'uninstall from=the-real-one args=--wipe --yes' "$TMP/state/calls" 2>/dev/null \
+     && ! grep -q 'from=the-newest-one' "$TMP/state/calls" \
+     && grep -q 'If a newer release removes something this one does not know about, it stays' <<<"$out"; then
+    ok "newer, then the endpoint stops answering ($shape): the install's own uninstall.sh runs, with the warning"
+  else
+    bad "a lost endpoint after newer falls back ($shape)" "exit $rc: $(tail -5 <<<"$out") calls=$(cat "$TMP/state/calls" 2>/dev/null)"; fi
+done
+# The same on an install too old to stage has no copy of its own to fall back
+# on: a refusal, with nothing run.
+reset_state
+make_old_install "$TMP/op/aperire-one" "the-old-one"
+write_uninstaller "$TMP/state/signed-uninstaller" "the-fetched-one"
+out="$(run_sut --wipe --yes)"; rc=$?
+if [[ $rc -ne 0 ]] && grep -q 'could not fetch https://get.aperire.one/uninstall.sh. Nothing was changed and nothing was removed' <<<"$out" \
+   && ! grep -q 'uninstall from=' "$TMP/state/calls" 2>/dev/null; then
+  ok "an old install whose uninstall.sh does not arrive after a verified release is refused, with nothing run"
+else
+  bad "an old install refuses a missing uninstaller" "exit $rc: $(tail -4 <<<"$out")"; fi
+
+# An install too old to stage, beside a verified record that this host
+# installed a release newer than the one on offer. That record's release took
+# the question, so this is a replayed older release or a changed checkout, and
+# the older copy is not run (#1027 review).
+reset_state; plant_marker
+make_old_install "$TMP/op/aperire-one" "the-old-one"
+write_uninstaller "$TMP/state/served-uninstall" "the-fetched-one"
+make_store "$TMP/store" 2026-10-05T00:00:00Z ""
+echo 2026-09-01T00:00:00Z > "$TMP/state/served-at"
+out="$(STORE_FOR_RUN="$TMP/store" run_sut --wipe --yes)"; rc=$?
+if [[ $rc -ne 0 ]] && grep -q 'was published 2026-09-01T00:00:00Z, before the newest this host has installed (2026-10-05T00:00:00Z)' <<<"$out" \
+   && ! grep -q 'uninstall from=' "$TMP/state/calls" 2>/dev/null && marker_left; then
+  ok "an old install offered a release older than its verified floor is refused, and the replayed copy never runs"
+else
+  bad "an older release on an old install is refused" "exit $rc: $(tail -6 <<<"$out") calls=$(cat "$TMP/state/calls" 2>/dev/null)"; fi
+# Control: the same old install offered a release newer than its floor runs it.
+reset_state
+make_old_install "$TMP/op/aperire-one" "the-old-one"
+write_uninstaller "$TMP/state/served-uninstall" "the-fetched-one"
+make_store "$TMP/store" 2026-09-20T00:00:00Z ""
+out="$(STORE_FOR_RUN="$TMP/store" run_sut --wipe --yes)"; rc=$?
+if [[ $rc -eq 0 ]] && grep -q 'uninstall from=the-fetched-one args=--wipe --yes' "$TMP/state/calls" 2>/dev/null; then
+  ok "control: the same old install offered a newer release runs it"
+else
+  bad "an old install runs a newer release" "exit $rc: $(tail -4 <<<"$out")"; fi
+
+# --no-upgrade is the operator's way to the install's own copy: no download at all.
+reset_state; plant_marker; serve_newest
+make_store "$TMP/store" 2026-09-20T00:00:00Z ""
+out="$(STORE_FOR_RUN="$TMP/store" run_sut --no-upgrade --wipe --yes)"; rc=$?
+if [[ $rc -eq 0 ]] && grep -q 'uninstall from=the-real-one' "$TMP/state/calls" 2>/dev/null \
+   && [[ ! -s "$TMP/state/curl-calls" ]] && grep -q 'downloads  nothing' <<<"$out"; then
+  ok "control: --no-upgrade on a current install runs its own uninstall.sh and downloads nothing, newer release or not"
+else
+  bad "--no-upgrade downloads nothing" "exit $rc: curl=$(cat "$TMP/state/curl-calls" 2>/dev/null)"; fi
 
 echo
 echo "── a copy that arrived short ──────────────────────────────────────"
@@ -906,6 +1153,26 @@ else
   bad "the stage needs root's own libraries" "rc=$rc ran=$(cat "$TMP/state/calls" 2>/dev/null) $(tail -3 <<<"$out")"
 fi
 
+# #1355: a host with no python3, which is where an uninstall may well be run.
+# The stage says so once, and the stop after it says no file was judged, not
+# that one changed. _tp_python's two fixed paths are pointed at nothing in
+# root's copy of the library: that is the one way to make a host with no
+# python3 here.
+reset_state
+cp -p "$TMP/rootlib/trusted-path-lib.sh" "$TMP/rootlib/trusted-path-lib.keep"
+sed -i 's#^  for p in /usr/bin/python3 /bin/python3; do$#  for p in /nonexistent/python3; do#' "$TMP/rootlib/trusted-path-lib.sh"
+out="$(run_sut --keep --yes)"; rc=$?
+mv "$TMP/rootlib/trusted-path-lib.keep" "$TMP/rootlib/trusted-path-lib.sh"
+if [[ $rc -ne 0 && ! -f "$TMP/state/calls" ]] \
+   && grep -q 'refused: this host has no python3 at /usr/bin or /bin' <<<"$out" \
+   && grep -q 'root would not run the uninstaller in .*: this host has no python3' <<<"$out" \
+   && grep -q 'Nothing was removed' <<<"$out" && grep -qF -- 'sudo apt-get install -y python3' <<<"$out" \
+   && ! grep -q 'is not the one its release shipped\|a service account can change it' <<<"$out"; then
+  ok "no python3: the uninstaller is not run as root, python3 is named once, and no file is blamed (#1355)"
+else
+  bad "a missing python3 is named, not a changed file" "rc=$rc ran=$(cat "$TMP/state/calls" 2>/dev/null) $(tail -5 <<<"$out")"
+fi
+
 # An uninstall.sh that knows keep/wipe but was written before staged runs would
 # take the staging directory for the install. Treated like the older one: the
 # current copy is fetched and run from a root-held directory.
@@ -1043,33 +1310,71 @@ else
   bad "a group-writable library is refused" "rc=$rc ran=$(cat "$TMP/state/calls" 2>/dev/null) $(tail -3 <<<"$out")"
 fi
 
-# L3. The fetched file is the login's, in /tmp. It is copied into root's
-# directory first and every check reads that copy, so the bytes checked are the
-# bytes run. Rewritten just before the copy, it is the copy that is judged (and
-# refused here); rewritten after the copy, it changes nothing.
+# L3, then the #1027 review. Root fetches uninstall.sh itself, straight into a
+# directory only root can write, so no file the login wrote is ever a source
+# for root: a login file swapped for a link to /etc/shadow, or a FIFO, has
+# nothing to point at. Every fetch root makes insists on https, redirects too.
 reset_state
 make_old_install "$TMP/op/aperire-one" "the-old-one"
 write_uninstaller "$TMP/state/served-uninstall" "the-fetched-one"
-printf '#!/usr/bin/env bash\nprintf "%%s\\n" "uninstall from=the-swapped-one args=$*" >> "%s/state/calls"\nexit 0\n' "$TMP" > "$TMP/state/tampered-uninstall"
-: > "$TMP/state/tamper-before-install"
 out="$(run_sut --wipe --yes)"; rc=$?
-if [[ $rc -ne 0 ]] && ! grep -q 'the-swapped-one' "$TMP/state/calls" 2>/dev/null \
-   && grep -q 'did not arrive whole' <<<"$out"; then
-  ok "a fetched file rewritten before root copies it is checked as the copy root holds, refused, and never run"
+script_how="$(grep ' https://get.aperire.one/uninstall.sh$' "$TMP/state/curl-how" 2>/dev/null)"
+if [[ $rc -eq 0 ]] && grep -q 'from=the-fetched-one' "$TMP/state/calls" 2>/dev/null \
+   && [[ "$script_how" == "root =https/=https "*"/aperire-uninstall-fetched."*"/uninstall.sh https://get.aperire.one/uninstall.sh" ]] \
+   && ! grep -qE 'install -m 0755 [^ ]*/tmp[^ ]*aperire-uninstall\.[A-Za-z0-9]+\.sh ' "$TMP/state/sudo-exec"; then
+  ok "root fetches uninstall.sh itself into its own directory, and installs nothing from a file the login wrote"
 else
-  bad "the checks read root's copy" "rc=$rc calls=$(cat "$TMP/state/calls" 2>/dev/null) $(tail -3 <<<"$out")"
+  bad "root fetches the uninstaller itself" "rc=$rc how=$script_how sudo=$(grep -c . "$TMP/state/sudo-exec" 2>/dev/null)"
 fi
+if ! grep -qv '^root =https/=https ' <(grep -v ' https://example.invalid/uninstall$' "$TMP/state/curl-how"); then
+  ok "  and every fetch besides the bootstrap's own is root's, with --proto =https --proto-redir =https"
+else
+  bad "root's fetches insist on https" "$(cat "$TMP/state/curl-how")"
+fi
+# The address is the stamped one. A login environment naming another changes
+# nothing root fetches.
 reset_state
 make_old_install "$TMP/op/aperire-one" "the-old-one"
 write_uninstaller "$TMP/state/served-uninstall" "the-fetched-one"
-printf '#!/usr/bin/env bash\nprintf "%%s\\n" "uninstall from=the-swapped-one args=$*" >> "%s/state/calls"\nexit 0\n# --- end of uninstall.sh ---\n' "$TMP" > "$TMP/state/tampered-uninstall"
-: > "$TMP/state/tamper-after-install"
-out="$(run_sut --wipe --yes)"; rc=$?
-if [[ $rc -eq 0 ]] && grep -q 'from=the-fetched-one' "$TMP/state/calls" 2>/dev/null && ! grep -q 'the-swapped-one' "$TMP/state/calls"; then
-  ok "  and the file in /tmp rewritten after the copy changes nothing: the copy that was checked is the copy that runs"
+out="$(LOGIN_SCRIPT_URL_FOR_RUN="https://evil.invalid/uninstall.sh" run_sut --wipe --yes)"; rc=$?
+if [[ $rc -eq 0 ]] && ! grep -q 'evil.invalid' "$TMP/state/curl-how" 2>/dev/null \
+   && grep -q 'script-fetch https://get.aperire.one/uninstall.sh' "$TMP/state/curl-calls" 2>/dev/null; then
+  ok "APERIRE_UNINSTALL_GET_SCRIPT_URL in the login's environment does not pick what root fetches"
 else
-  bad "the /tmp file is not what runs" "rc=$rc calls=$(cat "$TMP/state/calls" 2>/dev/null) $(tail -3 <<<"$out")"
+  bad "the login's environment does not name root's fetch" "rc=$rc how=$(cat "$TMP/state/curl-how" 2>/dev/null)"
 fi
+
+# The scheme comes from the stamp. Every release stamps https and root fetches
+# https only. The lab gate stamps its loopback stand-in on plain http, which is
+# allowed http with redirects held to it; any other http stamp is refused
+# before root fetches anything. The stamp is rewritten here the way the release
+# builder rewrites it.
+stamped() { # $1 = the address stamped for uninstall.sh
+  sed "s#^DEFAULT_UNINSTALL_URL=.*#DEFAULT_UNINSTALL_URL='$1'#" "$SUT" > "$TMP/stamped.sh"
+}
+reset_state
+make_old_install "$TMP/op/aperire-one" "the-old-one"
+write_uninstaller "$TMP/state/served-uninstall" "the-fetched-one"
+stamped "http://127.0.0.1:7899/uninstall.sh"
+out="$(SUT="$TMP/stamped.sh" run_sut --wipe --yes)"; rc=$?
+if [[ $rc -eq 0 ]] && grep -q 'from=the-fetched-one' "$TMP/state/calls" 2>/dev/null \
+   && grep -q '^root =http/=http [^ ]*/uninstall.sh http://127.0.0.1:7899/uninstall.sh$' "$TMP/state/curl-how" \
+   && ! grep -v ' https://example.invalid/uninstall$' "$TMP/state/curl-how" | grep -qv '^root =http/=http '; then
+  ok "a lab stamp on the loopback stand-in fetches over http, with redirects held to http, and uninstalls"
+else
+  bad "the loopback stand-in is allowed http" "exit $rc: $(tail -4 <<<"$out") how=$(cat "$TMP/state/curl-how" 2>/dev/null)"; fi
+for stamp in http://get.example.org/uninstall.sh http://127.0.0.1.example.org:7899/uninstall.sh; do
+  reset_state
+  make_old_install "$TMP/op/aperire-one" "the-old-one"
+  write_uninstaller "$TMP/state/served-uninstall" "the-fetched-one"
+  stamped "$stamp"
+  out="$(SUT="$TMP/stamped.sh" run_sut --wipe --yes)"; rc=$?
+  if [[ $rc -ne 0 ]] && grep -q 'is not https, and not the loopback stand-in' <<<"$out" \
+     && ! grep -q '^root ' "$TMP/state/curl-how" 2>/dev/null && ! grep -q 'uninstall from=' "$TMP/state/calls" 2>/dev/null; then
+    ok "any other http stamp ($stamp) is refused before root fetches anything, with nothing run"
+  else
+    bad "a non-loopback http stamp is refused ($stamp)" "exit $rc: $(tail -3 <<<"$out") how=$(cat "$TMP/state/curl-how" 2>/dev/null)"; fi
+done
 
 echo
 echo "── refusing before it can do damage ───────────────────────────────"

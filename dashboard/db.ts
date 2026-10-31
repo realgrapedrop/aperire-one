@@ -450,6 +450,19 @@ db.exec(`
     last_answered INTEGER NOT NULL
   );
 
+  -- Which store the nudb_size series describes (#1251). One row. 'path' is
+  -- the store directory the series was recorded for; 'cut_s' (epoch SECONDS,
+  -- like the metrics table's ts) is where the current store's series begins, 0 when the
+  -- whole of it is one store. Nothing before cut_s is read for the peaks, the
+  -- growth fit, the free-days estimate or the chart: they belong to a store
+  -- that was replaced. The samples themselves are kept, so a cut that was a
+  -- false alarm loses nothing.
+  CREATE TABLE IF NOT EXISTS store_series (
+    id    INTEGER PRIMARY KEY CHECK (id = 1),
+    path  TEXT NOT NULL,
+    cut_s INTEGER NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS auth_users (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     username        TEXT NOT NULL UNIQUE,
@@ -927,8 +940,11 @@ export interface HistoryPoint { ts: number; value: number; }
 export type AggMode = 'avg' | 'max' | 'min';
 
 /** Returns aggregated time-series for a metric over the given range. */
-export function queryHistory(metric: MetricName, rangeMs: number, agg: AggMode = 'avg'): HistoryPoint[] {
-  const fromS = Math.floor((Date.now() - rangeMs) / 1000);
+export function queryHistory(metric: MetricName, rangeMs: number, agg: AggMode = 'avg', notBeforeS = 0): HistoryPoint[] {
+  // notBeforeS is a lower bound in the SQL, not a filter on the buckets that
+  // come back: a bucket that straddles it carries only the rows after it,
+  // where a bucket dropped afterwards would carry the rows before it (#1251).
+  const fromS = Math.max(Math.floor((Date.now() - rangeMs) / 1000), notBeforeS);
   const bucketS = bucketForRange(rangeMs);
   const stmt = agg === 'max' ? queryStmtMax : agg === 'min' ? queryStmtMin : queryStmtAvg;
   const rows = stmt.all(bucketS, metric, fromS) as Array<{ bucket_s: number; v: number }>;
@@ -966,6 +982,28 @@ const recentStmt = db.prepare(`
 export function queryRecent(metric: MetricName, limit: number): HistoryPoint[] {
   const rows = recentStmt.all(metric, limit) as Array<{ ts: number; value: number }>;
   return rows.reverse().map(r => ({ ts: r.ts * 1000, value: r.value }));
+}
+
+const peakSinceStmt = db.prepare('SELECT MAX(value) AS v FROM metrics WHERE metric = ? AND ts >= ?');
+/** The largest raw sample of a metric at or after `fromS` (epoch seconds), or
+ *  null when there is none. */
+export function peakMetricSince(metric: MetricName, fromS: number): number | null {
+  const r = peakSinceStmt.get(metric, fromS) as { v: number | null } | undefined;
+  return r && r.v !== null && Number.isFinite(r.v) ? r.v : null;
+}
+
+const loadStoreSeriesStmt = db.prepare('SELECT path, cut_s FROM store_series WHERE id = 1');
+const saveStoreSeriesStmt = db.prepare(
+  'INSERT INTO store_series (id, path, cut_s) VALUES (1, ?, ?) ' +
+  'ON CONFLICT(id) DO UPDATE SET path = excluded.path, cut_s = excluded.cut_s');
+/** Which store the nudb_size series describes, or null on a database that
+ *  has never recorded one (#1251). */
+export function loadStoreSeries(): { path: string; cut_s: number } | null {
+  const r = loadStoreSeriesStmt.get() as { path: string; cut_s: number } | undefined;
+  return r ?? null;
+}
+export function saveStoreSeries(path: string, cutS: number): void {
+  saveStoreSeriesStmt.run(path, cutS);
 }
 
 const pruneStmt = db.prepare('DELETE FROM metrics WHERE ts < ?');

@@ -382,9 +382,18 @@ module.exports = { load: (t) => { const o = {}; let sec = null; for (const l of 
 EOF
   # The email send is the dashboard's own code too: a tripwire in its place.
   mkdir -p "$RIG/dashboard/scripts"
+  # It also records how node was started and what it was handed. The real
+  # script is run by dashboard/test/unit/send-magic-script.test.ts, against a
+  # Resend stand-in, with the flags read out of this CLI; this rig proves the
+  # CLI starts it that way, through tsx, with the address, subject and link as
+  # its three arguments (#1354). tsx itself is a package that does nothing.
+  mkdir -p "$RIG/dashboard/node_modules/tsx"
+  printf '{"name":"tsx","type":"module","main":"index.mjs"}\n' > "$RIG/dashboard/node_modules/tsx/package.json"
+  : > "$RIG/dashboard/node_modules/tsx/index.mjs"
   cat > "$RIG/dashboard/scripts/send-magic.mjs" <<EOF
 import { appendFileSync } from 'node:fs';
 appendFileSync('$TMP/send.log', 'uid=' + process.getuid() + ' as=' + (process.env.FAKE_AS || '') + '\n');
+appendFileSync('$TMP/send-args.log', process.execArgv.join(' ') + ' :: ' + process.argv.slice(2).join(' | ') + '\n');
 EOF
   printf 'public_url: https://dash.example\nrp_id: dash.example\nmagic_link:\n  send_via_email: true\n' > "$RIG/dashboard/config/authn.yaml"
   unit8() {  # <user>: the unit names the real node, the one the reader takes first
@@ -398,7 +407,7 @@ EOF
   is "as the login, help exits 0" "$rc" "0"
   has "  and the reader loaded the rig's js-yaml, as the login" "$(cat "$JSY_LOG")" "uid=$(id -u) as="
 
-  unit8 aperire-dashboard; : > "$JSY_LOG"; : > "$TMP/send.log"
+  unit8 aperire-dashboard; : > "$JSY_LOG"; : > "$TMP/send.log"; : > "$TMP/send-args.log"
   out="$(: > "$SWITCH_LOG"; fakeroot env APERIRE_NO_TRUST_PUSH=1 bash "$RIG/scripts/aperire-auth.sh" magic-link op@example.com </dev/null 2>&1)"; rc=$?
   is "as root, magic-link exits 0" "$rc" "0"
   has "  and the link is built from authn.yaml's public_url, read through the switch" "$out" "https://dash.example/"
@@ -415,6 +424,9 @@ EOF
   has "  through runuser, with the reader's arguments as words" "$(cat "$SWITCH_LOG")" "runuser :: aperire-dashboard :: $REAL_NODE -e"
   has "  send_via_email, read through the switch, sends the link" "$out" "(emailed enrollment URL to op@example.com)"
   is "  and the send ran as aperire-dashboard, never as root" "$(cat "$TMP/send.log" 2>/dev/null)" "uid=$(id -u) as=aperire-dashboard"
+  has "  started through tsx, the way the dashboard's unit starts its code (#1354)" "$(cat "$TMP/send-args.log" 2>/dev/null)" "--import tsx :: op@example.com | "
+  hasnt "  and not under Node's own type stripping, which cannot follow email.ts's imports" "$(cat "$TMP/send-args.log" 2>/dev/null)" "strip-types"
+  has "  with the enrollment link as its third argument" "$(cat "$TMP/send-args.log" 2>/dev/null)" "https://dash.example/login.html?token="
 
   # Root with no account but root to switch to reads nothing and says why,
   # before anything runs.

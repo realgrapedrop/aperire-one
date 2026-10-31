@@ -170,6 +170,42 @@ export function buildHtml(ctx: AlertEmailContext): string {
 }
 
 /**
+ * The plain-text part, #1243. The same facts as buildHtml in the same order,
+ * one `Label: value` per line, the identity rows from the same
+ * identityRows() every other channel prints.
+ *
+ * Without it Resend derives a text part by stripping the HTML, and a table
+ * strips to cells that touch: `Nodevalidator-1 (validator) Hostsrv1`.
+ * That is what a phone preview and a text-only reader show. Nothing here is
+ * escaped, because nothing here is parsed as markup.
+ */
+export function buildText(ctx: AlertEmailContext): string {
+  const isFiring = ctx.state === 'firing';
+  const lines: string[] = [`${SEV_LABEL[ctx.severity]} · ${isFiring ? 'FIRING' : 'RESOLVED'}`, ctx.metric, ''];
+  if (ctx.is_test) lines.push('This is a Test Fire email from the Aperire dashboard. No real alert is firing.', '');
+  for (const r of identityRows(ctx.identity)) lines.push(`${r.label}: ${r.value}`);
+  lines.push('');
+  lines.push(`Triggered: ${ctx.triggered_iso}`);
+  lines.push(`Threshold: ${ctx.threshold_op == null || ctx.threshold_value == null ? 'none' : `${ctx.threshold_op} ${ctx.threshold_value}`}`);
+  if (ctx.value != null) lines.push(`${isFiring ? 'Current' : 'Final'} value: ${ctx.value}`);
+  if (ctx.duration_s != null) lines.push(`${isFiring ? 'Held for' : 'Was firing'}: ${fmtDuration(ctx.duration_s)}`);
+  lines.push(`Dedup key: ${ctx.dedup_key}`);
+  if (isFiring && (ctx.action || ctx.action_command)) {
+    lines.push('');
+    if (ctx.action) lines.push(`What to do: ${ctx.action}`);
+    if (ctx.action_command) lines.push(`  ${ctx.action_command}`);
+  }
+  const actions = (ctx.knowledge?.recommended_actions || []).slice(0, 3);
+  if (isFiring && (ctx.knowledge?.description || actions.length > 0)) {
+    lines.push('');
+    if (ctx.knowledge?.description) lines.push(ctx.knowledge.description);
+    if (actions.length > 0) lines.push('First checks:', ...actions.map(a => `- ${a}`));
+  }
+  lines.push('', 'Aperire · XRPL validator dashboard');
+  return lines.join('\n');
+}
+
+/**
  * LOW-08. Every value the template interpolates goes through here, including
  * the numeric ones. They are typed `number | null`, but the type is a claim
  * about the code that fills them, not about what SQLite hands back: the column
@@ -193,7 +229,8 @@ function getClient(apiKey: string): Resend {
 /**
  * Send a pre-rendered digest email through the same Resend client.
  * Caller (Phase 6 cron) builds the HTML separately because digest
- * content has a different shape than alert events. Returns the same
+ * content has a different shape than alert events, and passes the
+ * plain-text part built from the same facts (lib/mail-text.ts). Returns the same
  * result type so the digest_runs writer can record success/failure
  * uniformly.
  */
@@ -201,6 +238,7 @@ export async function sendDigestEmail(
   cfg: EmailChannelConfig,
   subject: string,
   html: string,
+  text?: string,
 ): Promise<EmailSendResult> {
   if (!cfg.apiKey) return { ok: false, error: 'no API key' };
   if (!cfg.sender) return { ok: false, error: 'no sender configured' };
@@ -213,6 +251,9 @@ export async function sendDigestEmail(
       to: cfg.recipients,
       subject,
       html,
+      // #1274: without a text part Resend strips the HTML, and a table strips
+      // to cells that touch. Callers pass one built from the same facts.
+      ...(text === undefined ? {} : { text }),
     });
     if (res.error) return { ok: false, error: res.error.message ?? String(res.error) };
     return { ok: true, messageId: res.data?.id };
@@ -240,12 +281,14 @@ export async function sendAlertEmail(
   try {
     const subject = buildSubject(ctx);
     const html    = buildHtml(ctx);
+    const text    = buildText(ctx);
     const client  = getClient(cfg.apiKey);
     const res = await client.emails.send({
       from: cfg.sender,
       to: cfg.recipients,
       subject,
       html,
+      text,
     });
     if (res.error) return { ok: false, error: res.error.message ?? String(res.error) };
     return { ok: true, messageId: res.data?.id };

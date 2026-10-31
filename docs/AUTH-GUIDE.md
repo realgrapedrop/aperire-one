@@ -289,7 +289,7 @@ magic_link:
 
 | Key | Default | Notes |
 |---|---|---|
-| `public_url` | `http://localhost:7800` | Built into magic-link URLs and pinned as the WebAuthn origin. |
+| `public_url` | `http://localhost:7800` | Built into magic-link URLs and pinned as the WebAuthn origin. One string. For several origins, separate them with commas. Alerts, Settings and the add-node command use the first entry another machine can open, so a `localhost` entry listed first doesn't hide a public one after it. |
 | `rp_id` | `localhost` | Must match `public_url`'s host. Changing it **invalidates all existing passkeys**, so operators re-enroll. |
 | `rp_name` | `Aperire One` | Cosmetic, shown in the OS prompt ("Use Touch ID for Aperire One"). |
 | `session.idle_timeout_minutes` | `30` | `0` disables the idle timeout (not recommended). |

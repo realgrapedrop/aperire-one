@@ -153,6 +153,30 @@
 # level would not have seen it.
 set -Eeuo pipefail
 
+# As root the environment chooses no path or program (#1206): every
+# APERIRE_* variable is dropped except the ones a root caller passes on
+# purpose:
+#   APERIRE_INSTALL_TREE  get-aperire.sh names the tree a staged copy serves (#764)
+#   APERIRE_INSTANCE      install.sh exports it to every step; checked below
+# An account id(1) says is not root keeps them all, which is what every
+# suite is. id(1) at a fixed path, never bash's $EUID (#1109).
+if ! [[ "$(/usr/bin/id -u 2>/dev/null)" =~ ^[1-9][0-9]*$ ]]; then
+  for _v in $(compgen -e); do
+    case "$_v" in APERIRE_INSTALL_TREE|APERIRE_INSTANCE) ;; APERIRE_*) unset "$_v" ;; esac
+  done
+fi
+# The instance names a unit file and a drop-in path, so it is held to the
+# rule advisor-owner-lib.sh holds it to, under the C locale (under
+# en_US.UTF-8, [a-z] matches é), and anything else is refused.
+instance_name_ok() { # $1 = a name; [a-z] is held to ASCII, whatever the locale
+  local LC_ALL=C
+  [[ "$1" =~ ^[a-z0-9][a-z0-9-]{0,30}$ && "$1" != credcheck && "$1" != credcheck-* ]]
+}
+if [[ -n "${APERIRE_INSTANCE:-}" ]] && ! instance_name_ok "$APERIRE_INSTANCE"; then
+  printf 'refused: APERIRE_INSTANCE=%q is not an instance name (a-z, 0-9 and -, at most 31, not credcheck)\n' "$APERIRE_INSTANCE" >&2
+  exit 2
+fi
+
 # Where this program and its siblings are (SCRIPTS_DIR), and the install tree
 # it acts on (REPO_DIR): a directory and its parent from a checkout, two when
 # get-aperire.sh runs a copy root staged out of the release and names the
@@ -246,15 +270,6 @@ IMAGE_REPO="$DEFAULT_IMAGE_REPO"
 # only so the tests can point it somewhere harmless.
 IMAGE_RECIPE_DIR="${APERIRE_IMAGE_RECIPE_DIR:-/usr/local/lib/aperire}"
 
-# The privilege wrapper, which is what checks an official image against the
-# signed package before this script writes a deployment naming it (#682,
-# second review). Same convention as the recipe directory above, and for
-# the same reason: a variable only so the tests can point it at a program
-# whose answer they control, both ways round.
-#
-# Root's own copy in /usr/local/sbin when this host has it (ADR 0024), and
-# the sibling otherwise, which under get-aperire.sh is the copy root staged
-# (#764). Never the tree's file: root runs this.
 NODE_WRAPPER="${APERIRE_NODE_WRAPPER:-}"
 if [[ -z "$NODE_WRAPPER" ]]; then
   NODE_WRAPPER="$(trusted_wrapper_path "${APERIRE_INSTANCE:-}")"
@@ -391,6 +406,23 @@ ADOPT_NAME=""
 # the name, so nothing else on this host can get between the two and hand a
 # root process a symlink to write through. The mark is the content.
 SAID_WHY_MARK="$(mktemp -t aperire-install-said.XXXXXX)"
+# Every other temp file this run makes is added here and removed by on_exit
+# with the mark, so a die between making one and the rm that follows it leaves
+# nothing behind (#588): a key that failed its fingerprint check used to stay
+# in the temp dir.
+SCRAPS=()
+# Removes one scrap now and takes it off the list, so on_exit does not try a
+# name that is already free. A name freed here can be taken by another account
+# in a shared temp dir; on_exit must never be the one to trip over that. A
+# removal that fails keeps the entry, and on_exit tries it once more.
+scrap_rm() {
+  local gone="$1" s keep=()
+  rm -f -- "$gone" 2>/dev/null || return 0
+  for s in ${SCRAPS[@]+"${SCRAPS[@]}"}; do [[ "$s" == "$gone" ]] || keep+=("$s"); done
+  SCRAPS=()
+  for s in ${keep[@]+"${keep[@]}"}; do SCRAPS+=("$s"); done
+  return 0
+}
 FAILED_AT=''
 trap 'FAILED_AT="line ${LINENO}: ${BASH_COMMAND}"' ERR
 # shellcheck disable=SC2329,SC2317  # installed as an EXIT trap below, which shellcheck cannot see as a call (SC2317 is the runner's older name for it)
@@ -401,6 +433,11 @@ on_exit() {
   [[ -s "$SAID_WHY_MARK" ]] && spoke=1
   rm -f "$SAID_WHY_MARK"
   [[ -n "${RENDERED:-}" ]] && rm -f "$RENDERED"
+  local scrap
+  # errexit is live in an EXIT trap: a removal that fails (a name another
+  # account replaced with something root cannot delete) must not change the
+  # status being reported or skip the line below.
+  for scrap in ${SCRAPS[@]+"${SCRAPS[@]}"}; do rm -rf -- "$scrap" 2>/dev/null || true; done
   if (( rc != 0 )) && (( ! spoke )); then
     local why="status ${rc}"
     (( rc > 128 )) && why="${why}, killed by signal $(( rc - 128 ))"
@@ -1041,22 +1078,22 @@ native_install_xrplf_key_deb() {
     # on the host, gets the same "exactly one key, and it is re-exported
     # clean" treatment a fresh fetch gets, rather than being trusted because
     # it is merely present.
-    local cleankey; cleankey="$(mktemp)"
+    local cleankey; cleankey="$(mktemp)"; SCRAPS+=("$cleankey")
     native_verified_xrplf_key "$NATIVE_DEB_KEYRING" "existing apt" "$cleankey"
     install -m 0644 "$cleankey" "$NATIVE_DEB_KEYRING"
-    rm -f "$cleankey"
+    scrap_rm "$cleankey"
     have "the signing key is already at ${NATIVE_DEB_KEYRING}"
   else
-    local tmpkey; tmpkey="$(mktemp)"
-    wget -qO "$tmpkey" "$NATIVE_DEB_KEY_URL" || { rm -f "$tmpkey"; die "could not fetch the signing key from ${NATIVE_DEB_KEY_URL}"; }
-    local cleankey; cleankey="$(mktemp)"
+    local tmpkey; tmpkey="$(mktemp)"; SCRAPS+=("$tmpkey")
+    wget -qO "$tmpkey" "$NATIVE_DEB_KEY_URL" || { scrap_rm "$tmpkey"; die "could not fetch the signing key from ${NATIVE_DEB_KEY_URL}"; }
+    local cleankey; cleankey="$(mktemp)"; SCRAPS+=("$cleankey")
     native_verified_xrplf_key "$tmpkey" "downloaded apt" "$cleankey"
-    rm -f "$tmpkey"
+    scrap_rm "$tmpkey"
     # install.md's own apt line takes the armoured key file directly with
     # signed-by=; the re-export above is already armoured and holds exactly
     # the one pinned key, nothing riding along from the download.
     install -m 0644 "$cleankey" "$NATIVE_DEB_KEYRING"
-    rm -f "$cleankey"
+    scrap_rm "$cleankey"
     info "verified and installed the signing key to ${NATIVE_DEB_KEYRING}"
   fi
 }
@@ -1179,16 +1216,16 @@ native_retire_legacy_repo_rpm() {
 # independently of whatever fetched it (same reasoning as the apt path).
 native_install_xrplf_key_rpm() {
   command -v curl >/dev/null 2>&1 || die "curl is required to fetch the signing key and was not found"
-  local tmpkey; tmpkey="$(mktemp)"
-  curl -fsSL "$NATIVE_RPM_KEY_URL" -o "$tmpkey" || { rm -f "$tmpkey"; die "could not fetch the signing key from ${NATIVE_RPM_KEY_URL}"; }
-  local cleankey; cleankey="$(mktemp)"
+  local tmpkey; tmpkey="$(mktemp)"; SCRAPS+=("$tmpkey")
+  curl -fsSL "$NATIVE_RPM_KEY_URL" -o "$tmpkey" || { scrap_rm "$tmpkey"; die "could not fetch the signing key from ${NATIVE_RPM_KEY_URL}"; }
+  local cleankey; cleankey="$(mktemp)"; SCRAPS+=("$cleankey")
   native_verified_xrplf_key "$tmpkey" "downloaded dnf" "$cleankey"
-  rm -f "$tmpkey"
+  scrap_rm "$tmpkey"
   # rpm --import gets the re-exported, single-key file, never the raw
   # download: the same "prove the file holds nothing else" step the apt
   # path takes, because rpm --import trusts every key a file carries too.
-  rpm --import "$cleankey" || { rm -f "$cleankey"; die "rpm --import refused the verified key at ${NATIVE_RPM_KEY_URL}"; }
-  rm -f "$cleankey"
+  rpm --import "$cleankey" || { scrap_rm "$cleankey"; die "rpm --import refused the verified key at ${NATIVE_RPM_KEY_URL}"; }
+  scrap_rm "$cleankey"
   info "verified and imported the signing key from ${NATIVE_RPM_KEY_URL}"
 }
 native_write_xrplf_repo_rpm() {
@@ -2872,7 +2909,7 @@ elif [[ -n "$IMAGE_DIGEST" ]]; then
   # and never started. It needs the wrapper and its recipe, which this
   # script has just installed.
   IMAGE_VERIFIED=0
-  VERIFY_LOG="$(mktemp)"
+  VERIFY_LOG="$(mktemp)"; SCRAPS+=("$VERIFY_LOG")
   # A file, run through bash: the staged copy may sit on a /tmp mounted
   # noexec (#764), and that must not read as "no wrapper", which skips the check.
   if [[ -f "$NODE_WRAPPER" ]]; then

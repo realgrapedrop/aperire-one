@@ -31,7 +31,7 @@
  *     reports.
  */
 import type { FleetNodeConfig } from './fleet-registry.js';
-import { readTokenFresh } from './fleet-health.js';
+import { readTokenFileExplained, tokenUnreadableDetail, tokenUnreadableLog } from './fleet-health.js';
 import { verifyPeerPin, type PeerPinCache, type PeerReadError } from './peer-read-proxy.js';
 
 type FetchImpl = typeof fetch;
@@ -127,7 +127,8 @@ export type PeerAdvisorResult =
   | { ok: true; body: unknown }
   | {
       ok: false;
-      error: 'advisor_not_configured' | 'advisor_not_found' | 'advisor_unreachable' | 'advisor_refused' | 'advisor_failed' | PeerReadError['error'];
+      error: 'advisor_not_configured' | 'advisor_not_found' | 'advisor_unreachable' | 'advisor_refused' | 'advisor_failed'
+        | 'token_unreadable' | PeerReadError['error'];
       /** The peer advisord's OWN words, on the two errors that are answers:
        *  advisor_refused and advisor_not_found. A node that refuses a write
        *  knows why ("that investigation measured nothing", "that proposal
@@ -251,21 +252,38 @@ async function advisorPreamble(
   if (!node.advisor_origin || !node.advisor_token_path) {
     return { ok: false, error: 'advisor_not_configured' };
   }
-  const readToken = readTokenFresh(node.token_path);
-  if (!readToken) {
-    console.warn(`[peer-advisor-proxy] ${node.label}: read token unreadable (pin cannot run)`);
-    return { ok: false, error: 'peer_unreachable' };
+  // #1209: a token this host cannot read is its own fact, not the node's. It
+  // was `peer_unreachable` and `advisor_unreachable`, and the tab said the
+  // dashboard could not reach the node when nothing had been sent to it.
+  const readToken = readTokenFileExplained(node.token_path);
+  if (!readToken.ok) {
+    console.warn(`[peer-advisor-proxy] ${node.label}: read token unreadable (pin cannot run): ${tokenUnreadableLog(readToken)}`);
+    return { ok: false, error: 'token_unreadable', detail: tokenUnreadableDetail(node.label, 'read', readToken) };
   }
   const pinned = pinCache
-    ? await pinCache.verify(node, readToken, timeoutMs, doFetch)
-    : await verifyPeerPin(node, readToken, timeoutMs, doFetch);
+    ? await pinCache.verify(node, readToken.token, timeoutMs, doFetch)
+    : await verifyPeerPin(node, readToken.token, timeoutMs, doFetch);
   if (!pinned.ok) return { ok: false, error: pinned.error };
-  const advisorToken = readTokenFresh(node.advisor_token_path);
-  if (!advisorToken) {
-    console.warn(`[peer-advisor-proxy] ${node.label}: advisor token unreadable`);
-    return { ok: false, error: 'advisor_unreachable' };
+  return readPeerAdvisorToken(node);
+}
+
+/**
+ * A peer's Advisor token, read fresh, or the answer for a token this host
+ * cannot read (#1209, #1305). The preamble above and the ceremony and
+ * execute routes in server.ts, which send a write to the same Advisor, all
+ * read it here, so none of them can say "unreachable" or a sentence of its
+ * own for a file that was never opened. Hand the failure to
+ * peerAdvisorFailureAnswer for the status and body.
+ */
+export function readPeerAdvisorToken(
+  node: FleetNodeConfig,
+): { ok: true; token: string } | { ok: false; error: 'token_unreadable'; detail: string } {
+  const advisorToken = readTokenFileExplained(node.advisor_token_path ?? '');
+  if (!advisorToken.ok) {
+    console.warn(`[peer-advisor-proxy] ${node.label}: advisor token unreadable: ${tokenUnreadableLog(advisorToken)}`);
+    return { ok: false, error: 'token_unreadable', detail: tokenUnreadableDetail(node.label, 'Advisor', advisorToken) };
   }
-  return { ok: true, token: advisorToken };
+  return { ok: true, token: advisorToken.token };
 }
 
 /** The `error` string out of an advisord reply, when it sent one. Anything

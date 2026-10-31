@@ -34,7 +34,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -94,6 +96,39 @@ const Retracted = "retracted"
 
 // Store is an append-only JSONL file.
 type Store struct{ path string }
+
+// ErrNoStore says the memory file is not there at all. A lookup that finds
+// nothing in a file that exists is "no such note"; a file that does not exist
+// is a different answer, and usually means the command was pointed at the
+// wrong state directory (#1238).
+var ErrNoStore = errors.New("there is no memory file")
+
+// UnreadableError says the memory file is there but this account could not
+// open it. It is never the same as "no such note": the note may be live, and
+// the caller has to hear that it was not looked for (#1238).
+type UnreadableError struct {
+	Path string
+	Err  error
+}
+
+func (e *UnreadableError) Error() string {
+	return "cannot read the memory file " + e.Path + ": " + e.Err.Error()
+}
+
+func (e *UnreadableError) Unwrap() error { return e.Err }
+
+// Permission says the open failed because the account may not read the file
+// or search the directory above it.
+func (e *UnreadableError) Permission() bool { return errors.Is(e.Err, fs.ErrPermission) }
+
+// noSuchNote is the end of Confirm and Retract's search. A missing file is
+// not a missing note.
+func (s *Store) noSuchNote(msg string) error {
+	if _, err := os.Stat(s.path); errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("%w at %s", ErrNoStore, s.path)
+	}
+	return errors.New(msg)
+}
 
 func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
@@ -155,7 +190,7 @@ func (s *Store) read(keepRetracted bool) ([]Entry, error) {
 		return nil, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, &UnreadableError{Path: s.path, Err: err}
 	}
 	defer f.Close()
 
@@ -231,7 +266,7 @@ func (s *Store) Confirm(id, by string) (Entry, error) {
 		_, err = f.Write(append(b, '\n'))
 		return e, err
 	}
-	return Entry{}, fmt.Errorf("no memory %s", id)
+	return Entry{}, s.noSuchNote("no memory " + id)
 }
 
 // Retract withdraws an entry so it is never recalled again. Only a person
@@ -268,7 +303,7 @@ func (s *Store) Retract(id, by, why string) (Entry, error) {
 		}
 		return e, f.Sync()
 	}
-	return Entry{}, fmt.Errorf("no memory %s (or it is already retracted)", id)
+	return Entry{}, s.noSuchNote("no memory " + id + " (or it is already retracted)")
 }
 
 // Recent returns the newest entries for a node, capped. Confirmed entries come

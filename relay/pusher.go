@@ -75,16 +75,25 @@ func pushLoop(ctx context.Context, cfg *Config, version string) {
 // system roots do not know about; that injection is the only reason this is a
 // separate function.
 func dialDashboard(ctx context.Context, cfg *Config, client *http.Client) (*websocket.Conn, error) {
+	conn, _, err := dialDashboardResp(ctx, cfg, client, 10*time.Second)
+	return conn, err
+}
+
+// dialDashboardResp is dialDashboard with the HTTP answer kept and the time
+// allowed chosen by the caller. A refused upgrade comes back as an error AND a
+// response, and the status is the only reliable way to tell a refused token
+// (401) from a refused transport (403): --check-dashboard reads it from here
+// rather than from the error's text.
+func dialDashboardResp(ctx context.Context, cfg *Config, client *http.Client, within time.Duration) (*websocket.Conn, *http.Response, error) {
 	header := http.Header{}
 	header.Set("Authorization", "Bearer "+cfg.AuthToken)
 
-	dialCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	dialCtx, cancel := context.WithTimeout(ctx, within)
 	defer cancel()
-	conn, _, err := websocket.Dial(dialCtx, cfg.DashboardURL, &websocket.DialOptions{
+	return websocket.Dial(dialCtx, cfg.DashboardURL, &websocket.DialOptions{
 		HTTPHeader: header,
 		HTTPClient: client,
 	})
-	return conn, err
 }
 
 // oneSession runs until the connection drops or ctx is cancelled. Each call

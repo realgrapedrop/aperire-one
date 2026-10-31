@@ -9,6 +9,17 @@
 # Run with: sudo bash install-aperire-service.sh
 set -euo pipefail
 
+# The instance names units and paths, so it is held to the rule
+# advisor-owner-lib.sh holds it to, and anything else is refused (#1206).
+instance_name_ok() { # $1 = a name; [a-z] is held to ASCII, whatever the locale
+  local LC_ALL=C
+  [[ "$1" =~ ^[a-z0-9][a-z0-9-]{0,30}$ && "$1" != credcheck && "$1" != credcheck-* ]]
+}
+if [[ -n "${APERIRE_INSTANCE:-}" ]] && ! instance_name_ok "$APERIRE_INSTANCE"; then
+  printf 'refused: APERIRE_INSTANCE=%q is not an instance name (a-z, 0-9 and -, at most 31, not credcheck)\n' "$APERIRE_INSTANCE" >&2
+  exit 2
+fi
+
 # Where this program and its siblings are, and the install tree it acts on:
 # one directory and its parent from a checkout, two when install.sh runs a
 # copy root staged out of the release and names the tree (#764). Code is
@@ -269,7 +280,27 @@ fi
 #     has the whole decision table.
 if [[ -f "${REPO_DIR}/dashboard/config/fleet.yaml" ]]; then
   KNOW_FLEET="${REPO_DIR}/advisor/knowledge-fleet"
-  install -d -o "${RUN_USER}" -g "${RUN_USER}" -m 0750 "${REPO_DIR}/advisor/knowledge-bundles"
+  KNOW_BUNDLES="${REPO_DIR}/advisor/knowledge-bundles"
+  install -d -o "${RUN_USER}" -g "${RUN_USER}" -m 0750 "${KNOW_BUNDLES}"
+  # `install -d` hands over the directory, never what is in it. An uninstall
+  # --keep gives every file the dashboard's account owned back to the tree's
+  # owner before it removes the account, so after the reinstall the push
+  # counter (seq.json), the delivery record and the archived bundles were the
+  # login's, 0640, and every Promote stopped at "seq.json is unreadable"
+  # (#1237). They are handed back here the way data/ is: entry by entry, only
+  # what is not already the account's, on descriptors, never through a link.
+  # The directory is the account's, so it can put a link at any name in it.
+  if (( ! LEGACY_ACCOUNT )) && [[ -n "${RUN_UID}" ]]; then
+    KB_OWN_RC=0
+    find "${KNOW_BUNDLES}" -mindepth 1 ! -uid "${RUN_UID}" \( -type f -o -type d \) -print0 2>/dev/null \
+      | python3 -I "${SCRIPT_DIR}/state-file.py" own-many "${RUN_UID}" "${RUN_GID}" "" --root "${KNOW_BUNDLES}" \
+      || KB_OWN_RC=$?
+    if [[ "${KB_OWN_RC}" -eq 3 ]]; then
+      echo "${S_AMBER}Some entries in ${KNOW_BUNDLES} were not plain files or directories and were left as they are (above).${S_OFF}"
+    elif [[ "${KB_OWN_RC}" -ne 0 ]]; then
+      echo "${E_AMBER}warning: ${KNOW_BUNDLES} could not be fully handed to ${RUN_USER} (above). Promote stops until it is.${E_OFF}" >&2
+    fi
+  fi
   # Created only when missing, and owned by the dashboard's account when it
   # is: `install -d` applies -o/-g/-m to a directory that already exists, so
   # naming an owner here unconditionally would take the corpus away from the

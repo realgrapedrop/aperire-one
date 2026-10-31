@@ -21,6 +21,11 @@ func main() {
 		"load --config exactly as a normal start does, print the node config "+
 			"path it would open (if any), whether it reads it, and each port's "+
 			"resolved value and source, then exit; touches no network and no socket")
+	checkDash := flag.Bool("check-dashboard", false,
+		"load --config, try dashboard_url once with the relay's own handshake and say "+
+			"which of these it is: the name does not resolve, the connection is refused or "+
+			"times out, the TLS handshake fails, the token is refused, or it is accepted; "+
+			"sends no frame, then exits (0 only when accepted)")
 	flag.Parse()
 
 	// Cheap and side-effect-free on purpose: prepare-host.sh's freshness check
@@ -43,6 +48,12 @@ func main() {
 			os.Exit(1)
 		}
 		return
+	}
+
+	// Ahead of log.SetFlags for the same reason: a script reads the key line
+	// off stdout, and the answer is the exit code.
+	if *checkDash {
+		os.Exit(runCheckDashboard(os.Stdout, os.Stderr, *cfgPath, nil, checkWithin))
 	}
 
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)

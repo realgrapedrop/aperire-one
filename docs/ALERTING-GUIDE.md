@@ -241,7 +241,7 @@ Every email, push and webhook carries the same four labelled lines, so you can t
 | Line | What it says | Where it comes from |
 |---|---|---|
 | Node | The node's name and its role: `validator-1 (validator)` | The label in the node's `fleet-link.json`, else its `fleet.yaml` label, else the machine's short name. An aggregator uses its own `fleet.yaml` label first. The role is `validator`, `stock node` or `aggregator` |
-| Host | The machine's hostname: `srv1` | The hostname. `APERIRE_HOSTNAME` overrides it |
+| Host | The node's host name: `srv1` | The node's host name. In a split install it's the host the relay reports. `APERIRE_HOSTNAME` overrides it |
 | Node key | The node's public key, shortened: `n9KmK…6sWW` | The key the node reports for itself |
 | Link | The address of this node's dashboard | `APERIRE_PUBLIC_URL` when set, else `public_url` in `authn.yaml`, else the fleet row's `dashboard_url` |
 
@@ -265,11 +265,9 @@ A fact the dashboard can't read says so in words, never a blank:
 
 - `role not read yet` means the dashboard hasn't heard from its node since it started. It does not mean stock node.
 - `no local node` on an aggregator's Node key line: an aggregator has no node of its own to read.
-- `no dashboard address is set` means no address another machine could open is configured. A `localhost` or `127.0.0.1` address doesn't count, because a link to it works only on the host itself. Set `public_url` in `authn.yaml` and restart the dashboard, and the next alert carries a link. The dashboard reads that file once, at start.
+- `no dashboard address is set` means no address another machine could open is configured. A `localhost` or `127.0.0.1` address doesn't count, and neither does `localhost.` with a trailing dot or `[::ffff:127.0.0.1]`, because a link to any of them works only on the host itself. When `public_url` has several entries, the first one that counts is used. Set `public_url` in `authn.yaml` and restart the dashboard, and the next alert carries a link. The dashboard reads that file once, at start.
 
-One limit:
-
-- **In a split install (Shape B) the Host line names the machine the dashboard runs on,** not the validator's host, and so does the Node line when there is no name from pairing or `fleet.yaml`. Set `APERIRE_HOSTNAME` to name the node the way you want it. CPU, memory and disk alerts there still describe the validator's host, which the relay reports.
+In a split install (Shape B) the Host line names the validator's host as the relay reports it, and so does the Node line when there is no name from pairing or `fleet.yaml`. Set `APERIRE_HOSTNAME` to name the node another way, and it takes priority. Until a relay has reported, or when it reports no hostname, the Host line names the dashboard's own machine.
 
 ---
 

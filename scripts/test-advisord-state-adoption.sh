@@ -594,6 +594,7 @@ set -euo pipefail
 UNIT_NAME=aperire-advisord
 ADVISOR_PORT=7810
 TOKEN="$TMP/state/token"
+ADV_LINT_MISSING=${RS_LINT_MISSING:-0}
 . "$TMP/start.sh"
 EOF
   case "$ROOT_HOW" in
@@ -665,6 +666,24 @@ else bad "a healthy start passes" "exit $rc: $out"; fi
 if ! grep -q 'journal line' <<<"$out"
 then ok "with no journal noise on a host where nothing went wrong"
 else bad "a healthy start is quiet" "$out"; fi
+if ! grep -q 'knowledge-lint' <<<"$out"
+then ok "and nothing about the linter when the build block found it"
+else bad "a present linter is not repeated (#1215)" "$out"; fi
+
+# #1215. The build block warns that knowledge-lint is missing where it picks
+# the binaries, about a thousand lines before this. The report says it once
+# more, after the answer check, on stderr like the warning itself.
+out="$(RS_LINT_MISSING=1 run_start)"; rc=$?
+if [[ $rc -eq 0 ]] && grep -A3 '/v1/status OK' <<<"$out" | grep -q 'knowledge-lint is still missing' \
+   && grep -q '503' <<<"$out"
+then ok "a missing linter is said again after /v1/status OK, with what it costs (#1215)"
+else bad "the missing linter is repeated at the end (#1215)" "exit $rc: $out"; fi
+# run_start folds stderr in, so the script it just wrote is run again with
+# stderr thrown away.
+out="$(PATH="$TMP/bin:$PATH" bash "$TMP/run-start.sh" 2>/dev/null)"
+if grep -q '/v1/status OK' <<<"$out" && ! grep -q 'knowledge-lint' <<<"$out"
+then ok "  and on stderr, where the first warning went"
+else bad "the repeat is on stderr (#1215)" "$out"; fi
 
 echo
 echo "── minting the approval token cannot be aimed somewhere else (#652) ─"

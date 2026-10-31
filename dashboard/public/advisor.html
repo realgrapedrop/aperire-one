@@ -225,9 +225,6 @@ html[data-embedded] header{display:none}
   .node-chip:hover{border-color:var(--border-hi);background:var(--surface-hi)}
   .node-chip:focus-visible{outline:none;border-color:var(--accent);box-shadow:0 0 0 1px rgba(var(--blue-rgb), 0.4)}
   .node-chip[aria-expanded="true"]{border-color:var(--accent);background:var(--surface-hi)}
-  .chip-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0;background:var(--text-muted);border:1px solid rgba(0,0,0,0.3)}
-  .chip-dot.ok{background:var(--green);box-shadow:0 0 4px rgba(var(--green-rgb), 0.55)}
-  .chip-dot.warn{background:var(--amber);box-shadow:0 0 4px rgba(var(--amber-rgb), 0.55)}
   .chip-name{font-weight:700;max-width:128px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .chip-sep{color:var(--border-hi)}
   .chip-roll{display:flex;align-items:center;gap:4px;color:var(--text-dim);font-weight:600}
@@ -633,15 +630,16 @@ html[data-embedded] header{display:none}
   .ccard.crit .cdot,.ccard.page .cdot{background:var(--red)}
   .ctitle{font-size:12.5px;font-weight:600;color:var(--text);
     min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  /* One column below 720: the card is the full width and there is room to
-     read the whole title, so it wraps instead of ellipsising. The tooltip
-     that carries the full text on a desktop has no equivalent on a phone —
-     there is nothing to hover — so an ellipsis there simply loses the words.
-     Measured at 390px: every title was clipped ("relay_feed_age_s over its
-     thr…") before this. */
+  /* One column below 720: the card is the full width, so a concern's title
+     gets two lines and then an ellipsis. Wrapping it freely ran to three
+     lines between the node chip and the Ask Advisor pill on a phone (#579).
+     The full title is the first line of the detail popover (.ctip), and a tap
+     on the card opens it, so nothing is lost to the ellipsis. */
   @media (max-width:720px){
     .chead{align-items:flex-start}
     .ctitle{white-space:normal;overflow:visible;text-overflow:clip}
+    .ccard[data-kind="concern"] .ctitle{display:-webkit-box;-webkit-box-orient:vertical;
+      -webkit-line-clamp:2;line-clamp:2;overflow:hidden;text-overflow:ellipsis;overflow-wrap:anywhere}
     .cdot,.cnode,.cgo{margin-top:1px}
   }
   /* The node badge is rendered only in fleet scope — on a single-node host
@@ -769,6 +767,10 @@ html[data-embedded] header{display:none}
     background:var(--surface-hi);border:1px solid var(--border-hi);border-radius:8px;
     padding:8px 10px;box-shadow:0 12px 30px rgba(0,0,0,.55);display:none;
     font-size:11.5px;line-height:1.5;color:var(--text);white-space:normal;overflow-wrap:anywhere}
+  .ctip .ctipt{font-weight:600;margin-bottom:4px}
+  /* The node badge clips a long label, so the whole label is a line of the
+     card's popover, never a native title="" (#1340). */
+  .ctip .ctipn{color:var(--text-muted);margin-bottom:4px}
   .ctip .cage{margin-top:6px;color:var(--text-muted)}
   /* Hover reveal ONLY on pointer devices. On touch, :hover on the card makes the
      first tap a hover (showing this popover) and a button inside it — the Ask
@@ -776,6 +778,10 @@ html[data-embedded] header{display:none}
      uses the tap-toggle (.tip-open) below, so the pill clicks on the first tap. */
   @media (hover:hover){ .ccard:hover .ctip{display:block} }
   .ccard.tip-open .ctip{display:block}
+  /* A keyboard reaches the popover through the card's Ask Advisor pill. It is
+     :focus-visible and not :focus-within on purpose: a tap or a click on the
+     pill focuses it too, and a pill press must not open the popover (#1340). */
+  .ccard:has(.cask:focus-visible) .ctip{display:block}
   .ccard[data-hastip]{cursor:pointer}
   .ccard[data-hastip] .cgo{cursor:pointer}
   /* A calm card's message (steady · measured … · from its stored series …) can
@@ -838,6 +844,14 @@ html[data-embedded] header{display:none}
   .crest{list-style:none;margin:6px 0 0;padding:0;display:flex;flex-direction:column;gap:4px}
   .crest li{display:flex;align-items:center;gap:8px;min-width:0;font-size:11.5px;color:var(--text-dim)}
   .crest .ctitle{font-weight:500;font-size:11.5px}
+  /* The list's full titles ride the same .ctip popover as the cards above, never
+     a native title="" (slow, unstyled, no touch). Hover on a pointer, tap on
+     touch (the row carries .tip-open), focus on the row's arrow for a keyboard. */
+  .crest li{position:relative}
+  .crest li .ctip{top:calc(100% + 2px)}
+  @media (hover:hover){ .crest li:hover .ctip{display:block} }
+  .crest li:focus-within .ctip,.crest li.tip-open .ctip{display:block}
+  .crest li[data-hastip]{cursor:pointer}
   /* The measurements disclosure. In quiet mode the summary is hidden and the
      fold is open, so the strip renders exactly as it always has. */
   .mfold{margin:0}
@@ -1399,6 +1413,20 @@ html[data-embedded] header{display:none}
   .thstatus.dim{color:var(--text-muted)}
   #apTermWrap .nodelive{margin:10px 12px 0;border-radius:6px}
  .nodelive[hidden]{display:none}
+  /* The node line's full sentence rides the same .ctip popover as the cards
+     (#1340): a hover on a pointer, a tap on touch, keyboard focus on the line.
+     The tip sits BESIDE the line, not inside it, so the line's own text stays
+     the state word and nothing that reads it picks up the sentence. */
+  .nlwrap{position:relative}
+  #apTermWrap .nlwrap .ctip{left:12px;right:12px;top:calc(100% - 1px);
+    font-family:var(--sans);font-weight:400;letter-spacing:0;text-transform:none}
+  .nodelive[hidden] ~ .ctip,.nlwrap .ctip:empty{display:none !important}
+  @media (hover:hover){ .nlwrap:hover .ctip{display:block} }
+  /* :focus-visible and not :focus-within: a tap focuses the line too, and the
+     second tap has to be able to close what the first opened. */
+  .nlwrap:has(.nodelive:focus-visible) .ctip,.nlwrap.tip-open .ctip{display:block}
+  .nodelive[tabindex]{cursor:pointer}
+  #apTermWrap.folded .nlwrap{display:none}
   #apTermWrap .term{margin:8px 4px;border:0;background:transparent}
   /* An empty pane (the idle gate screen leaves it empty) keeps no padding or
      margin, so the card ends tight at the bottom to match its tight top. */
@@ -2962,7 +2990,10 @@ html[data-embedded] header{display:none}
              mid-upgrade approved the wrong stage because "1. Prepare" was the
              button that looked ready. One box, one act, one button. -->
         <div class="termgate" id="apTermGate" hidden></div>
-        <div class="nodelive" id="apNodeLive" hidden></div>
+        <div class="nlwrap" id="apNodeWrap">
+          <div class="nodelive" id="apNodeLive" hidden></div>
+          <div class="ctip" id="apNodeTip"></div>
+        </div>
         <div class="nlsub" id="apNodeSub" hidden></div>
         <div class="term" id="apTerm" role="log" aria-live="polite" aria-atomic="false"
              aria-label="Live output from this step"></div>
@@ -3311,16 +3342,33 @@ html[data-embedded] header{display:none}
           // Already on screen, already in `state`, and not part of what
           // storage had. Held aside, merged back, never replayed.
           var live = state.turns;
+          // The same rule for the in-flight record: a handoff that asked
+          // while the session was still resolving wrote its own askId into
+          // `state.pending`, and that is a question this page is already
+          // watching. It is not something storage handed back, so it is
+          // never resumed (#1282: the first handoff on a fresh store
+          // adopted its own ask, a second working line polled the same
+          // askId and the answer arrived twice).
+          var liveAsk = state.pending;
           var fromStore = stored ? stored.turns : [];
+          var storedAsk = stored ? stored.pending : null;
           if (stored) {
             state = stored;
             state.turns = fromStore.concat(live);
             if (state.turns.length > LIMIT) state.turns = state.turns.slice(state.turns.length - LIMIT);
+            // The live ask is the newer one and the one this page clears when
+            // it settles, so it keeps the slot. Taking the stored record
+            // instead dropped it from the saved copy, and a reload
+            // mid-investigation could not find its way back (#104).
+            if (liveAsk) state.pending = liveAsk;
           }
           // Each of those live turns tried to save itself and could not —
           // there was no scope yet. One save now, so a reload still has them.
-          if (live.length) save();
-          cb(fromStore);
+          if (live.length || liveAsk) save();
+          // Second argument: the stored record to resume, and only when this
+          // page has no ask of its own in flight (one slot, and resuming the
+          // older one would clear the newer one's record when it settled).
+          cb(fromStore, liveAsk ? null : (storedAsk || null));
         };
         fetch('/auth/session', { credentials: 'same-origin' })
           .then(function (r) { return r.json(); })
@@ -4127,6 +4175,18 @@ html[data-embedded] header{display:none}
     return !!(r && r.body && r.body.ok === false && r.body.error === 'advisor_not_configured');
   }
 
+  // A read that never completed (the connection reset, the server restarting,
+  // a laptop waking) answered nothing, which is what a 502 does, and every card
+  // already has a branch for an answer with ok false: it paints "unavailable",
+  // clears what it held and, for the checks, retires the pending phrase. jget
+  // rejects instead ("Failed to fetch"), and a poll whose chain has nothing at
+  // its end turns that into an uncaught error, with the card still saying it is
+  // reading. loadChecks, loadPlan and loadLedger read through this. The catch
+  // sits on the read alone, so a bug in the painting code after it stays loud.
+  function jgetSoft(u) {
+    return jget(u).catch(function () { return { ok: false, status: 0, body: { error: 'unavailable' } }; });
+  }
+
   function jget(u) {
     var refused = localAdvisorCall(u);
     if (refused !== false) return refusedLocally(refused);
@@ -4584,6 +4644,7 @@ html[data-embedded] header{display:none}
    *  on screen before it, which is what stood under stock-node3's name on the
    *  aggregator (#263). */
   function paintStripIdentity(label) {
+    nodeRowArgs = null;
     var nameEl = document.getElementById('apNodeName');
     var depEl = document.getElementById('apDeployment');
     if (nameEl) {
@@ -5119,12 +5180,15 @@ html[data-embedded] header{display:none}
   var PEER_STATE_KINDS = {
     peer_timeout: 'timeout', advisor_unreachable: 'advisor', peer_unreachable: 'unreachable',
     peer_bad_response: 'unreadable', advisor_refused: 'refused', peer_refused: 'refused',
-    advisor_failed: 'failed', peer_integrity_mismatch: 'mismatch', peer_unknown: 'unknown'
+    advisor_failed: 'failed', peer_integrity_mismatch: 'mismatch', peer_unknown: 'unknown',
+    token_unreadable: 'token'
   };
   function peerStateOf(r, forNode) {
     if (!forNode || !r || !r.body || typeof r.body.error !== 'string') return null;
     var e = r.body.error;
-    if (!/^(?:peer|advisor)_[a-z_]+$/.test(e)) return null;
+    // `token_unreadable` (#1209) is this host's fact about its own file, and
+    // still a peer answer: nothing was sent to the node.
+    if (!/^(?:peer|advisor)_[a-z_]+$/.test(e) && e !== 'token_unreadable') return null;
     return {
       kind: PEER_STATE_KINDS[e] || 'answered', error: e,
       detail: typeof r.body.detail === 'string' ? r.body.detail : '',
@@ -5162,6 +5226,13 @@ html[data-embedded] header{display:none}
         return { head: n + ' answered as the wrong node',
           why: n + ' answered as the wrong node: its identity pin did not match, so nothing from it is shown. ' +
             'Re-pin it before trusting anything on this page.', tail: 'kept' };
+      case 'token':
+        // #1209. This host could not read its own token file for that node, so
+        // nothing was sent. The server's sentence names the file, its owner and
+        // its mode; "could not reach" would blame a node nobody asked.
+        return { head: 'This dashboard cannot read its token for ' + n,
+          why: d || ('This dashboard cannot read its token for ' + n + ', so nothing was sent to it.'),
+          tail: 'local' };
       case 'unknown':
         // This dashboard's own 404: it has no node by that name, so nothing was
         // asked of it and nothing about it is known.
@@ -5231,6 +5302,9 @@ html[data-embedded] header{display:none}
       document.getElementById('apOfflineWhy').innerHTML = esc(words.why) +
         (words.tail === 'asked-nothing'
           ? '<br><br>Nothing was asked of it, so nothing below the metrics is current. Choose a node that is in the registry.'
+          : words.tail === 'local'
+          ? '<br><br>Nothing below the metrics is current. The fix is on this host: ' +
+            'let this dashboard\u2019s account read that file. This page keeps asking, and the card clears once it can.'
           : words.tail === 'nothing'
           ? '<br><br>Nothing was measured about its Advisor, so nothing below the metrics is current. ' +
             'The dashboard itself answered. This page keeps asking, and the card clears when ' + esc(how.node) + ' answers.'
@@ -5454,10 +5528,41 @@ html[data-embedded] header{display:none}
   // when there is a hostname, and the name only when something real is known.
   function nodeRowName(d, p, forNode) {
     var self = d.self || {};
-    var name = self.label || p.container || d.node || forNode || 'unknown';
+    // The name every other page gives this node (#1292). advisord's own
+    // registry label is a key, not a name: on a node paired after its
+    // fleet.yaml self entry was written it still says the old name, while
+    // the header, Settings and the alerts say the pairing name.
+    //
+    // A peer view: the label the aggregator lists it under, the one the
+    // operator picked. This host: its self row's display_name from /api/fleet,
+    // read from the fleet chip's own poll so this row asks for nothing new.
+    // Only then advisord's label, which is what a roster that has not arrived
+    // yet, or an older server without display_name, still has to offer.
+    var name = forNode || fleetSelfDisplay() || self.label || p.container || d.node || 'unknown';
     var host = d.hostname || '';
     return host ? name + '@' + host : name;
   }
+
+  /** This host's display_name from the fleet roster the chip already holds,
+   *  '' when the roster has not arrived or the server predates the field. */
+  function fleetSelfDisplay() {
+    var nodes = [];
+    try {
+      var chip = window.__fleetChip;
+      nodes = (chip && typeof chip.getNodes === 'function' && chip.getNodes()) || [];
+    } catch (e) { nodes = []; }
+    var row = nodes.filter(function (n) { return n && n.self; })[0];
+    return (row && row.display_name) || '';
+  }
+
+  // What the NODE row last painted from, so it can be painted again when the
+  // roster arrives after the status did. Null while the row says "no node".
+  var nodeRowArgs = null;
+  window.addEventListener('aperire:fleet', function () {
+    var el = document.getElementById('apNodeName');
+    if (!el || !nodeRowArgs) return;
+    el.textContent = nodeRowName(nodeRowArgs.d, nodeRowArgs.p, nodeRowArgs.forNode);
+  });
 
   function loadStatus(pre) {
     // The NODE box is node-bound like everything else (the operator caught
@@ -5531,6 +5636,7 @@ html[data-embedded] header{display:none}
       // Peer-aware for free: /api/advisor/status proxies to the PEER's own
       // /v1/status verbatim, so viewing a peer renders that peer's label and
       // that peer's hostname, never this box's.
+      nodeRowArgs = noNodeHere ? null : { d: d, p: p, forNode: forNode };
       document.getElementById('apNodeName').textContent = noNodeHere
         ? (forNode ? 'no node on ' + forNode : 'no node on this host')
         : nodeRowName(d, p, forNode);
@@ -5624,7 +5730,7 @@ html[data-embedded] header{display:none}
 
     // Issued, then the gate is opened: what the strip is waiting for is this
     // request being on the wire, not its answer (#164).
-    var asked = jget(ceremonyBase() + '/check' + targetQS());
+    var asked = jgetSoft(ceremonyBase() + '/check' + targetQS());
     releaseCheckGate();
     return asked.then(function (r) {
       var box = document.getElementById('apChecks');
@@ -6249,6 +6355,15 @@ html[data-embedded] header{display:none}
       else if (seenNow) st = 'after';
       else st = 'done';
       return { fix: fx, state: st };
+    });
+    // #1311. A step still to come that the Advisor has no change behind is
+    // not on the path: the arguments row of a deployment that names a
+    // command: or an entrypoint: carries no fix (the wrapper will not
+    // overwrite what the operator chose), so drawing "write down the
+    // arguments" after the mount would offer a step it refuses. Named by the
+    // fix enum, as every step here is, never by the row's words.
+    steps = steps.filter(function (st) {
+      return st.state !== 'after' || st.fix === 'switch' || pending.indexOf(st.fix) >= 0;
     });
     return { steps: steps, next: next, pending: pending.length };
   }
@@ -6997,7 +7112,7 @@ html[data-embedded] header{display:none}
     // ceremony-on-the-node arrives with slice 3.
     if (stripNode && !ceremonyCapablePeer()) return;
 
-    return jget(ceremonyBase() + '/plan' + targetQS()).then(function (r) {
+    return jgetSoft(ceremonyBase() + '/plan' + targetQS()).then(function (r) {
       var box = document.getElementById('apPlan');
       if (!r.ok) {
         // #560, same reasoning as loadChecks just above: a peer's refusal
@@ -7330,6 +7445,7 @@ html[data-embedded] header{display:none}
     // node-status fills it.
     stripIdent = null;
     stripAdvisorMissing = false;
+    nodeRowArgs = null; // a late roster must not repaint the node just left
     var nameEl = document.getElementById('apNodeName');
     if (nameEl) nameEl.textContent = stripNode || '\u2014';
     var depEl = document.getElementById('apDeployment');
@@ -7610,6 +7726,14 @@ html[data-embedded] header{display:none}
     if (err === 'peer_timeout') {
       return '<div class="note">' + esc(forNode) + ' did not answer in time. Its records live on ' +
         'that host and are unchanged; this view recovers when it answers.</div>';
+    }
+    // #1209. This host could not read its own token for that node, so nothing
+    // was sent: the server's sentence names the file, its owner and its mode.
+    if (err === 'token_unreadable') {
+      var tok = (r.body && typeof r.body.detail === 'string' && r.body.detail) ? r.body.detail
+        : 'This dashboard cannot read its token for ' + forNode + ', so nothing was sent to it.';
+      return '<div class="note">' + esc(tok) + ' Its records live on that host and are unchanged; ' +
+        'this view recovers once this dashboard can read that file.</div>';
     }
     if (err === 'peer_bad_response') {
       return '<div class="note">' + esc(forNode) + ' answered, and this dashboard could not read the answer. ' +
@@ -8100,6 +8224,15 @@ html[data-embedded] header{display:none}
       });
     });
   }
+  // What a Promote whose push did not reach every node spent (#1237). A push
+  // that stopped before it reserved a sequence (an unreadable counter, the
+  // lint) spent none, and the line used to say "Sequence none is spent".
+  function promoteSeqLine(seq) {
+    return seq
+      ? 'Sequence ' + seq + ' is spent; the next push builds the one after it.'
+      : 'No sequence was reserved, so none was spent.';
+  }
+
   function promoteFleetMemRow(row) {
     var key = fleetMemKey(row);
     var d = fleetMemDraft(row);
@@ -8130,7 +8263,7 @@ html[data-embedded] header{display:none}
         head: p.ok
           ? 'Promoted to ' + r.body.file + ' and applied on every node.'
           : 'Promoted to ' + r.body.file + ', the corpus has it, but the push did not reach every node. ' +
-            'Sequence ' + (p.seq || 'none') + ' is spent; the next push builds the one after it.',
+            promoteSeqLine(p.seq),
         lines: lines,
       };
       delete FleetMem.drafts[key];
@@ -8151,7 +8284,7 @@ html[data-embedded] header{display:none}
     var cached = ledgerCache[forNode];
     var url = ledgerApiBaseFor(forNode) + '/ledger';
     if (cached && cached.entries.length) url += '?since_seq=' + cached.lastSeq;
-    return jget(url).then(function (r) {
+    return jgetSoft(url).then(function (r) {
       var box = document.getElementById('apLedger');
       var src = document.getElementById('apLedgerSrc');
       // The count badge. Green says the chain verified whole on this load, red
@@ -10118,10 +10251,14 @@ html[data-embedded] header{display:none}
         var box0 = document.getElementById('apDrawer');
         var rn = document.createElement('div');
         rn.className = 'rsroute';
-        rn.textContent = 'Your question names ' + routed + ' — switching to ' +
-          routed + ' and asking its own Advisor.';
+        // This host is not a peer to switch to (#1220): its Advisor is asked
+        // through its own route and the picker stays where it is.
+        rn.textContent = routed.self
+          ? 'Your question names ' + routed.name + '. Asking this dashboard\u2019s own Advisor.'
+          : 'Your question names ' + routed.label + ' — switching to ' +
+            routed.label + ' and asking its own Advisor.';
         box0.appendChild(rn); box0.scrollTop = box0.scrollHeight;
-        switchNodeAndAsk(routed, q);
+        switchNodeAndAsk(routed.label, q);
         return;
       }
     }
@@ -10501,7 +10638,7 @@ html[data-embedded] header{display:none}
     // conversation now holds. A handoff question asked while this was still
     // resolving is already painted, and replaying it would paint it twice
     // (#97).
-    apConvo.load(function (turns) {
+    apConvo.load(function (turns, resume) {
       turns = turns || [];
       if (turns.length) {
         // A slow session resolves after the handoff has already bubbled its
@@ -10531,7 +10668,7 @@ html[data-embedded] header{display:none}
       }
       // After the turns, so the working line lands under the question it
       // belongs to rather than above it.
-      resumeAsk(apConvo.pending());
+      resumeAsk(resume);
       // After the turns, so the drawer opens onto a conversation rather than
       // opening empty and filling in.
       window.dispatchEvent(new Event('aperire:convo-restored'));
@@ -12236,6 +12373,8 @@ html[data-embedded] header{display:none}
     } else if (r.kind === 'approvefailed') {
       html = '<div class="rahead">The approval did not go through.</div>' + esc(r.why || '') +
         '<br><span class="rawhy">Nothing was approved. This stays until you approve again.</span>';
+    } else if (r.kind === 'runrefused') {
+      html = '<div class="rahead">The upgrade did not start.</div>' + esc(r.why || '');
     } else if (r.kind === 'cancelfailed') {
       html = '<div class="rahead">The approval was not revoked.</div>' + esc(r.why || '') +
         ' An approval that is still held expires on its own.';
@@ -12583,6 +12722,14 @@ html[data-embedded] header{display:none}
         // sits over a grant that already started. Requested as 'prepare',
         // never 'upgrade' — the executor chains into the restart itself.
         startTermRun(ctx.runStage, ctx);
+        // startTermRun's early attach repaints the box and leaves the chip.
+        // The grant has just cleared the ask, so until a refresh or the
+        // execute answer repaints it the box says "approved" while the chip
+        // still says "waiting for the Advisor", and a poll between the two
+        // reads two stories (#1261). Both in this task. approvedRunPending()
+        // holds here, so null is exact; the Run button's own call
+        // (termRun) is not a grant and is left alone.
+        termChrome(null);
         if (ctx.onGranted) ctx.onGranted();
         // Put the operator where the thing they just approved plays out, and
         // keep them there while the panel grows under it (#77). Armed after
@@ -14876,19 +15023,26 @@ html[data-embedded] header{display:none}
     if (Term.running || cutoverInFlight()) return why('ceremony running');
     var current = stripNode || null;
     var found = [];
-    (chip.getNodes() || []).forEach(function (n) {
-      if (!n || !n.label) return;
+    var nameRe = function (name) {
       // Word-boundary, case-insensitive: "node2" in "is node2 ok?", never
       // inside "node20". Labels are [a-z0-9-], so the escape is for safety
       // rather than need.
-      var re = new RegExp('(^|[^a-z0-9-])' + n.label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '($|[^a-z0-9-])', 'i');
-      if (!re.test(q)) return;
+      return new RegExp('(^|[^a-z0-9-])' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '($|[^a-z0-9-])', 'i');
+    };
+    (chip.getNodes() || []).forEach(function (n) {
+      if (!n || !n.label) return;
+      // This host's row answers to the name every page prints for it
+      // (display_name, #1284) as well as to its registry label.
+      var names = [n.label];
+      if (n.self && n.display_name && n.display_name !== n.label) names.push(n.display_name);
+      var said = names.filter(function (nm) { return nameRe(nm).test(q); })[0];
+      if (!said) return;
       if (n.self && !current) return;         // our own name, on ourselves
       if (current && n.label === current) return; // the node already selected
-      found.push(n.label);
+      found.push({ label: n.label, self: !!n.self, name: n.self ? said : n.label });
     });
-    if (found.length === 1) { window.__apAutoRouteWhy = 'routed'; return found[0]; }
-    return why(found.length ? 'ambiguous: ' + found.join(',') : 'no other label named');
+    if (found.length === 1) { window.__apAutoRouteWhy = found[0].self ? 'routed to self' : 'routed'; return found[0]; }
+    return why(found.length ? 'ambiguous: ' + found.map(function (f) { return f.label; }).join(',') : 'no other label named');
   }
 
   /** Select a node in the header, then ask it the same thing.
@@ -14935,6 +15089,16 @@ html[data-embedded] header{display:none}
   }
 
   function switchNodeAndAsk(label, question) {
+    // This host's own row is not a peer: /api/node/<its label>/advisor is a
+    // peer_unknown, the aggregator being in no one's peer list, itself
+    // included (#1220). Ask its own Advisor through the self route and leave
+    // the picker on the node being viewed.
+    var chipNodes = (window.__fleetChip && typeof window.__fleetChip.getNodes === 'function' && window.__fleetChip.getNodes()) || [];
+    var selfRow = chipNodes.filter(function (n) { return n && n.self && n.label === label; })[0];
+    if (selfRow) {
+      send(question, { self: true, label: '', display: selfRow.display_name || selfRow.label, base: '/api/advisor' });
+      return;
+    }
     var topWin;
     try { topWin = window.top; } catch (e) { topWin = window; }
     var h = (topWin.location.hash || '').replace(/^#/, '');
@@ -17195,6 +17359,7 @@ html[data-embedded] header{display:none}
         var why = res.body.error || 'could not start';
         if (res.body.failures) why += ': ' + res.body.failures.join('; ');
         var refusal = new Error(why);
+        refusal.reason = res.body.reason || '';
         // The executor's own refusal: a definite no, with the checks that said
         // it. Not a failure to reach it, which says nothing about the run.
         if (res.body.error === 'preconditions refuse' && Array.isArray(res.body.failures)) {
@@ -17203,6 +17368,9 @@ html[data-embedded] header{display:none}
         throw refusal;
       }
       Term.starting = false;
+      // A retry's refusal said on the card (#772) ends with the retry that
+      // started.
+      if (ApRefused && ApRefused.kind === 'runrefused') { ApRefused = null; approvalRefusedRender(); }
       // The answer says the run started; the transcript says whether it is
       // still going. With the terminal attached at approval it can outrun the
       // node's own 202 — a short run's verdict may already be painted — and a
@@ -17272,6 +17440,13 @@ html[data-embedded] header{display:none}
       // so the operator can retry without approving again. It says so on the
       // card that asked, never on the other one.
       actMsg('error', String(e && e.message || e), ctx && ctx.msgId);
+      // A retry from the run box (termRun) has no ctx, and the gate's helper
+      // line that actMsg writes to does not exist while an approval is held,
+      // so its refusal reached nobody: "Try the upgrade again" on an approval
+      // about to run out did nothing visible (#772). Said on the card, the way
+      // a revoke that failed is (#1096).
+      var cardSay = termRetryRefusal(stage, ctx, e, planState && planState.planId);
+      if (cardSay) { ApRefused = cardSay; approvalRefusedRender(); }
       // And to a caller whose helper line no longer exists. actMsg above
       // returns silently when its element is gone, which is exactly the case
       // for a gate that spent itself on the grant — the operator touched a
@@ -17279,6 +17454,17 @@ html[data-embedded] header{display:none}
       if (ctx && ctx.onRunFailed) ctx.onRunFailed(String(e && e.message || e));
       actSig = null; refresh();
     });
+  }
+
+  /** What a run-box retry that did not start says on the upgrade card, or
+   *  null. A ceremony's own run (ctx) has its helper line; a preconditions
+   *  refusal is in the transcript the executor opened before it re-measured. */
+  function termRetryRefusal(stage, ctx, e, planId) {
+    if (ctx || opKindOf(stage) !== 'upgrade') return null;
+    if (e && typeof e.refusal === 'string') return null;
+    var why = String(e && e.message || e);
+    return { kind: 'runrefused', failures: [], planId: planId, scope: stage,
+      why: why.charAt(0).toUpperCase() + why.slice(1) };
   }
 
   function termRun(btn) {
@@ -17894,6 +18080,9 @@ html[data-embedded] header{display:none}
     if (!Term.node) {
       el.className = 'nodelive';
       el.innerHTML = '<span class="dot"></span>reading the node…';
+      var ntip0 = document.getElementById('apNodeTip');
+      if (ntip0) ntip0.textContent = '';
+      el.removeAttribute('tabindex');
       if (sub) sub.hidden = true;
       return;
     }
@@ -17960,11 +18149,22 @@ html[data-embedded] header{display:none}
     var dotCls = 'dot' + (stale ? '' : ' ping') + (arrived ? '' : ' pulse-working');
     // The full sentence still exists — as the one-tap/hover detail, not as the
     // line itself. Set it only when a reachable line was shortened to a word.
+    // That detail is the .ctip beside the line, never a native title="" (#1340);
+    // the line takes focus only while there is a sentence to open.
+    var ntip = document.getElementById('apNodeTip');
+    var nwrap = document.getElementById('apNodeWrap');
+    if (nwrap && !nwrap.getAttribute('data-bound')) {
+      nwrap.setAttribute('data-bound', '1');
+      nwrap.addEventListener('click', function () { nwrap.classList.toggle('tip-open'); });
+    }
     if (stateWord && !unreadable) {
-      el.title = Term.node.detail;
+      if (ntip) ntip.textContent = Term.node.detail;
+      el.setAttribute('tabindex', '0');
       el.setAttribute('aria-label', Term.node.detail);
     } else {
-      el.removeAttribute('title');
+      if (ntip) ntip.textContent = '';
+      if (nwrap) nwrap.classList.remove('tip-open');
+      el.removeAttribute('tabindex');
       el.removeAttribute('aria-label');
     }
     // A held reading is labelled as one. The suffix already existed for a
@@ -18594,6 +18794,15 @@ html[data-embedded] header{display:none}
     return out;
   }
 
+  // The node badge clips a long label (it is capped at 120px), so the whole
+  // label is a line of the card's popover. Never a native title="" (#1340).
+  function nodeTipLine(node) {
+    var d = document.createElement('div');
+    d.className = 'ctipn';
+    d.textContent = 'Node: ' + node;
+    return d;
+  }
+
   function concernCard(c, scope) {
     var now = concernNow();
     var el = document.createElement('div');
@@ -18606,14 +18815,14 @@ html[data-embedded] header{display:none}
     var head = document.createElement('div');
     head.className = 'chead';
     var badge = scope === 'fleet'
-      ? '<span class="cnode" title="' + esc(c.node) + '">' + esc(c.node) + '</span>'
+      ? '<span class="cnode">' + esc(c.node) + '</span>'
       : '';
     var sym = c.severity === 'warn' ? '⚠' : '✕';   // ⚠ warning · ✕ critical
     var symLabel = c.severity === 'warn' ? 'warning' : 'critical';
     head.innerHTML =
       '<span class="csym" role="img" aria-label="' + symLabel + '">' + sym + '</span>' +
       badge +
-      '<span class="ctitle" title="' + esc(c.title) + '">' + esc(c.title) + '</span>';
+      '<span class="ctitle">' + esc(c.title) + '</span>';
     var go = document.createElement('button');
     go.className = 'cask';
     go.textContent = 'Ask Advisor';
@@ -18633,8 +18842,13 @@ html[data-embedded] header{display:none}
     // card face stays one clamped line shorter (operator, 2026-08-15).
     var tip = document.createElement('div');
     tip.className = 'ctip';
+    // The full title leads it: on a phone the face clamps the title to two
+    // lines, and the popover is where the rest of it is read (#579).
+    var ttl = document.createElement('div'); ttl.className = 'ctipt'; ttl.textContent = c.title;
     var tev = document.createElement('div'); tev.textContent = c.evidence;
     var tage = document.createElement('div'); tage.className = 'cage'; tage.innerHTML = ageLine(c, now);
+    tip.appendChild(ttl);
+    if (scope === 'fleet') tip.appendChild(nodeTipLine(c.node));
     tip.appendChild(tev); tip.appendChild(tage);
 
     el.appendChild(head); el.appendChild(ev); el.appendChild(tip);
@@ -18667,8 +18881,8 @@ html[data-embedded] header{display:none}
     head.innerHTML =
       '<span class="csym" role="img" aria-label="informational">!</span>' +
       (scope === 'fleet' && card.node
-        ? '<span class="cnode" title="' + esc(card.node) + '">' + esc(card.node) + '</span>' : '') +
-      '<span class="ctitle" title="' + esc(title) + '">' + esc(title) + '</span>';
+        ? '<span class="cnode">' + esc(card.node) + '</span>' : '') +
+      '<span class="ctitle">' + esc(title) + '</span>';
     var go = document.createElement('button');
     go.className = 'cask';
     go.textContent = 'Ask Advisor';
@@ -18690,6 +18904,11 @@ html[data-embedded] header{display:none}
     var ageText = 'a step in its own ' + RANGE + ' history · no rule covers this · nothing is firing';
     var tip = document.createElement('div');
     tip.className = 'ctip';
+    // The whole title and the whole node label lead it: the face clips both,
+    // and neither is a native title="" any more (#1340).
+    var ttl = document.createElement('div'); ttl.className = 'ctipt'; ttl.textContent = title;
+    tip.appendChild(ttl);
+    if (scope === 'fleet' && card.node) tip.appendChild(nodeTipLine(card.node));
     var tev = document.createElement('div'); tev.textContent = ev.textContent;
     var tage = document.createElement('div'); tage.className = 'cage'; tage.textContent = ageText;
     tip.appendChild(tev); tip.appendChild(tage);
@@ -18723,8 +18942,8 @@ html[data-embedded] header{display:none}
     head.innerHTML =
       '<span class="csym" role="img" aria-label="ok">✓</span>' +
       (scope === 'fleet' && card.node
-        ? '<span class="cnode" title="' + esc(card.node) + '">' + esc(card.node) + '</span>' : '') +
-      '<span class="ctitle" title="' + esc(card.label) + '">' + esc(card.label) + '</span>';
+        ? '<span class="cnode">' + esc(card.node) + '</span>' : '') +
+      '<span class="ctitle">' + esc(card.label) + '</span>';
     // Green cards are askable too — people want to learn what a metric means, not
     // only when it's wrong (operator, 2026-08-15).
     var go = document.createElement('button');
@@ -18760,6 +18979,11 @@ html[data-embedded] header{display:none}
     // hover/tap without making the card tall (operator, 2026-08-15).
     var tip = document.createElement('div');
     tip.className = 'ctip';
+    // The whole label and the whole node label lead it, as on the other
+    // cards: the face clips both, and neither is a native title="" (#1340).
+    var tttl = document.createElement('div'); tttl.className = 'ctipt'; tttl.textContent = card.label;
+    tip.appendChild(tttl);
+    if (scope === 'fleet' && card.node) tip.appendChild(nodeTipLine(card.node));
     var tval = document.createElement('div'); tval.textContent = card.valueText;
     var tage = document.createElement('div'); tage.className = 'cage'; tage.textContent = age.textContent;
     tip.appendChild(tval); tip.appendChild(tage);
@@ -18894,10 +19118,23 @@ html[data-embedded] header{display:none}
           var li = document.createElement('li');
           li.innerHTML =
             '<span class="cdot" aria-hidden="true"></span>' +
-            '<span class="ctitle" title="' + esc(c.title) + '">' + esc(c.title) + '</span>' +
+            '<span class="ctitle">' + esc(c.title) + '</span>' +
             (body.scope === 'fleet' ? '<span class="cnode">' + esc(c.node) + '</span>' : '') +
             '<span>' + esc(fmtAgo(now - c.observed_at_ms)) + ' ago</span>';
           li.className = sevClass(c.severity);
+          // The whole title in the card popover, for a row that clips it.
+          var rtip = document.createElement('div');
+          rtip.className = 'ctip';
+          rtip.textContent = c.title;
+          li.appendChild(rtip);
+          li.setAttribute('data-hastip', '1');
+          li.addEventListener('click', function (e) {
+            if (e.target.closest && e.target.closest('.cgo')) return;
+            var was = li.classList.contains('tip-open');
+            Array.prototype.forEach.call(ul.querySelectorAll('li.tip-open'),
+              function (x) { x.classList.remove('tip-open'); });
+            if (!was) li.classList.add('tip-open');
+          });
           var b = document.createElement('button');
           b.className = 'cgo';
           b.innerHTML = '&#8250;';
@@ -19505,12 +19742,15 @@ html[data-embedded] header{display:none}
   // an empty queue — this tab's characteristic bug is a swallowed failure
   // rendering as a current, healthy reading, and "nothing waiting" over a
   // node that never answered is exactly that shape.
-  function inboxFetch(label, url) {
+  // `label` is the key a decision is routed by; `name` is what the card prints
+  // (this host's display_name, #1284) and `self` says the row is this host's,
+  // so an Ask from it goes to this host's own Advisor whatever it is called.
+  function inboxFetch(label, url, name, self) {
     return jget(url).then(function (r) {
       if (!r.ok || !r.body || !r.body.proposals) return null;
       return r.body.proposals.map(function (p) {
         return {
-          id: p.id, node: p.node || label, label: label,
+          id: p.id, node: p.node || label, label: label, name: name || label, self: !!self,
           created_at: p.created_at, question: p.question || '',
           title: p.title || '(untitled)', body: p.body || '',
           // The service's own grading of the note (advisord's
@@ -19678,7 +19918,8 @@ html[data-embedded] header{display:none}
       // label, which the server still resolves to this advisord — but the
       // log line, and the operator, deserve the node's name.
       var selfRow = nodes.filter(function (n) { return n && n.self; })[0];
-      var jobs = [inboxFetch((selfRow && selfRow.label) || null, '/api/advisor/proposals')];
+      var jobs = [inboxFetch((selfRow && selfRow.label) || null, '/api/advisor/proposals',
+        (selfRow && (selfRow.display_name || selfRow.label)) || null, true)];
       nodes.forEach(function (n) {
         // The aggregator's own row is already covered by the local read
         // above; asking for it again through the peer proxy would list every
@@ -19688,7 +19929,7 @@ html[data-embedded] header{display:none}
       });
       return Promise.all(jobs);
     }).catch(function () {
-      return [inboxFetch(null, '/api/advisor/proposals')];
+      return [inboxFetch(null, '/api/advisor/proposals', null, true)];
     }).then(function (lists) {
       return Promise.all(lists);
     }).then(function (lists) {
@@ -20008,7 +20249,7 @@ html[data-embedded] header{display:none}
     // grade tooltip on the left, next to what the reader most needs to know
     // before accepting.
     h += '<div class="pprov">' + gradeChips(row) +
-      '<span class="pnode">' + esc(row.label || row.node || 'this host') + '</span>' +
+      '<span class="pnode">' + esc(row.name || row.label || row.node || 'this host') + '</span>' +
       '<span class="pwhen">' + esc(when) + '</span>' +
       acts +
       '</div>';
@@ -20046,7 +20287,7 @@ html[data-embedded] header{display:none}
           '<option value="high"' + (d.priority === 'high' ? ' selected' : '') + '>high</option>' +
         '</select></label>' +
         '<label>Source<input type="text" id="apPfSource" value="' +
-          esc((row.label || row.node || 'this host') + ' Advisor') + '" disabled></label>' +
+          esc((row.name || row.label || row.node || 'this host') + ' Advisor') + '" disabled></label>' +
       '</div>';
       h += '<textarea class="pedit" id="apPfBody" spellcheck="false" ' +
         'placeholder="Markdown \u2014 a ## Summary and a ## Recommendation section read best">' + esc(d.body) + '</textarea>';
@@ -20145,7 +20386,7 @@ html[data-embedded] header{display:none}
     // (the title tip's own wiring lives in inboxTipInit, once, not per render)
     on('apPfAsk', function () {
       var r = Inbox.rows[Inbox.idx]; if (!r) return;
-      var to = askTargetFor(r.label || r.node, false);
+      var to = askTargetFor(r.label || r.node, !!r.self);
       // Remembered so the answer can come BACK: once a newer Advisor reply
       // exists, the card offers to use it as the proposal's revision \u2014 and,
       // when the investigation measured something, as its verification.
@@ -20279,7 +20520,7 @@ html[data-embedded] header{display:none}
         head: p.ok
           ? 'Promoted to ' + r.body.file + ' and applied on every node.'
           : 'Promoted to ' + r.body.file + ' — the corpus has it, but the push did not reach every node. ' +
-            'Sequence ' + (p.seq || 'none') + ' is spent; the next push builds the one after it.',
+            promoteSeqLine(p.seq),
         lines: lines,
       };
       Inbox.edit = false;
@@ -20314,7 +20555,7 @@ html[data-embedded] header{display:none}
     var ask = apLastAsk;
     if (!ask || !ask.id || !ask.reply) return;
     Inbox.busy = true;
-    Inbox.out = { ok: true, head: 'Verifying against ' + (row.label || row.node || 'this host') + '…', lines: [] };
+    Inbox.out = { ok: true, head: 'Verifying against ' + (row.name || row.label || row.node || 'this host') + '…', lines: [] };
     renderInbox();
     jpostJSON('/api/advisor/proposals/revise', {
       id: row.id, node_label: row.label || '', ask_id: ask.id, body: ask.reply,
@@ -20345,7 +20586,7 @@ html[data-embedded] header{display:none}
       var moved = b.provenance !== b.provenance_was || Number(b.rank) !== Number(b.rank_was);
       Inbox.out = {
         ok: true,
-        head: 'Verified against ' + (row.label || row.node || 'this host') + ' — ' +
+        head: 'Verified against ' + (row.name || row.label || row.node || 'this host') + ' — ' +
           (moved
             ? gradeWord(b.provenance_was) + ' rank ' + b.rank_was + ' → ' +
               gradeWord(b.provenance) + ' rank ' + b.rank
@@ -20377,7 +20618,7 @@ html[data-embedded] header{display:none}
       Inbox.busy = false; Inbox.rejecting = false; Inbox.edit = false;
       delete Inbox.drafts[draftKey(row)];
       Inbox.out = (r.ok && r.body && r.body.ok)
-        ? { ok: true, head: 'Rejected, and recorded on ' + (row.label || 'this host') + '.' + (reason ? ' Reason kept with it.' : ''), lines: [] }
+        ? { ok: true, head: 'Rejected, and recorded on ' + (row.name || row.label || 'this host') + '.' + (reason ? ' Reason kept with it.' : ''), lines: [] }
         : { ok: false, head: (r.body && r.body.error) || 'the rejection was not recorded on the node', lines: [] };
       loadInbox(true);
     }).catch(function (e) {

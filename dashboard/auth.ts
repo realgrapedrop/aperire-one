@@ -58,9 +58,11 @@ import yaml from 'js-yaml';
 
 import { db, hashToken, recordAuthEvent } from './db.js';
 import { sendDigestEmail } from './email.js';
+import { buildEnrollmentHtml, buildEnrollmentText } from './lib/mail-text.js';
 import { readBodyOrThrow } from './lib/read-body.js';
 import { postAdvisorApprove, postAdvisorCancel } from './lib/advisor-approve-call.js';
 import { edgeSafeStatus, edgeSafeRelay } from './lib/peer-advisor-answer.js';
+import { asCommaString, firstUsableUrl } from './lib/authn-fields.js';
 
 // ── Configuration ──────────────────────────────────────────────────
 // Source-of-truth precedence (highest first):
@@ -90,7 +92,17 @@ function loadAuthnConfig(): AuthnYaml {
     ?? join(import.meta.dirname, 'config', 'authn.yaml');
   try {
     const text = readFileSync(path, 'utf8');
-    authnConfigCache = (yaml.load(text) as AuthnYaml) || {};
+    const parsed = yaml.load(text);
+    const cfg = (parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}) as AuthnYaml;
+    // The two comma-separated keys are one string by the time anything reads
+    // them. A YAML list, the natural typo, is joined here (#1231) rather than
+    // meeting `.split` in whichever caller got there first.
+    const note = (msg: string) => console.warn(`[authn] ${msg}`);
+    authnConfigCache = {
+      ...cfg,
+      public_url: asCommaString('public_url', cfg.public_url, note),
+      rp_id:      asCommaString('rp_id', cfg.rp_id, note),
+    };
     console.log(`[authn] loaded ${path}`);
   } catch (err) {
     authnConfigCache = {};
@@ -173,19 +185,22 @@ export function setInstanceLabel(label: string | null): void { instanceLabel = l
  * passkeys are bound to, the origins a ceremony is accepted from, and the
  * public URL an operator reaches it at.
  *
- * From authn.yaml, the same first-entry reading `aperire-auth advisor-sync`
- * does, plus the origins() set WebAuthn actually verifies against. A page
- * that showed something derived from a request header would be showing the
- * browser's opinion of this host rather than this host's own (the Overview
- * HOST field already made that mistake once).
+ * From authn.yaml, plus the origins() set WebAuthn actually verifies against.
+ * `public_url` is the first entry another machine can open (the first entry
+ * when none is, #1233), which is the address this dashboard gives out in a
+ * pairing command and an alert's Link row. `aperire-auth advisor-sync` binds
+ * the Advisor to the plain first entry instead, because that is the origin
+ * the passkeys were made on. A page that showed something derived from a
+ * request header would be showing the browser's opinion of this host rather
+ * than this host's own (the Overview HOST field already made that mistake
+ * once).
  */
 export function dashboardIdentity(): { rp_id: string; origins: string[]; public_url: string | null } {
   const cfg = loadAuthnConfig();
-  const first = (v: string | undefined) => (v ?? '').split(',')[0].trim();
   return {
     rp_id: rpIDs()[0] ?? '',
     origins: expectedOrigins(),
-    public_url: first(cfg.public_url).replace(/\/+$/, '') || null,
+    public_url: firstUsableUrl(cfg.public_url),
   };
 }
 
@@ -2189,40 +2204,6 @@ function maskEmail(email: string): string {
   return local[0] + '•'.repeat(Math.max(3, local.length - 2)) + local[local.length - 1] + domain;
 }
 
-// Build the HTML body for an enrollment-link email. Mirrors
-// auth-send-magic.mjs but inline so the server doesn't need to spawn
-// a subprocess. Keep prose short — the operator usually wants the
-// link, not a brochure.
-function buildEnrollmentEmailHtml(url: string): string {
-  const esc = (s: string) => String(s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]!));
-  return `<!doctype html>
-<html><head><meta charset="utf-8"></head>
-<body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#1f2328;background:#fff;margin:0;padding:24px;">
-  <div style="max-width:520px;margin:0 auto;">
-    <h2 style="margin:0 0 16px;font-size:20px;">Enroll your Aperire passkey</h2>
-    <p style="margin:0 0 16px;color:#555;line-height:1.5;">
-      Click the link below to enroll a passkey on this device. Your browser
-      will prompt for biometric verification (Touch ID, Face ID, Windows
-      Hello, or a security key).
-    </p>
-    <p style="margin:24px 0;text-align:center;">
-      <a href="${esc(url)}" style="display:inline-block;padding:12px 24px;background:#0969da;color:#fff;text-decoration:none;border-radius:6px;font-weight:600;">
-        Enroll passkey
-      </a>
-    </p>
-    <p style="margin:16px 0 0;color:#656d76;font-size:13px;line-height:1.5;">
-      Or paste this URL into your browser:<br>
-      <code style="display:inline-block;margin-top:6px;padding:6px 8px;background:#f6f8fa;border-radius:3px;font-size:12px;word-break:break-all;">${esc(url)}</code>
-    </p>
-    <hr style="border:0;border-top:1px solid #d1d9e0;margin:24px 0 12px;">
-    <p style="margin:0;color:#8b949e;font-size:12px;">
-      Single-use link. If you didn't request this, ignore this email — the
-      URL becomes invalid as soon as it's used or after its expiry window.
-    </p>
-  </div>
-</body></html>`;
-}
-
 // Read channels.yaml on demand for the email channel's API key + sender.
 // Same shape as auth-send-magic.mjs's loader — keeps the logic next to
 // where it's used without coupling auth.ts to server.ts's parse cache.
@@ -2325,7 +2306,7 @@ export async function emailEnrollmentLink(
   try {
     const r = await sendDigestEmail(
       { apiKey: channel.apiKey, sender: channel.sender, recipients: [to] },
-      enrollmentSubject(), buildEnrollmentEmailHtml(url),
+      enrollmentSubject(), buildEnrollmentHtml(url), buildEnrollmentText(url),
     );
     if (r.ok) {
       console.log(`[authn] enrollment email sent to ${maskEmail(to)} (id ${r.messageId ?? '?'})`);
@@ -2387,12 +2368,12 @@ async function handleEnrollRequest(req: IncomingMessage, res: ServerResponse): P
   const baseUrl = enrollmentBaseUrl();
   const token = issueMagicLink(user.id, 'enroll', ttlMin);
   const url = `${baseUrl}/login.html?token=${token}`;
-  const html = buildEnrollmentEmailHtml(url);
+  const html = buildEnrollmentHtml(url);
 
   // Fire-and-forget the send; we already promised 200. Logging the
   // outcome lets the operator diagnose Resend issues from the server
   // log without surfacing them to whoever clicked the button.
-  sendDigestEmail({ apiKey: channelCfg.apiKey, sender: channelCfg.sender, recipients: [user.email] }, subject, html)
+  sendDigestEmail({ apiKey: channelCfg.apiKey, sender: channelCfg.sender, recipients: [user.email] }, subject, html, buildEnrollmentText(url))
     .then(r => {
       if (r.ok) console.log(`[authn] enrollment email sent to ${maskEmail(user.email!)} (id ${r.messageId ?? '?'})`);
       else      console.warn(`[authn] enrollment email failed for ${username}: ${r.error}`);

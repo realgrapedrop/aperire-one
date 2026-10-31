@@ -508,6 +508,11 @@ export APERIRE_TEST_VIA_SUDO=\$saw_n
 # NO_COLOR. A fake that passed it through would say the bootstrap carries it
 # across the boundary when nothing is carrying it at all.
 unset NO_COLOR
+# The same goes for a login's own APERIRE_INSTANCE (#1278): env_reset drops it,
+# so a value that reaches a program root runs got there on the command line.
+# state/sudo-keeps-env models the route that does not reset, a root login or
+# sudo -E, where a stale one would otherwise ride through.
+[[ -f "$TMP/state/sudo-keeps-env" ]] || unset APERIRE_INSTANCE
 # Distinguishes -u <operator> (as_operator) from a plain root run: the
 # kept-artifacts carry-over has to move the Advisor's directories as root.
 printf '%s\n' "\$*" >> "$TMP/state/sudo-exec"
@@ -753,6 +758,8 @@ EOF
 # path the test handed it.
 cat > "$TMP/bin/getent" <<EOF
 #!/usr/bin/env bash
+# state/getent-none: a passwd database with no entry for anyone (#616).
+[[ -f "$TMP/state/getent-none" ]] && exit 2
 # The Advisor's own account is a system account with no login, as
 # install-advisor-account.sh creates it; everyone else here is the operator.
 case "\${2:-}" in
@@ -6242,6 +6249,8 @@ write_fake_pair_script() { # $1 = where the checkout is
 printf '%s\n' "\$*" >> "$TMP/state/pair-args"
 cat >> "$TMP/state/pair-stdin"
 printf '%s\n' "\$( [[ -t 0 ]] && echo yes || echo no )" >> "$TMP/state/pair-stdin-tty"
+printf '%s\n' "\${APERIRE_INSTANCE-unset}" >> "$TMP/state/pair-instance"
+printf '%s\n' "\${APERIRE_INSTALL_TREE-unset}" >> "$TMP/state/pair-tree"
 echo "== Pairing"
 echo "  ok    paired, label validator1"
 EOF
@@ -6317,6 +6326,183 @@ else
 fi
 reset
 
+# ── --instance beside a pair names the dashboard to pair (#1278) ───
+#
+# The pair command asks one dashboard: the default instance's, or the named
+# one's when APERIRE_INSTANCE says so. A host with a second instance beside
+# the default used to pair the default one whatever the line said, because the
+# flag this bootstrap already takes for the wrapper was refused beside a pair
+# and nothing else could name the instance. The fake pair script logs the
+# APERIRE_INSTANCE it was handed ("unset" when it got none at all). The fake
+# sudo drops a login's own APERIRE_INSTANCE the way env_reset does, so a value
+# that arrives was passed on the command line.
+echo
+echo "--instance, beside --fleet-aggregator and --code, on a host with a second instance (#1278):"
+PAIR_CODE='APR-00000-00000-00000-00000'
+# Each instance has its own checkout, the way the Fleet Guide lays two nodes
+# on one host out, and its unit says where: the pair command takes the port
+# and the unit from the instance name and the tokens and the config from the
+# checkout, so the two have to be the same instance's.
+two_instances() {
+  reset
+  printf 'aperire-server.service enabled\naperire-server-node2.service enabled\naperire-relay.service enabled\naperire-advisord-node2.service enabled\naperire-advisord-node3.service enabled\n' > "$TMP/state/units"
+  mkdir -p "$TMP/etc/aperire" "$TMP/etc/systemd/system"
+  printf '[Service]\nWorkingDirectory=%s/dashboard\n' "$TMP/op/aperire-one" > "$TMP/etc/systemd/system/aperire-server.service"
+  printf '[Service]\nWorkingDirectory=%s/dashboard\n' "$TMP/op/inst2" > "$TMP/etc/systemd/system/aperire-server-node2.service"
+  write_fake_pair_script "$TMP/op/aperire-one"
+  write_fake_pair_script "$TMP/op/inst2"
+}
+pair_instance_seen() { tr '\n' '|' < "$TMP/state/pair-instance" 2>/dev/null; }
+
+two_instances
+run_sut --dir "$TMP/op/inst2" --fleet-aggregator https://agg.example --code "$PAIR_CODE" --instance node2
+if [[ $RC -eq 0 && "$(pair_instance_seen)" == "node2|" && "$(cat "$TMP/state/pair-tree" 2>/dev/null)" == "$TMP/op/inst2" ]]; then
+  ok "--instance node2 reaches the pair command as APERIRE_INSTANCE=node2, with that instance's checkout as the tree"
+else
+  bad "a named instance is passed to the pair command" "rc=$RC seen=$(pair_instance_seen): $OUT"; fi
+if [[ "$(cat "$TMP/state/pair-args" 2>/dev/null)" == "--code - --aggregator https://agg.example" \
+      && "$(cat "$TMP/state/pair-stdin" 2>/dev/null)" == "$PAIR_CODE" && "$OUT" != *"$PAIR_CODE"* ]]; then
+  ok "  and the code still crosses on stdin only, with the same arguments as before"
+else
+  bad "the instance changes nothing about how the code crosses" "args=$(cat "$TMP/state/pair-args" 2>/dev/null) out=$OUT"; fi
+if [[ "$OUT" == *"as instance node2"* ]]; then
+  ok "  and the line that says what it is about to do names the instance"
+else
+  bad "the announcing line names the instance" "$OUT"; fi
+
+two_instances
+run_sut --dir "$TMP/op/inst2" --fleet-aggregator https://agg.example --code "$PAIR_CODE" --instance=node2
+if [[ $RC -eq 0 && "$(pair_instance_seen)" == "node2|" ]]; then
+  ok "  and --instance=node2 does the same"
+else
+  bad "the --instance=NAME form is passed too" "rc=$RC seen=$(pair_instance_seen): $OUT"; fi
+
+# The name and the checkout have to be the same instance's. node2 pointed at
+# the default checkout would read that tree's tokens, ask node2's dashboard
+# and write the link into the wrong config.
+two_instances
+run_sut --fleet-aggregator https://agg.example --code "$PAIR_CODE" --instance node2
+if [[ $RC -ne 0 && ! -f "$TMP/state/pair-args" && "$OUT" == *"instance 'node2' runs from $TMP/op/inst2"* \
+      && "$OUT" == *"--dir $TMP/op/inst2"* && "$OUT" == *"no code was spent"* ]]; then
+  ok "an instance named without its own checkout is refused, with the checkout it runs from named"
+else
+  bad "node2 beside the default checkout is refused" "rc=$RC args=$(cat "$TMP/state/pair-args" 2>/dev/null): $OUT"; fi
+two_instances
+run_sut --dir "$TMP/op/inst2" --fleet-aggregator https://agg.example --code "$PAIR_CODE" --instance=
+if [[ $RC -ne 0 && ! -f "$TMP/state/pair-args" && "$OUT" == *"default dashboard runs from $TMP/op/aperire-one"* ]]; then
+  ok "  and the default instance beside another instance's checkout is refused the same way"
+else
+  bad "the default instance beside node2's checkout is refused" "rc=$RC: $OUT"; fi
+
+# Unnamed, on a host with two. The default would be a guess, and the code is
+# spent on whichever dashboard answers.
+two_instances
+run_sut --fleet-aggregator https://agg.example --code "$PAIR_CODE"
+if [[ $RC -ne 0 && ! -f "$TMP/state/pair-args" && "$OUT" == *"more than one dashboard"* \
+      && "$OUT" == *"the default one"* && "$OUT" == *"--instance node2"* && "$OUT" == *"no code was spent"* ]]; then
+  ok "a run that names no instance, on a host with two, is refused with the instances listed, and nothing runs"
+else
+  bad "an unnamed run on a multi-instance host is refused with the list" "rc=$RC args=$(cat "$TMP/state/pair-args" 2>/dev/null): $OUT"; fi
+listed="${OUT#*the dashboards here}"
+if [[ "$listed" == *"--instance node2   in $TMP/op/inst2"* && "$listed" == *"in $TMP/op/aperire-one"* ]]; then
+  ok "  and each dashboard in it is shown with the checkout it runs from"
+else
+  bad "the list names each checkout" "$listed"; fi
+if [[ "$listed" != "$OUT" && "$listed" != *"advisord"* && "$listed" != *"relay"* && "$listed" != *"node3"* ]]; then
+  ok "  and the list holds dashboards only, not the Advisor's or the relay's units"
+else
+  bad "only dashboard units are listed" "$OUT"; fi
+
+# The default instance, on purpose. An empty name given with an equals sign.
+two_instances
+run_sut --fleet-aggregator https://agg.example --code "$PAIR_CODE" --instance=
+if [[ $RC -eq 0 && "$(pair_instance_seen)" == "|" ]]; then
+  ok "--instance= with nothing after it pairs the default instance, on purpose, and says so to the pair command as empty"
+else
+  bad "the default instance can be asked for by name" "rc=$RC seen=$(pair_instance_seen): $OUT"; fi
+
+# A name no unit answers to.
+two_instances
+run_sut --fleet-aggregator https://agg.example --code "$PAIR_CODE" --instance node9
+if [[ $RC -ne 0 && ! -f "$TMP/state/pair-args" && "$OUT" == *"no dashboard instance 'node9'"* && "$OUT" == *"--instance node2"* ]]; then
+  ok "an instance with no dashboard unit is refused by name, with the ones that exist listed"
+else
+  bad "an unknown instance is refused" "rc=$RC: $OUT"; fi
+
+# The one instance on the host is a named one: an unnamed run would still pair
+# a default that is not there.
+reset
+printf 'aperire-server-node2.service enabled\n' > "$TMP/state/units"
+mkdir -p "$TMP/etc/aperire"
+write_fake_pair_script "$TMP/op/aperire-one"
+run_sut --fleet-aggregator https://agg.example --code "$PAIR_CODE"
+if [[ $RC -ne 0 && ! -f "$TMP/state/pair-args" && "$OUT" == *"--instance node2"* ]]; then
+  ok "a host whose only dashboard is a named one refuses an unnamed run too"
+else
+  bad "no default instance, no unnamed pair" "rc=$RC: $OUT"; fi
+
+# One default instance and no flag: nothing changed for the common host, and
+# a stale APERIRE_INSTANCE in the login is not the answer to which instance.
+reset
+printf 'aperire-server.service enabled\n' > "$TMP/state/units"
+mkdir -p "$TMP/etc/aperire" "$TMP/state"
+: > "$TMP/state/sudo-keeps-env"
+write_fake_pair_script "$TMP/op/aperire-one"
+APERIRE_INSTANCE=node2 run_sut --fleet-aggregator https://agg.example --code "$PAIR_CODE"
+if [[ $RC -eq 0 && "$(pair_instance_seen)" == "|" ]]; then
+  ok "no --instance: the pair command is handed an empty instance even where a login's APERIRE_INSTANCE=node2 rides through sudo"
+else
+  bad "a stale APERIRE_INSTANCE is not passed on" "rc=$RC seen=$(pair_instance_seen): $OUT"; fi
+
+# --instance is still the wrapper's anywhere that is not a pair on an installed
+# host, and a malformed name never gets as far as a unit.
+two_instances
+run_sut --fleet-aggregator https://agg.example --instance node2
+if [[ $RC -ne 0 && ! -f "$TMP/state/pair-args" && "$OUT" == *"--instance names the dashboard to pair, and this pair has no --code"* \
+      && "$OUT" == *"--fleet-aggregator <url> --code - --instance node2"* && "$OUT" != *"--node-wrapper"* ]]; then
+  ok "--instance with --fleet-aggregator and no --code is still refused, not dropped, and says what is missing (#1358)"
+else
+  bad "the flag is not silently dropped beside a bare --fleet-aggregator" "rc=$RC: $OUT"; fi
+# What is printed into a command to copy has been checked first: a name with a
+# second line in it is refused by the name rule and never echoed. The
+# aggregator is not echoed into that command at all (the row above reads <url>).
+two_instances
+run_sut --fleet-aggregator https://agg.example --instance $'node2\nsudo touch /tmp/pwned'
+if [[ $RC -ne 0 && "$OUT" == *"--instance must match [a-z0-9][a-z0-9-]{0,30}"* && "$OUT" != *"pwned"* && "$OUT" != *"curl -fsSL"* ]]; then
+  ok "  a name with a second line in it is refused by the name rule and never echoed"
+else
+  bad "the no-code sentence echoes only a checked name" "rc=$RC: $OUT"; fi
+# The sentence is for that shape only. Beside a wrapper flag the flag is the
+# wrapper's and the pair is the other mistake; on a host that is not installed
+# the old sentence stands, because --code would not be the whole answer there.
+two_instances
+run_sut --fleet-aggregator https://agg.example --instance node2 --node-wrapper
+if [[ $RC -ne 0 && "$OUT" != *"this pair has no --code"* ]]; then
+  ok "  beside --node-wrapper the new sentence is not used"
+else
+  bad "the no-code sentence is only for a pair" "rc=$RC: $OUT"; fi
+reset
+mkdir -p "$TMP/op/aperire-one"
+run_sut --fleet-aggregator https://agg.example --instance node2
+if [[ $RC -ne 0 && "$OUT" == *"--node-wrapper"* && "$OUT" != *"this pair has no --code"* ]]; then
+  ok "  and on a host that is not installed the old sentence stands"
+else
+  bad "the no-code sentence waits for an installed host" "rc=$RC: $OUT"; fi
+reset
+mkdir -p "$TMP/etc/aperire" "$TMP/op/aperire-one"
+run_sut --role=co-located --yes --fleet-aggregator https://agg.example --code "$PAIR_CODE" --instance node2
+if [[ $RC -ne 0 && "$OUT" == *"--node-wrapper"* ]]; then
+  ok "  and so is --instance beside a pair on a host that is not installed yet"
+else
+  bad "a fresh install does not drop --instance" "rc=$RC: $OUT"; fi
+two_instances
+run_sut --fleet-aggregator https://agg.example --code "$PAIR_CODE" --instance '../node2'
+if [[ $RC -ne 0 && ! -f "$TMP/state/pair-args" && "$OUT" == *"--instance must match"* ]]; then
+  ok "  and an instance name that is not one is refused before any unit is looked at"
+else
+  bad "a malformed instance name is refused" "rc=$RC: $OUT"; fi
+reset
+
 # A checkout built before fleet pairing (#176) has no pair script to run: a
 # named refusal, never a bare "No such file or directory" from bash itself.
 printf 'aperire-server.service enabled\n' > "$TMP/state/units"
@@ -6365,6 +6551,138 @@ if [[ "$OUT" != *"APR-00000-00000-00000-00000"* ]]; then
   ok "  and the code itself never appears in this run's output either"
 else
   bad "the code stayed out of the fresh-install output" "$OUT"
+fi
+reset
+
+# ── the operator's home, and who the pair branch's read test asks (#616) ─
+#
+# OP_HOME fell back to ${HOME:-/tmp}. With no passwd entry and no HOME that is
+# /tmp/aperire-one, a checkout under a directory anyone can write, with root
+# about to run out of it; under sudo, $HOME is root's. Each row runs the pair
+# branch on an installed host, which reads the checkout and writes nothing,
+# so the fallback is seen in the path the refusal names.
+echo
+echo "The operator's home is found or refused by name, never guessed (#616):"
+run_sut_home() { # $1 = HOME for the run ("" for none), rest = arguments; SUDO_USER from the caller
+  local home="$1"; shift
+  local -a e; mapfile -t e < <(env_for | grep -v '^HOME=')
+  [[ -n "$home" ]] && e+=("HOME=$home")
+  OUT="$(env -u HOME -u SUDO_USER "${e[@]}" ${RUN_SUDO_USER:+SUDO_USER="$RUN_SUDO_USER"} bash "$SUT" "$@" 2>&1)"; RC=$?
+}
+reset
+printf 'aperire-server.service enabled\n' > "$TMP/state/units"
+: > "$TMP/state/getent-none"
+RUN_SUDO_USER="" run_sut_home "" --fleet-aggregator https://agg.example --code APR-00000-00000-00000-00000
+if [[ $RC -ne 0 && "$OUT" == *"the home directory of $(id -un) could not be found"* && "$OUT" != *"/tmp/aperire-one"* \
+      && ! -f "$TMP/state/pair-args" ]]; then
+  ok "no passwd entry and no HOME: refused by name, and /tmp/aperire-one is never the checkout"
+else
+  bad "an unresolvable home is refused, not /tmp" "rc=$RC: $(tail -4 <<<"$OUT")"
+fi
+mkdir -p "$TMP/roothome"
+RUN_SUDO_USER="$(id -un)" run_sut_home "$TMP/roothome" --fleet-aggregator https://agg.example --code APR-00000-00000-00000-00000
+if [[ $RC -ne 0 && "$OUT" == *"could not be found"*"under sudo \$HOME belongs to root"* && "$OUT" != *"$TMP/roothome/aperire-one"* ]]; then
+  ok "  and under sudo, with no passwd entry, root's \$HOME is not taken for the operator's"
+else
+  bad "under sudo \$HOME is not the operator's home" "rc=$RC: $(tail -4 <<<"$OUT")"
+fi
+write_fake_pair_script "$TMP/op/aperire-one"
+RUN_SUDO_USER="" run_sut_home "$TMP/op" --fleet-aggregator https://agg.example --code APR-00000-00000-00000-00000
+if [[ $RC -eq 0 && -f "$TMP/state/pair-args" ]]; then
+  ok "  and with no passwd entry and no sudo, this account's own \$HOME still stands in, and the pair runs"
+else
+  bad "the operator's own HOME still stands in without sudo" "rc=$RC: $(tail -4 <<<"$OUT")"
+fi
+unset RUN_SUDO_USER
+reset
+
+# The read test, under root. `[[ -r ]]` in a root shell is true of anything,
+# so the pair branch's "not readable by <operator>" was a claim it never
+# tested. The rows lift the real functions and run them under fakeroot, where
+# EUID is 0. The sudo stand-in resets the environment the way sudo does, and
+# `test` on its PATH records who asked and answers what the row says, which
+# is the one way to make "root reads it, the operator does not" here.
+if ! command -v fakeroot >/dev/null 2>&1; then
+  bad "fakeroot is here for the pair branch's read-test rows" "fakeroot is not installed; who the read test asks was not measured"
+else
+  FK="$TMP/fk616"; rm -rf "$FK"; mkdir -p "$FK/shim" "$FK/home" "$FK/checkout"
+  OPNAME="$(id -un)"
+  cat > "$FK/shim/sudo" <<FAKESUDO
+#!/usr/bin/env bash
+user=""
+while [[ \$# -gt 0 ]]; do
+  case "\$1" in -n|-H|-E) shift ;; -u) user="\$2"; shift 2 ;; --) shift; break ;; -*) shift ;; *) break ;; esac
+done
+exec env -i HOME="$FK/home" PATH="$FK/shim:/usr/bin:/bin" RAN_AS_OPERATOR="\$user" "\$@"
+FAKESUDO
+  cat > "$FK/shim/test" <<FAKETEST
+#!/usr/bin/env bash
+printf 'test as=%s %s\n' "\${RAN_AS_OPERATOR:-root}" "\$*" >> "$FK/log"
+[[ -f "$FK/operator-cannot-read" ]] && exit 1
+exec /usr/bin/test "\$@"
+FAKETEST
+  chmod +x "$FK/shim/sudo" "$FK/shim/test"
+  lift_fn616() { awk -v n="$1" '$0 ~ "^" n "\\(\\) \\{" {p=1; print; if ($0 ~ /\}$/) exit; next} p {print} p && /^}$/ {exit}' "$SUT"; }
+  {
+    echo 'NO_COLOR_ENV=()'
+    echo "OP_USER=$OPNAME"
+    lift_fn616 as_operator; lift_fn616 operator_reads_dir
+  } > "$FK/fns.sh"
+  fk616() { # $1 = functions file; prints rc=N
+    rm -f "$FK/log"
+    env -i PATH="$FK/shim:/usr/bin:/bin" HOME="$FK/home" fakeroot bash -c ". \"$1\"; operator_reads_dir \"$FK/checkout\"; echo rc=\$?" 2>&1
+  }
+  : > "$FK/operator-cannot-read"
+  out="$(fk616 "$FK/fns.sh")"
+  if [[ "$out" == *"rc=1"* ]] && grep -qx "test as=$OPNAME -r $FK/checkout" "$FK/log" 2>/dev/null; then
+    ok "under root, the checkout's read test is asked as $OPNAME, and a checkout only root can read is refused"
+  else
+    bad "the read test is the operator's" "$out: $(cat "$FK/log" 2>/dev/null)"
+  fi
+  rm -f "$FK/operator-cannot-read"
+  out="$(fk616 "$FK/fns.sh")"
+  if [[ "$out" == *"rc=0"* ]] && grep -q "^test as=$OPNAME " "$FK/log" 2>/dev/null; then
+    ok "  and one the operator can read passes, asked the same way"
+  else
+    bad "a readable checkout passes the operator's read test" "$out: $(cat "$FK/log" 2>/dev/null)"
+  fi
+  # And the pair branch asks it there, not with a test of its own.
+  menu_body="$(awk '/^offer_the_menu\(\) \{/{p=1} p{print} p&&/^}$/{exit}' "$SUT")"
+  # shellcheck disable=SC2016  # literal source text to find, not expressions
+  if grep -q 'operator_reads_dir "\$DIR"' <<<"$menu_body" && ! grep -qE '\[\[ -d "\$DIR" && -r "\$DIR" \]\]' <<<"$menu_body"; then
+    ok "  and the pair branch's refusal that names $OPNAME rests on that test"
+  else
+    bad "the pair branch tests as the operator" "$(grep -n 'not readable by' -B2 <<<"$menu_body")"
+  fi
+fi
+
+# ── no python3: said before anything is fetched (#1193) ─────────────
+#
+# Every copy root makes out of the release runs its check in python3, at
+# /usr/bin or /bin and never off a PATH. A host with none used to fetch the
+# release and then refuse with "the release digests ... sit where a service
+# account can change them", which named a cause that was not there. A copy of
+# the script whose fixed paths name no python3 is that host.
+echo
+echo "A host with no python3 is told so, before anything is fetched (#1193):"
+M_NOPY="$TMP/no-python3.sh"
+mutant "$M_NOPY" 's#^  for p in /usr/bin/python3 /bin/python3; do$#  for p in /nonexistent/python3; do#' '  for p in /nonexistent/python3; do'
+reset
+run_file "$M_NOPY" --role=dashboard --yes
+if [[ $RC -ne 0 && "$OUT" == *"this install needs python3"*"sudo apt-get install -y python3"* \
+      && "$OUT" != *"sit where a service account can change them"* \
+      && ! -d "$TMP/op/aperire-one" && ! -f "$TMP/state/install-args" ]]; then
+  ok "a fresh install with no python3 is refused naming python3 and its apt line, with nothing fetched"
+else
+  bad "no python3 is named before the fetch" "rc=$RC dir=$([[ -d "$TMP/op/aperire-one" ]] && echo fetched || echo none): $(grep -E 'python3|refused|error' <<<"$OUT" | head -6)"
+fi
+reset
+run_file "$M_NOPY" --role=dashboard --check
+if [[ $RC -ne 0 && "$OUT" == *"no python3 at /usr/bin or /bin, and the install needs it"*"sudo apt-get install -y python3"* \
+      && -f "$TMP/state/preflight-args" && ! -f "$TMP/state/install-args" ]]; then
+  ok "  and --check reports it, still runs the checklist, and exits non-zero"
+else
+  bad "--check reports a missing python3" "rc=$RC: $(grep -E 'python3|checking' <<<"$OUT" | head -4)"
 fi
 reset
 
@@ -6849,7 +7167,7 @@ RS_PROGRAMS=( install-fleet-broker-grant.sh install-model-key-sealer.sh install-
   install-trust-sync-grant.sh install-update-grant.sh install-advisor-stack.sh install-aperire-service.sh
   install-aperire-relay.sh prepare-host.sh install-aperire-node.sh harden-advisord.sh reseal-model-key.sh
   close-node-config-exposure.sh migrate-node-nonroot.sh enable-advisory-delete.sh setup-aperire-tunnel.sh
-  enable-relay-colocated.sh install-can-delete-timer.sh )
+  enable-relay-colocated.sh install-can-delete-timer.sh place-peer-token.sh )
 write_fake_step_programs() { # $1 = where the checkout is
   local prog
   mkdir -p "$1/scripts"
@@ -6874,6 +7192,9 @@ exit \$(cat "$TMP/state/rs-rc" 2>/dev/null || echo 0)
 WEOF
     chmod +x "$1/scripts/$prog"
   done
+  # The one step that is handed bytes on standard input (#1144): its fake
+  # keeps them, so a row can compare them with what the caller sent.
+  sed -i '/^echo "== ran /i if [[ ! -t 0 ]]; then cat > "'"$TMP"'/state/rs-stdin-bytes"; fi' "$1/scripts/place-peer-token.sh"
 }
 rs_installed() { # an installed host whose checkout carries every step's program
   reset
@@ -7012,6 +7333,42 @@ if [[ $RC -eq 0 && "$(sed -n 1,3p "$TMP/state/rs-args" | tr '\n' ' ')" == "aperi
   ok "--run relay-colocated hands the enabler its four in its own order, the fourth the staged relay installer"
 else
   bad "--run relay-colocated" "rc=$RC args=$(rs_args) out=$OUT"
+fi
+
+# --run peer-token (#1144): the peer's token placement, the one step that is
+# handed bytes on standard input. The bytes must reach the staged program
+# exactly, on nothing but its stdin: not argv, not the environment, and not
+# anything the bootstrap's own sudo calls logged.
+rs_installed
+PT_TOKEN="$TMP/peer-token-in"
+printf 'peer-token-%s\n' "$$" > "$PT_TOKEN"
+APERIRE_LEAK=leaked run_sut --run peer-token --label stock-node4 < "$PT_TOKEN"
+if [[ $RC -eq 0 && "$(rs_args)" == "--label stock-node4 " ]] && rs_ran_staged place-peer-token.sh \
+   && [[ "$(cat "$TMP/state/rs-env" 2>/dev/null)" == "tree=$TMP/op/aperire-one instance=unset account=unset with_advisor=unset role=unset leak=unset" ]]; then
+  ok "--run peer-token --label <label> runs the staged placer with that one argument, told the install, past sudo's env reset"
+else
+  bad "--run peer-token --label" "rc=$RC args=$(rs_args) self=$(cat "$TMP/state/rs-self" 2>/dev/null) env=$(cat "$TMP/state/rs-env" 2>/dev/null) out=$OUT"
+fi
+if cmp -s "$PT_TOKEN" "$TMP/state/rs-stdin-bytes"; then
+  ok "  the token reaches the staged program on its standard input, byte for byte"
+else
+  bad "  the token crosses on stdin" "sent=$(cat "$PT_TOKEN") got=$(cat "$TMP/state/rs-stdin-bytes" 2>/dev/null) out=$OUT"
+fi
+pt_secret="$(cat "$PT_TOKEN")"
+if ! grep -rqF --exclude=rs-stdin-bytes -- "$pt_secret" "$TMP/state" && [[ "$OUT" != *"$pt_secret"* ]]; then
+  ok "  and nowhere else: not in the program's arguments, its environment, the sudo calls, or the run's output"
+else
+  bad "  the token is on stdin only" "$(grep -rlF --exclude=rs-stdin-bytes -- "$pt_secret" "$TMP/state" | tr '\n' ' ') out=$OUT"
+fi
+# Standard input held back until the root call: a program that reads it first
+# (the staging, the sudo probes) would have taken the token. A second step
+# gets a closed stdin as before.
+rs_installed
+run_sut --run harden-advisord < "$PT_TOKEN"
+if [[ $RC -eq 0 && ! -s "$TMP/state/rs-stdin-bytes" ]] && ! grep -q 'peer-token' "$TMP/state/rs-self" 2>/dev/null; then
+  ok "  no other step is handed standard input: a file piped into another step never reaches it"
+else
+  bad "  only peer-token carries stdin" "rc=$RC got=$(cat "$TMP/state/rs-stdin-bytes" 2>/dev/null)"
 fi
 
 # #1068. The rotation window's installer had no step, so a host whose node it
@@ -7182,6 +7539,47 @@ rs_refused "--image-tag that is not a release version" --run node --adopt --imag
 rs_refused "  with a semicolon" --run node --adopt --image-tag '3.3.0;id'
 rs_refused "  with a space" --run node --adopt --image-tag '3.3.0 x'
 rs_refused "--dir relative after the step" --run harden-advisord --dir relative
+
+# The label is the step's one argument, and it builds a file name as root. The
+# whitelist is checked in the bootstrap, before any root call, and each row
+# asserts the type's own message: a near name or an unknown step is refused
+# too, and would pass these on a bootstrap that has no such step.
+pt_refused() { # $1 = label, rest = arguments after --run peer-token; PT_SAYS = what the refusal says
+  local label="$1"; shift
+  rs_installed
+  run_sut --run peer-token "$@" < "$PT_TOKEN"
+  if [[ $RC -ne 0 && ! -e "$TMP/state/rs-args" && ! -e "$TMP/state/sudo-exec" && "$OUT" == *"${PT_SAYS:---label takes a node label}"* ]]; then
+    ok "$label"
+  else
+    bad "$label" "rc=$RC ran=$(rs_args) sudo=$(cat "$TMP/state/sudo-exec" 2>/dev/null) out=$OUT"
+  fi
+}
+pt_refused "--run peer-token --label with ../ (a path out of peer-tokens)" --label ../x
+pt_refused "  with a slash inside" --label x/y
+pt_refused "  with a dot" --label x.token
+pt_refused "  a leading hyphen" --label -x
+pt_refused "  an option for a label" --label --x
+pt_refused "  a shell word (; id)" --label 'x;id'
+# shellcheck disable=SC2016  # the literal text is the point
+pt_refused "  a command substitution" --label '$(id)'
+pt_refused "  a space" --label 'a b'
+pt_refused "  a capital" --label Node4
+pt_refused "  33 characters" --label "$(printf 'a%.0s' {1..33})"
+pt_refused "  empty" --label ''
+pt_refused "  an inline value that is not one (--label=../x)" --label=../x
+PT_SAYS="--run peer-token needs --label" pt_refused "--run peer-token with no --label"
+PT_SAYS="--label was given twice" pt_refused "  twice" --label a --label b
+PT_SAYS="--token-path is not an argument of --run peer-token" pt_refused "  an argument that is not its own (--token-path)" --label a --token-path /etc/shadow
+PT_SAYS="a is not an argument of --run peer-token" pt_refused "  a bare word" a
+if command -v script >/dev/null 2>&1; then
+  rs_installed
+  run_tty "" --run peer-token --label stock-node4
+  if [[ ! -e "$TMP/state/rs-args" && ! -e "$TMP/state/sudo-exec" && "$OUT" == *"reads the peer's token on its standard input, and this is a terminal"* ]]; then
+    ok "  on a terminal there is no token to read: refused before any root call, and it says what hands it over"
+  else
+    bad "  a terminal is refused" "ran=$(rs_args) sudo=$(cat "$TMP/state/sudo-exec" 2>/dev/null) out=$OUT"
+  fi
+fi
 rs_refused "--run with --update" --update --run harden-advisord
 rs_refused "  with --check" --check --run harden-advisord
 rs_refused "  a --yes before it" --yes --run harden-advisord
@@ -7871,11 +8269,12 @@ FAKEBIN
     echo "OP_USER=$OPNAME"
     echo "DIR=$FK/dir"
     lift_fn as_operator; lift_fn advisor_ask; lift_fn advisor_stamp_stale; lift_fn advisor_unstamped
+    grep -m1 '^ADVISOR_GO_MIN=' "$SUT"; lift_fn advisor_go_ok
   } > "$FK/fns.sh"
-  if [[ "$(grep -c '^[a-z_]*() {' "$FK/fns.sh")" -eq 4 ]]; then
-    ok "the lift found as_operator, advisor_ask, advisor_stamp_stale and advisor_unstamped in the real script"
+  if [[ "$(grep -c '^[a-z_]*() {' "$FK/fns.sh")" -eq 5 ]] && grep -q '^ADVISOR_GO_MIN=' "$FK/fns.sh"; then
+    ok "the lift found as_operator, advisor_ask, advisor_stamp_stale, advisor_unstamped and advisor_go_ok in the real script"
   else
-    bad "the lift found the four functions" "$(grep '^[a-z_]*() {' "$FK/fns.sh")"
+    bad "the lift found the five functions and the Go minimum" "$(grep -e '^[a-z_]*() {' -e '^ADVISOR_GO_MIN=' "$FK/fns.sh")"
   fi
   fk_run() { # $1 = the functions file, $2 = the command to run in it, $3 = the directory to start in
     rm -f "$FK/log"
@@ -7921,6 +8320,24 @@ FAKEBIN
   fi
   echo abc1234 > "$FK/stamp-aperire-executor"
 
+  # #1203. The update's Go probe asks `go version` the same way: as the
+  # operator, and from /. A Go the login owns, which refuses the way Go does
+  # from a directory its user cannot search, and records who ran it and where.
+  mkdir -p "$FK/gobin"
+  cat > "$FK/gobin/go" <<FAKEGO
+#!/usr/bin/env bash
+[[ "\$PWD" == "$FK/noenter" ]] && { echo "go: cannot determine current directory" >&2; exit 1; }
+printf 'go as=%s cwd=%s args=%s\n' "\${RAN_AS_OPERATOR:-root}" "\$PWD" "\$*" >> "$FK/log"
+[[ "\$1" == version ]] && echo "go version go1.23.4 linux/amd64"
+FAKEGO
+  chmod +x "$FK/gobin/go"
+  out="$(fk_run "$FK/fns.sh" "advisor_go_ok '$FK/gobin/go'; echo rc=\$?" "$FK/noenter")"
+  if [[ "$out" == *"1.23"*"rc=0"* && "$(asked_by)" == "$OPNAME " ]] && grep -q 'cwd=/ ' "$FK/log"; then
+    ok "advisor_go_ok started from a directory the login cannot search still finds the Go, asked as the operator from / (#1203)"
+  else
+    bad "advisor_go_ok does not depend on the starting directory (#1203)" "$out: asked by '$(asked_by)': $(cat "$FK/log" 2>/dev/null)"
+  fi
+
   # Each of these is the functions with one line of the fix taken out, and each
   # must turn a row above red. The first is the issue's own ablation.
   cut_fns() { # $1 = out, $2 = sed script, $3 = a fragment the result must hold
@@ -7934,6 +8351,7 @@ FAKEBIN
   cut_fns "$FK/old-stale.sh" 's#^  have="\$(advisor_ask "\$1" -version || true)"$#  have="$("$1" -version 2>/dev/null || true)"#' 'have="$("$1" -version 2>/dev/null || true)"'
   cut_fns "$FK/no-cd.sh" 's#^  ( cd / \&\& as_operator "\$@" ) 2>/dev/null$#  ( as_operator "$@" ) 2>/dev/null#' '( as_operator "$@" )'
   cut_fns "$FK/no-drop.sh" 's#^  if \[\[ \$EUID -eq 0 \&\& "\$OP_USER" != "root" \]\]; then$#  if false; then#' '  if false; then'
+  cut_fns "$FK/old-go.sh" 's#^  v="\$(advisor_ask "\$1" version | #  v="$(as_operator "$1" version 2>/dev/null | #' 'v="$(as_operator "$1" version 2>/dev/null | '
   }
   out="$(fk_run "$FK/no-asop.sh" "advisor_stamp_stale '$BIN' abc1234; echo rc=\$?" /)"
   if [[ "$(asked_by)" == "root " ]]; then
@@ -7964,6 +8382,18 @@ FAKEBIN
     ok "control: with the drop to the operator taken out of as_operator, the ask records root"
   else
     bad "control: the drop in as_operator is what the account row turns on" "$out: asked by '$(asked_by)'"
+  fi
+  out="$(fk_run "$FK/old-go.sh" "advisor_go_ok '$FK/gobin/go'; echo rc=\$?" "$FK/noenter")"
+  if [[ "$out" == "rc=1" ]]; then
+    ok "control: the probe before #1203, asked from the starting directory, reads the same Go as no Go"
+  else
+    bad "control: the cd / is what the Go probe row turns on (#1203)" "$out"
+  fi
+  out="$(fk_run "$FK/no-cd.sh" "advisor_go_ok '$FK/gobin/go'; echo rc=\$?" "$FK/noenter")"
+  if [[ "$out" == "rc=1" ]]; then
+    ok "control: and with the cd / taken out of advisor_ask, the Go probe reads no Go too"
+  else
+    bad "control: advisor_ask's cd / reaches the Go probe" "$out"
   fi
 fi
 

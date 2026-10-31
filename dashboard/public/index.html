@@ -156,9 +156,6 @@
   .node-chip:hover { border-color: var(--border-hi); background: var(--surface-hi); }
   .node-chip:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 1px rgba(var(--blue-rgb), 0.4); }
   .node-chip[aria-expanded="true"] { border-color: var(--accent); background: var(--surface-hi); }
-  .chip-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: var(--text-muted); border: 1px solid rgba(0,0,0,0.3); }
-  .chip-dot.ok   { background: var(--green); box-shadow: 0 0 4px rgba(var(--green-rgb), 0.55); }
-  .chip-dot.warn { background: var(--amber); box-shadow: 0 0 4px rgba(var(--amber-rgb), 0.55); }
   .chip-name { font-weight: 700; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .chip-sep { color: var(--border-hi); }
   .chip-roll { display: flex; align-items: center; gap: 4px; color: var(--text-dim); font-weight: 600; }
@@ -672,11 +669,11 @@
     <a class="tab" data-tab="advisor"    href="/advisor.html" hidden data-advisor-nav><span class="tab-title">Advisor</span><span class="tab-sub">Diagnosis &amp; guidance</span></a>
     <div class="tabs-spacer"></div>
     <span class="right-group">
-    <button class="audio-toggle" id="audio-toggle" title="Toggle ambient audio">
+    <button class="audio-toggle" id="audio-toggle" data-hdr-tip="Toggle ambient audio" aria-label="Toggle ambient audio">
       <svg class="audio-icon-off" viewBox="0 0 16 16" fill="currentColor" style="display:none"><path d="M6.717 3.55A.5.5 0 0 1 7 4v8a.5.5 0 0 1-.812.39L3.825 10.5H1.5A.5.5 0 0 1 1 10V6a.5.5 0 0 1 .5-.5h2.325l2.363-1.89a.5.5 0 0 1 .529-.06zM6 5.04 4.312 6.39A.5.5 0 0 1 4 6.5H2v3h2a.5.5 0 0 1 .312.11L6 10.96V5.04zm3.05.05a.5.5 0 0 1 .707 0c.652.652.978 1.486.978 2.41s-.326 1.758-.978 2.41a.5.5 0 1 1-.707-.707c.476-.476.685-1.073.685-1.703s-.21-1.227-.685-1.703a.5.5 0 0 1 0-.707z"/><path d="M1.5 14.5l13-13" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
       <svg class="audio-icon-on" viewBox="0 0 16 16" fill="currentColor"><path d="M6.717 3.55A.5.5 0 0 1 7 4v8a.5.5 0 0 1-.812.39L3.825 10.5H1.5A.5.5 0 0 1 1 10V6a.5.5 0 0 1 .5-.5h2.325l2.363-1.89a.5.5 0 0 1 .529-.06zM6 5.04 4.312 6.39A.5.5 0 0 1 4 6.5H2v3h2a.5.5 0 0 1 .312.11L6 10.96V5.04zm3.05.05a.5.5 0 0 1 .707 0c.652.652.978 1.486.978 2.41s-.326 1.758-.978 2.41a.5.5 0 1 1-.707-.707c.476-.476.685-1.073.685-1.703s-.21-1.227-.685-1.703a.5.5 0 0 1 0-.707zm2.122-2.12a.5.5 0 0 1 .707 0C13.26 4.352 14 5.985 14 7.5c0 1.515-.74 3.148-2.12 4.53a.5.5 0 0 1-.708-.708C12.37 10.124 13 8.763 13 7.5c0-1.263-.63-2.624-1.828-3.822a.5.5 0 0 1 0-.707z"/></svg>
     </button>
-    <button class="auth-pill" id="auth-pill" title="Signed in. Click for the account menu. Ctrl+Shift+L locks the dashboard." aria-label="Account: open the menu to log out">
+    <button class="auth-pill" id="auth-pill" data-hdr-tip="Signed in. Click for the account menu. Ctrl+Shift+L locks the dashboard." data-hdr-tip-notap aria-label="Account: open the menu to log out">
       <svg viewBox="0 0 16 16" fill="currentColor"><path d="M8 8a3 3 0 1 0 0-6 3 3 0 0 0 0 6zm0 1.2c-2.6 0-5 1.3-5 3.6V14h10v-1.2c0-2.3-2.4-3.6-5-3.6z"/></svg>
       <span class="name empty" id="authPillName"><span class="uname">—</span></span>
     </button>
@@ -1156,7 +1153,7 @@
         if (j && j.authed && j.username) {
           // The username column now stores the email. Show the
           // local-part in the pill (short, fits the header) and put
-          // the full address on the hover title so the operator can
+          // the full address in the hover help so the operator can
           // confirm which account is signed in.
           var atIdx = String(j.username).indexOf('@');
           var displayed = atIdx > 0 ? j.username.slice(0, atIdx) : j.username;
@@ -1176,7 +1173,13 @@
             nameEl.appendChild(roleEl);
           }
           nameEl.classList.remove('empty');
-          pill.title = j.username + (j.role ? ' (' + j.role + ')' : '') + '. Click for the account menu. Ctrl+Shift+L (Cmd+Shift+L on Mac) locks the dashboard.';
+          // The pill's hover help (theme-toggle.js shows it), not a native
+          // title=. -rest is what idle-tracker.js puts back when its warning
+          // ends, so a warning already showing when this answer lands is not
+          // overwritten.
+          var who = j.username + (j.role ? ' (' + j.role + ')' : '') + '. Click for the account menu. Ctrl+Shift+L (Cmd+Shift+L on Mac) locks the dashboard.';
+          pill.setAttribute('data-hdr-tip-rest', who);
+          if (!pill.classList.contains('is-idle-warn')) pill.setAttribute('data-hdr-tip', who);
         }
       })
       .catch(function () { /* shell stays usable; the pill is cosmetic */ });

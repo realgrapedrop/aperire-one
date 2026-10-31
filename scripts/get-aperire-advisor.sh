@@ -272,8 +272,13 @@ stage_install_for_root() {
   # shellcheck disable=SC2016  # the root shell's own positional parameters
   run_root bash -c '. "$1/release-digests-lib.sh" || exit 2
     mkdir -m 0755 -- "$2/run" || exit 2
-    rd_stage_tree "$3" "$2/run" || { [[ "${RD_REFUSED_WHY:-}" == accounts ]] && exit 6; exit 1; }' rd-stage-tree "$ROOT_LIB_DIR" "$out" "$DIR" || rc=$?
-  if [[ $rc -eq 6 ]]; then
+    rd_stage_tree "$3" "$2/run" || { [[ "${RD_REFUSED_WHY:-}" == accounts ]] && exit 6; [[ "${RD_REFUSED_WHY:-}" == python3 ]] && exit 7; exit 1; }' rd-stage-tree "$ROOT_LIB_DIR" "$out" "$DIR" || rc=$?
+  if [[ $rc -eq 7 ]]; then
+    # No python3 for the check to run in (#1355): no file was judged, and the
+    # line above says so once. Not a file that changed.
+    stage_refuse "root would not run the installers in $DIR: this host has no python3 at /usr/bin or /bin, and the check on every file runs in it, so no file there was judged. Nothing was installed. Install it, then run this again: sudo apt-get install -y python3"
+    return 1
+  elif [[ $rc -eq 6 ]]; then
     # The account check could not run (systemd did not answer): no file was
     # judged, and nothing says the install changed (#1111).
     stage_refuse "root would not run the installers in $DIR: the account check could not run (systemd did not answer), so no file there was judged, and nothing says the install changed. Nothing was installed. Run it again to retry the check: curl -fsSL https://get.aperire.one | bash -s -- --update --force"

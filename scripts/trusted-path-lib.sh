@@ -759,7 +759,7 @@ _tp_run() { # $@ = op and arguments; the account set and tolerance come from tru
   # Root's own interpreter at a fixed path, never one a caller's PATH
   # finds (#877 review, L2). None there is a fault, which refuses.
   local py
-  py="$(_tp_python)" || { printf 'fault\tno python3 at /usr/bin or /bin, and the check runs in it\n'; return 1; }
+  py="$(_tp_python)" || { printf 'fault\tno python3 at /usr/bin or /bin, and the check runs in it (sudo apt-get install -y python3)\n'; return 1; }
   "$py" -I -c "$_TP_PY" "${args[@]}" "$@"
 }
 
@@ -1200,8 +1200,8 @@ _tp_holds_group() { # $1 = account, $2 = group name
 }
 
 # The unit's ReadWritePaths entries ending in <suffix>, one per line. The
-# writable set is the Advisor's own three directories (ADR 0025), so this is
-# where its state and its fleet corpus are named.
+# writable set is the Advisor's own directories (ADR 0025), so this is where
+# its state and, when it exists, its fleet corpus are named.
 _tp_unit_rw() { # $1 = unit file, $2 = suffix such as /advisor/knowledge-fleet
   local line tok
   while IFS= read -r line; do
@@ -1748,23 +1748,105 @@ trusted_remove_socket_units() { # $1 = instance
   systemctl daemon-reload 2>/dev/null || true
 }
 
+# ---- the Advisor's fleet corpus, made by the update (#746) ------------------
+#
+# advisor/knowledge-fleet is where a signed knowledge push from an aggregator
+# lands (ADR 0017). Every installer makes it, but it is gitignored and in no
+# release, so a host installed before it existed has none, and no update made
+# one: the converter below and advisord-unit-grants.sh name it only when it is
+# a real directory (#1310), so that Advisor never got the grant and every push
+# to it was refused. This makes it, before either of them reads the unit, so
+# the same update names it.
+#
+# Why an update may do this, though an aggregator can trigger one (#641): it
+# runs no installer, plants no reveal window, and touches no account, sudo
+# rule or secret. The path is the unit's own tree, read off ExecStart= in a
+# root-owned unit file, the same reading the converter makes, and the owner is
+# the unit's own User=. Nothing comes from the update's payload. It restarts
+# nothing. All it hands the Advisor's account is an empty directory, 0750,
+# inside a tree whose state and evidence directories it already writes.
+#
+# Made only when nothing is at the name. Anything already there, a corpus an
+# aggregator's install step shared with the dashboard included, is left exactly
+# as it is, and a link or a file there is never named by either reader.
+#
+# Made by the release's state helper (#1345), the same call the installers
+# make: it walks from / one O_NOFOLLOW component at a time, so a link at the
+# tree or at any directory above it is refused and nothing is made through it.
+# The caller names the helper (TP_STATE_TOOL, a checked copy staged for root,
+# never a path read from the environment). Each of the three directories is
+# created already the Advisor's, at 0750, and only if it is new: root never
+# changes the owner or mode of anything it did not just create, so a directory
+# that turns up at the name in the meantime is left as it is.
+TP_STATE_TOOL=""
+
+# $1 = <tree>/advisor, $2 = the corpus, $3 = uid, $4 = gid
+_tp_make_corpus() {
+  local py d err
+  py="$(_tp_python)" || { printf '   no python3 at /usr/bin or /bin, so %s was not made\n' "$2"; return 0; }
+  for d in "$2" "$2/base" "$2/local"; do
+    if ! err="$("$py" -I "$TP_STATE_TOOL" mkdir "$d" "$3" "$4" 0750 --root "$1" --mode-if-new 2>&1)"; then
+      printf '   %s was not made: %s\n' "$d" "${err#state-file: }"
+      return 0
+    fi
+  done
+  printf "   made %s (and base, local), the Advisor's own at 0750, so a knowledge push can land\n" "$2"
+}
+
+# $1 = instance, $2 = the Advisor's unit, $3 = its User=. Always 0: a corpus
+# that could not be made is said, and the readers then leave it unnamed.
+_tp_ensure_corpus() {
+  local inst="$1" unit="$2" acct="$3" bin repo corpus uid gid g
+  [[ -n "$acct" && "$acct" != root && "$acct" != 0 ]] || return 0
+  bin="$(grep -m1 '^ExecStart=' "$unit" | sed 's/^ExecStart=//; s/^[-@:+!]*//; s/ .*//')"
+  [[ "$bin" == /*/advisor/bin/aperire-advisord ]] || return 0
+  repo="${bin%/advisor/bin/aperire-advisord}"
+  corpus="$repo/advisor/knowledge-fleet"
+  [[ -e "$corpus" || -L "$corpus" ]] && return 0
+  uid="$(getent passwd "$acct" 2>/dev/null | head -1 | cut -d: -f3)"
+  gid="$(getent passwd "$acct" 2>/dev/null | head -1 | cut -d: -f4)"
+  [[ "$uid" =~ ^[0-9]+$ && "$gid" =~ ^[0-9]+$ ]] \
+    || { printf '   %s has no account entry here, so %s was not made\n' "$acct" "$corpus"; return 0; }
+  # The group a fresh account install hands the corpus to, when this host
+  # names one; the account's own group otherwise.
+  if g="$(_tp_shared_group "$inst" "$unit" "$acct" "$(_tp_dash_user "$inst")")"; then
+    g="$(_tp_gid "$g")"
+    [[ "$g" =~ ^[0-9]+$ ]] && gid="$g"
+  fi
+  if [[ -z "$TP_STATE_TOOL" || ! -f "$TP_STATE_TOOL" ]]; then
+    printf '   no state helper came with this run, so %s was not made\n' "$corpus"
+    return 0
+  fi
+  _tp_make_corpus "$repo/advisor" "$corpus" "$uid" "$gid"
+  return 0
+}
+
 # The Advisor unit an update finds, brought to the socket shape in place:
 # --sudo-wrapper becomes --wrapper-socket=, NoNewPrivileges and
 # RestrictSUIDSGID become true, the empty capability set and the syscall
 # filter install-advisord.sh already runs on systemd 249 go in where they are
-# missing, and ReadWritePaths= keeps only the Advisor's own three directories:
+# missing, and ReadWritePaths= keeps only the Advisor's own directories:
 # the wrapper no longer runs inside this unit's mount namespace, so the
 # node's directories and /var/lib/aperire are nothing it needs. Every other
 # line is kept. 0 converted or already so, 1 not written.
+#
+# advisor/knowledge-fleet is named only when it is a real directory right
+# now (#1310). It is gitignored, so a release tree never carries it.
+# ReadWritePaths= on a missing path fails the unit with 226/NAMESPACE, so
+# naming it anyway left the Advisor down at its next start. The update makes
+# it before this runs (_tp_ensure_corpus above, #746; on an aggregator the
+# install step makes it first), so this names it in the same update, and
+# every update re-renders the line. state and evidence stay as they were:
+# every installer creates them.
 _TP_CONVERT_PY="$(cat <<'TP_CONVERT_EOF'
-import re, sys
+import os, re, stat, sys
 path, sock = sys.argv[1], sys.argv[2]
 src = open(path).read()
 lines = src.split("\n")
 out, in_svc, saw_cap, saw_scf, changed = [], False, False, False, []
 saw_rw = False
 # The tree this unit runs from, off its own binary: <tree>/advisor/bin/aperire-advisord.
-# The writable set is exactly that tree's three directories, by prefix, never
+# The writable set is exactly that tree's own directories, by prefix, never
 # any path that merely ends the same way (#779 review, L5).
 repo = None
 for ln in lines:
@@ -1777,7 +1859,20 @@ for ln in lines:
 if not repo:
     sys.stderr.write("   %s does not start <tree>/advisor/bin/aperire-advisord, so its writable paths cannot be named; it is left as it is\n" % path)
     sys.exit(1)
-own_rw = [repo + "/advisor/state", repo + "/advisor/evidence", repo + "/advisor/knowledge-fleet"]
+own_rw = [repo + "/advisor/state", repo + "/advisor/evidence"]
+# The corpus only when it is there, read off lstat: a link at the name is not
+# the Advisor's directory and is never named (#1310).
+corpus = repo + "/advisor/knowledge-fleet"
+try:
+    corpus_here = stat.S_ISDIR(os.lstat(corpus).st_mode)
+except OSError:
+    corpus_here = False
+if corpus_here:
+    own_rw.append(corpus)
+    rw_note = "ReadWritePaths= (only this tree's own state, evidence and knowledge-fleet)"
+else:
+    rw_note = ("ReadWritePaths= (only this tree's own state and evidence; advisor/knowledge-fleet "
+               "is not a directory here, so it is not named)")
 stale_comments = (
     "# NoNewPrivileges must stay false",
     "# wrapper is now the ONLY way this service reaches the node at all.",
@@ -1787,7 +1882,7 @@ for ln in lines:
     if ln.startswith("["):
         if in_svc and ln.strip() != "[Service]":
             if not saw_rw:
-                out.append("ReadWritePaths=" + " ".join(own_rw)); changed.append("ReadWritePaths= (only this tree's own three directories)")
+                out.append("ReadWritePaths=" + " ".join(own_rw)); changed.append(rw_note)
                 saw_rw = True
             if not saw_cap:
                 out.append("CapabilityBoundingSet="); changed.append("CapabilityBoundingSet= (empty)")
@@ -1819,7 +1914,7 @@ for ln in lines:
         if ln.rstrip().endswith("\\"):
             sys.stderr.write("   ReadWritePaths= continues onto another line in %s; it is left as it is\n" % path)
             sys.exit(1)
-        # One line, naming the tree's three directories and nothing else;
+        # One line, naming the tree's own directories and nothing else;
         # any further ReadWritePaths= lines go.
         if saw_rw:
             changed.append("a second ReadWritePaths= line")
@@ -1827,7 +1922,7 @@ for ln in lines:
         saw_rw = True
         new = "ReadWritePaths=" + " ".join(own_rw)
         if ln != new:
-            changed.append("ReadWritePaths= (only this tree's own three directories)")
+            changed.append(rw_note)
         ln = new
     elif in_svc and re.match(r"^\s*CapabilityBoundingSet\s*=", ln):
         # Empty, whatever it named, and said once: the Advisor needs no
@@ -1844,7 +1939,7 @@ for ln in lines:
     out.append(ln)
 if in_svc:
     if not saw_rw:
-        out.append("ReadWritePaths=" + " ".join(own_rw)); changed.append("ReadWritePaths= (only this tree's own three directories)")
+        out.append("ReadWritePaths=" + " ".join(own_rw)); changed.append(rw_note)
     if not saw_cap:
         out.append("CapabilityBoundingSet="); changed.append("CapabilityBoundingSet= (empty)")
     if not saw_scf:
@@ -1869,6 +1964,10 @@ trusted_convert_advisor_unit() { # $1 = instance
   notes="$(python3 -I -c "$_TP_CONVERT_PY" "$unit" "$(trusted_socket_path "$inst")" 2>&1 >"$tmp")" || rc=$?
   if [[ $rc -eq 0 ]]; then rm -f "$tmp"; return 0; fi
   if [[ $rc -ne 10 ]]; then rm -f "$tmp"; printf '%s\n' "$notes" >&2; return 1; fi
+  # A unit already on its socket can still change here, when its writable
+  # paths no longer match the tree (#1310), and that is said as what it is.
+  local was_socket=0
+  grep -q -- '--wrapper-socket=' "$unit" && was_socket=1
   # The Advisor running now was started on the old route. Which start of the
   # unit that was is written down before the unit changes, in a root-owned
   # file, because that id is the one fact the Advisor cannot rewrite (#780).
@@ -1876,7 +1975,11 @@ trusted_convert_advisor_unit() { # $1 = instance
   _tp_put_root_file "$unit" < "$tmp" || { rm -f "$tmp"; return 1; }
   rm -f "$tmp"
   systemctl daemon-reload 2>/dev/null || true
-  printf '   %s now reaches the wrapper through its socket, with no sudo:\n' "$unit"
+  if [[ $was_socket -eq 1 ]]; then
+    printf '   %s was already on its socket; brought up to date, from its next start:\n' "$unit"
+  else
+    printf '   %s now reaches the wrapper through its socket, with no sudo:\n' "$unit"
+  fi
   sed -n 's/^CHANGED\t/     /p' <<<"$notes"
   return 0
 }
@@ -2184,6 +2287,10 @@ trusted_converge_advisor() { # $1 = install tree, $2 = instance, $3 = 1 when thi
     printf '   %s now starts the Advisor on %s\n' "$unit" "$new"
   fi
   user="$(awk -F= '/^User=/{print $2; exit}' "$unit")"
+  # Before anything reads the unit's writable paths, on every account shape:
+  # the converter below and advisord-unit-grants.sh both name the corpus only
+  # when it is there (#746).
+  _tp_ensure_corpus "$inst" "$unit" "$user"
   if why="$(_tp_shared_reason "$inst" "$user")"; then
     printf '   aperire-advisord%s is on a shared account: %s.\n' "$suffix" "$why"
     printf '   The shared-account mode is retired (ADR 0025). Moving it to its own\n'

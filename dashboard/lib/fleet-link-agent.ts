@@ -26,10 +26,7 @@
  * /v1/evidence, and cannot open a socket to any port but the two this file
  * names.
  */
-import {
-  readFileSync, statSync, openSync, closeSync, writeSync, fsyncSync, fstatSync, readSync,
-  renameSync, unlinkSync, constants as fsConstants,
-} from 'node:fs';
+import { readFileSync, statSync, unlinkSync } from 'node:fs';
 import { randomBytes, createHash } from 'node:crypto';
 import { READ_ROUTE_NAMES, READ_STREAM_PATH } from '../types/read-contract.js';
 import {
@@ -47,6 +44,7 @@ import {
   type LinkRequest, type LinkRefusalCode, type LinkTarget, type LinkFrame, type LinkTombstone,
 } from '../types/fleet-link-contract.js';
 import { verifyWithPeerKey } from './trust-bundle.js';
+import { readOwnedJson, writeOwnedJson } from './owned-json-file.js';
 
 // ── The allow-list ───────────────────────────────────────────────────────
 
@@ -778,79 +776,85 @@ export function verifyLinkTombstone(
   return { ok: true, tombstone: t };
 }
 
-/** A tombstone is a few hundred bytes. Anything past this is not one. */
-const TOMBSTONE_MAX_BYTES = 4096;
+/** A tombstone is a few hundred bytes. Anything past this is not one. Also
+ *  the bound on a 401 body a node reads for one (#738). */
+export const TOMBSTONE_MAX_BYTES = 4096;
 
 /**
  * The file store, written the way a file this account's own dashboard trusts
- * should be: on descriptors, never by a name checked and then reopened.
- *
- *   write   a fresh temp name opened O_CREAT|O_EXCL|O_NOFOLLOW at 0600, so
- *           nothing already at that name (a link planted beside it) is
- *           followed or reused; written, fsynced, closed, then renamed over
- *           the real name, which replaces a link rather than writing
- *           through one.
- *   read    O_NOFOLLOW|O_NONBLOCK, then checked on the descriptor: a
- *           regular file, owned by this account, nobody else may write it,
- *           bounded. Anything else reads as no tombstone, which costs this
- *           node an hourly probe and nothing more.
- *   remove  unlink; absent is fine.
+ * should be (lib/owned-json-file.ts): a temp file opened O_EXCL|O_NOFOLLOW at
+ * 0600 and renamed over the name, and a read checked on the descriptor (a
+ * regular file, this account's, nobody else may write it, bounded). Anything
+ * else reads as no tombstone, which costs this node an hourly probe and
+ * nothing more. Remove is an unlink; absent is fine.
  */
 export function createTombstoneFileStore(path: string): LinkTombstoneStore {
   return {
-    read() {
-      let fd: number;
-      try {
-        fd = openSync(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
-      } catch {
-        return null;
-      }
-      try {
-        const st = fstatSync(fd);
-        if (!st.isFile()) return null;
-        if (typeof process.getuid === 'function' && st.uid !== process.getuid()) return null;
-        if (st.mode & 0o022) return null;
-        if (st.size > TOMBSTONE_MAX_BYTES) return null;
-        const buf = Buffer.alloc(TOMBSTONE_MAX_BYTES + 1);
-        let len = 0;
-        for (;;) {
-          const n = readSync(fd, buf, len, buf.length - len, null);
-          if (n <= 0) break;
-          len += n;
-          if (len > TOMBSTONE_MAX_BYTES) return null;
-        }
-        return JSON.parse(buf.subarray(0, len).toString('utf8'));
-      } catch {
-        return null;
-      } finally {
-        try { closeSync(fd); } catch { /* already closed */ }
-      }
-    },
-    write(t) {
-      const tmp = `${path}.tmp.${randomBytes(8).toString('hex')}`;
-      const fd = openSync(
-        tmp, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_NOFOLLOW, 0o600,
-      );
-      try {
-        writeSync(fd, `${JSON.stringify(t)}\n`);
-        fsyncSync(fd);
-      } catch (err) {
-        try { closeSync(fd); } catch { /* ignore */ }
-        try { unlinkSync(tmp); } catch { /* ignore */ }
-        throw err;
-      }
-      closeSync(fd);
-      try {
-        renameSync(tmp, path);
-      } catch (err) {
-        try { unlinkSync(tmp); } catch { /* ignore */ }
-        throw err;
-      }
-    },
+    read: () => readOwnedJson(path, TOMBSTONE_MAX_BYTES),
+    write: (t) => writeOwnedJson(path, t),
     remove() {
       try { unlinkSync(path); } catch { /* absent is the goal */ }
     },
   };
+}
+
+/** How long a node waits for a refusal's body (#738). A tombstone is a few
+ *  hundred bytes on a connection that is already open. */
+export const REFUSAL_BODY_DEADLINE_MS = 5_000;
+
+interface ReadableLike {
+  on: (event: string, handler: (arg?: unknown) => void) => unknown;
+  destroy?: () => void;
+}
+
+function isReadable(res: unknown): res is ReadableLike {
+  return !!res && typeof (res as { on?: unknown }).on === 'function';
+}
+
+/**
+ * The body of an HTTP response, as text, or null: past `maxBytes`, past the
+ * deadline, or on any error. The response is destroyed on every path that
+ * gives up, so nothing more is buffered on the far end's word. The deadline's
+ * timer is held (ref'd) so a quiet process cannot drain out from under it.
+ */
+export function readBoundedBody(res: ReadableLike, maxBytes: number, deadlineMs: number): Promise<string | null> {
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = [];
+    let len = 0;
+    let done = false;
+    const finish = (text: string | null, giveUp: boolean) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      if (giveUp) { try { res.destroy?.(); } catch { /* already gone */ } }
+      resolve(text);
+    };
+    const timer = setTimeout(() => finish(null, true), deadlineMs);
+    res.on('data', (chunk?: unknown) => {
+      const b = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk ?? ''));
+      len += b.length;
+      if (len > maxBytes) { finish(null, true); return; }
+      chunks.push(b);
+    });
+    res.on('end', () => finish(Buffer.concat(chunks).toString('utf8'), false));
+    res.on('error', () => finish(null, true));
+    res.on('aborted', () => finish(null, true));
+    // A close before the end is a body cut short: nothing in it is read.
+    res.on('close', () => finish(null, false));
+  });
+}
+
+/** The `tombstone` member of a refusal body, untouched, or undefined when the
+ *  body carries none. Verified by the caller, never here. */
+export function tombstoneInBody(text: string | null): unknown {
+  if (!text) return undefined;
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && 'tombstone' in parsed) {
+      return (parsed as { tombstone: unknown }).tombstone;
+    }
+  } catch { /* not JSON: no tombstone */ }
+  return undefined;
 }
 
 export interface LinkAgentDeps {
@@ -1072,8 +1076,10 @@ export function createFleetLinkAgent(deps: LinkAgentDeps): FleetLinkAgent {
         if (held) {
           if (timer !== null) { clearTimer(timer); timer = null; }
           const at = new Date(held.issued_at).toISOString();
+          // Named `revoked` whichever way it arrived: a 401 that carried the
+          // signed revocation (#738) is the same fact as the frame.
           setState({
-            phase: 'stopped', refused: fatal, next_probe_ms: null, revoked_signed_at_ms: held.issued_at,
+            phase: 'stopped', refused: 'revoked', next_probe_ms: null, revoked_signed_at_ms: held.issued_at,
             reason: `an operator revoked this node on the aggregator at ${at}, and the aggregator signed `
               + 'that revocation, so this node will not dial it again. Pair it again to rejoin the fleet',
           });
@@ -1397,8 +1403,12 @@ export function createFleetLinkAgent(deps: LinkAgentDeps): FleetLinkAgent {
     s.on('message', (data?: unknown) => {
       void onFrame(String(data));
     });
+    // #738: set while a refusal's body is being read. The read ends in a
+    // fatal stop either way, so a close or an error from the same socket
+    // meanwhile must not turn it into a transient retry.
+    let readingRefusal = false;
     s.on('close', () => {
-      if (sock !== s) return;
+      if (sock !== s || readingRefusal) return;
       dropLink('the link to the aggregator closed', null);
     });
     // The upgrade was refused with a status rather than accepted. `ws` emits
@@ -1410,11 +1420,22 @@ export function createFleetLinkAgent(deps: LinkAgentDeps): FleetLinkAgent {
       const status = Number((res as { statusCode?: unknown } | undefined)?.statusCode ?? 0);
       const fatal = refusalForStatus(status);
       if (fatal) {
-        dropLink(
-          `the aggregator refused this node's credential (HTTP ${status}): it is unknown to that `
-          + 'aggregator, or it was revoked',
-          fatal,
-        );
+        const said = `the aggregator refused this node's credential (HTTP ${status}): it is unknown to that `
+          + 'aggregator, or it was revoked';
+        // #738: a node revoked while it was offline never met the frame its
+        // tombstone rides on, so the aggregator puts the tombstone it signed
+        // in the 401's body. Read with a byte bound and a deadline before the
+        // request goes, because the body is the word of a party that may be
+        // compromised, and then checked exactly as a frame-borne one is
+        // (dropLink -> takeTombstone). A response with no body to read (the
+        // test's stand-in, an older aggregator) is the stop it always was.
+        if (!isReadable(res)) { dropLink(said, fatal); return; }
+        readingRefusal = true;
+        void readBoundedBody(res, TOMBSTONE_MAX_BYTES, REFUSAL_BODY_DEADLINE_MS).then((text) => {
+          readingRefusal = false;
+          if (sock !== s) return;
+          dropLink(said, fatal, tombstoneInBody(text));
+        });
         return;
       }
       // #688: a 503 is this aggregator saying it cannot judge a credential
@@ -1445,8 +1466,8 @@ export function createFleetLinkAgent(deps: LinkAgentDeps): FleetLinkAgent {
       // A refusal already settled this socket: ws emits `error` after
       // `unexpected-response` for the same rejection, and dropLink clears
       // `sock`, so this guard is what stops the second event turning a fatal
-      // stop back into a retry.
-      if (sock !== s) return;
+      // stop back into a retry. The same holds while its body is read (#738).
+      if (sock !== s || readingRefusal) return;
       dropLink(`the link to the aggregator failed: ${(err as Error | undefined)?.message ?? 'no reason given'}`, null);
     });
   }

@@ -240,7 +240,9 @@ advisor_owner_unread_msg() {
 advisor_owner_account() {
   local dir="${1:-/etc/systemd/system}" inst="${2:-}"
   if [[ -n "$inst" ]]; then
-    [[ "$inst" =~ ^[a-z0-9][a-z0-9-]{0,30}$ && "$inst" != credcheck && "$inst" != credcheck-* ]] \
+    # In a subshell under the C locale: [a-z] follows the locale, and under
+    # en_US.UTF-8 it matches é (#1206 review).
+    (LC_ALL=C; [[ "$inst" =~ ^[a-z0-9][a-z0-9-]{0,30}$ && "$inst" != credcheck && "$inst" != credcheck-* ]]) \
       || return 2
   fi
   advisor_owner_unit_account "$dir/aperire-advisord${inst:+-$inst}.service"

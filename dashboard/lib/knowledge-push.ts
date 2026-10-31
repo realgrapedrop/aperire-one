@@ -180,6 +180,9 @@ type FetchImpl = typeof fetch;
  * say which node did not take it. A node that refuses keeps the knowledge it
  * had — the bundle is applied whole or not at all on its side.
  */
+/** What a node from before #1219 answers to a bundle with no files. */
+export const OLD_NODE_EMPTY_REFUSAL = 'the bundle carries no knowledge files';
+
 export async function pushToTargets(
   targets: PushTarget[],
   body: string,
@@ -206,7 +209,16 @@ export async function pushToTargets(
           added: Number(parsed.added), changed: Number(parsed.changed), removed: Number(parsed.removed),
         });
       } else {
-        out.push({ label: t.label, ok: false, error: `[HTTP ${r.status}] ${String(parsed.error ?? 'unknown')}` });
+        const said = String(parsed.error ?? 'unknown');
+        // A node from before empty bundles were accepted (#1219) refuses one by
+        // this sentence. It is a fact about that node's release, and the way on
+        // is to update it, so the line says so rather than leaving it to read
+        // as a broken bundle.
+        const why = said.includes(OLD_NODE_EMPTY_REFUSAL)
+          ? `${said}. This node's Advisor is older than the release that can withdraw every note, so it keeps its notes; ` +
+            'update its Advisor, then push again'
+          : said;
+        out.push({ label: t.label, ok: false, error: `[HTTP ${r.status}] ${why}` });
       }
     } catch (err) {
       out.push({
@@ -447,7 +459,7 @@ export interface GuardedPush {
 export async function pushGuarded(
   targets: PushTarget[],
   body: string,
-  o: { seq: number; paths: string[]; bundleDir: string; replace: boolean;
+  o: { seq: number; paths: string[]; bundleDir: string; replace: boolean; withdrawAll?: boolean;
        fetchImpl?: FetchImpl; timeoutMs?: number; statusTimeoutMs?: number },
 ): Promise<GuardedPush> {
   let book: DeliveryBook = {};
@@ -465,8 +477,14 @@ export async function pushGuarded(
   }
   const checks = await checkNodeHoldings(targets, o.paths, book,
     { fetchImpl: o.fetchImpl, timeoutMs: o.statusTimeoutMs });
-  const refusal = o.replace ? null : refusalFor(checks);
-  if (refusal) return { refusal, summary: refusalSummary(checks), results: [], replaced: null, recordError: null };
+  // --withdraw-all (#1219) confirms the drops the delivery record accounts for,
+  // and only those. A restore leaves an empty corpus AND no record, which is
+  // exactly the state a withdrawal must not be taken for, so a node this host
+  // has no record of still refuses unless --replace-fleet-corpus says so too.
+  const withdraw = !o.replace && o.withdrawAll === true;
+  const unrecorded = withdraw ? checks.filter((c) => c.unknown) : checks;
+  const refusal = o.replace ? null : refusalFor(unrecorded);
+  if (refusal) return { refusal, summary: refusalSummary(unrecorded), results: [], replaced: null, recordError: null };
   const sent = await pushToTargets(targets.filter((_, i) => !checks[i].unreadable), body,
     { fetchImpl: o.fetchImpl, timeoutMs: o.timeoutMs });
   // By position, never by label: two targets may share one, and a remap by
@@ -486,7 +504,7 @@ export async function pushGuarded(
     recordError = (err as Error).message;
   }
   const lines = problemLines(checks);
-  const replaced = o.replace && lines.length
+  const replaced = (o.replace || withdraw) && lines.length
     ? ['Replacing what these nodes hold, as asked:', ...lines].join('\n')
     : null;
   return { refusal: null, summary: null, results, replaced, recordError };

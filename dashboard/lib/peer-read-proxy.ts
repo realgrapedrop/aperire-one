@@ -49,7 +49,7 @@
  * because the cache key now includes caller-controlled params.
  */
 import type { FleetNodeConfig } from './fleet-registry.js';
-import { readTokenFresh } from './fleet-health.js';
+import { readTokenFileExplained, tokenUnreadableDetail, tokenUnreadableLog } from './fleet-health.js';
 import {
   DEFAULT_TIMEOUT_MS, DEFAULT_MAX_BODY_BYTES, TRANSIENT_NEGATIVE_TTL_MS, fetchOneRoute, reasonToCode,
   describeOutcome, isTransientFailure, throttledPeerWarn, type PeerOverviewErrorCode,
@@ -209,6 +209,8 @@ export interface PeerReadOk {
 export interface PeerReadError {
   ok: false;
   error: PeerReadErrorCode;
+  /** Only on `token_unreadable`: this host's sentence about its own file. */
+  detail?: string;
 }
 export type PeerReadResult = PeerReadOk | PeerReadError;
 
@@ -412,11 +414,17 @@ async function fetchPeerRouteDetailed(
   opts: FetchPeerRouteOpts,
 ): Promise<{ result: PeerReadResult; transient: boolean }> {
   const doFetch = opts.fetchImpl ?? fetch;
-  const token = readTokenFresh(node.token_path);
-  if (!token) {
-    logUpstreamFailure(node.label, route, 'token unreadable');
-    return { result: { ok: false, error: 'peer_unreachable' }, transient: false };
+  const tokenRead = readTokenFileExplained(node.token_path);
+  if (!tokenRead.ok) {
+    logUpstreamFailure(node.label, route, `token unreadable: ${tokenUnreadableLog(tokenRead)}`);
+    // #1305: its own answer, not peer_unreachable. Nothing was sent, and a
+    // local file read is not worth holding, so the next ask sees a fixed file.
+    return {
+      result: { ok: false, error: 'token_unreadable', detail: tokenUnreadableDetail(node.label, 'read', tokenRead) },
+      transient: true,
+    };
   }
+  const token = tokenRead.token;
 
   const pinned = opts.pinCache
     ? await opts.pinCache.verify(node, token, opts.timeoutMs, doFetch)

@@ -9,12 +9,12 @@
 #   less get-aperire-uninstall.sh
 #   bash get-aperire-uninstall.sh
 #
-# It downloads nothing but, on an older install, the current uninstall.sh
-# and the signed release.json that says which uninstall.sh is genuine.
-# There is no release to fetch here: the uninstaller is part of the install
-# that is already on the box, and this script's job is to find that install
-# and hand over to it. On a host with no install it says so and stops, rather
-# than fetching one in order to remove it.
+# It downloads nothing but the signed release.json, which says whether the
+# release on offer is newer than this install, and, when it is, that
+# release's uninstall.sh. There is no release to fetch here: the uninstaller
+# is part of the install that is already on the box, and this script's job is
+# to find that install and hand over to it. On a host with no install it says
+# so and stops, rather than fetching one in order to remove it.
 #
 # Root never runs the checkout's own copy (#943). The uninstaller is staged
 # first, with the rest of the install's scripts: each file read once and held
@@ -24,22 +24,37 @@
 # /usr/local/lib/aperire, which every install and update puts there; a host
 # without them is told to update first.
 #
-# The one download is what the exception exists for. An install made before
-# the keep/wipe question existed carries an uninstall.sh that requires --role
-# and refuses --keep and --wipe outright, so handing it those flags ends the
-# run with "unknown argument". An uninstall.sh from before staged runs would
-# take the staging directory for the install. When either is what is here,
-# this script fetches the current uninstall.sh from beside itself, checks it
-# arrived whole, says on screen that it did so, puts it in a directory only
-# root can write and runs that, leaving the checkout's file alone. It is the
-# only program it ever downloads besides itself.
+# The newest uninstaller runs when it is newer (#1027). A removal a later
+# release added is in that release's uninstall.sh, not in the one this host
+# installed, so a wipe with the host's own copy leaves it behind. Root reads
+# the signed release.json the endpoint names and compares its publish date
+# with the newest release this host has installed (the kept signed release
+# and the high-water mark the install and update write, the same floor an
+# update refuses an older release by). Strictly newer: that release's
+# uninstall.sh is fetched, checked, and runs beside the install's staged
+# scripts. The same, older, or no record on this host: the install's own copy
+# runs. An endpoint that does not answer leaves the install's own copy too,
+# with a warning; one that answers with something that does not verify is a
+# refusal, and nothing is removed.
 #
-# And it runs it only once the release key vouches for it (#762). Root fetches
-# the release the endpoint names, release-<sha256>.json and its signature,
-# checks them against the release key this host already trusts (root's own
-# copy in /usr/local/lib/aperire, never the checkout's), and runs the fetched
+# An install made before the keep/wipe question carries an uninstall.sh that
+# requires --role and refuses --keep and --wipe outright, so handing it those
+# flags ends the run with "unknown argument". An uninstall.sh from before
+# staged runs would take the staging directory for the install. When either
+# is what is here, the current uninstall.sh is fetched, because the host's own
+# cannot run, and a fetch that fails is a refusal. So is a release older than
+# one this host has a verified record of installing. Root fetches the copy
+# itself, over https (or a lab gate's loopback stand-in), from the address
+# stamped below, into a directory
+# only root can write; it is checked whole, announced on screen and run from
+# there, leaving the checkout's file alone.
+#
+# It runs only once the release key vouches for it (#762). Root fetches the
+# release the endpoint names, release-<sha256>.json and its signature, checks
+# them against the release key this host already trusts (root's own copy in
+# /usr/local/lib/aperire, never the checkout's), and runs the fetched
 # uninstall.sh only when its sha256 is the uninstaller_sha256 that signed
-# release names. A host with no release key installed is told to update
+# release names. An older install with no release key is told to update
 # first, because there is nothing to check the download against.
 #
 # The uninstaller asks one question and it has no default:
@@ -55,10 +70,11 @@
 # passed straight through to the uninstaller:
 #   --dir <path>    the install to remove. Found from the installed dashboard
 #                   unit when not given.
-#   --no-upgrade    never download an uninstall.sh. An install whose own
-#                   cannot be staged (one older than the keep/wipe question,
-#                   or than staged runs) is then refused by name, because the
-#                   only other way to run it is as root out of the checkout
+#   --no-upgrade    download nothing: run the install's own uninstall.sh even
+#                   when a newer release has one. An install whose own cannot
+#                   be staged (one older than the keep/wipe question, or than
+#                   staged runs) is then refused by name, because the only
+#                   other way to run it is as root out of the checkout
 #   --keep          keep the database, /etc/aperire and the checkout
 #   --wipe          remove those as well
 #   --toolchain     with --wipe, also remove Go and nvm
@@ -71,9 +87,10 @@
 #
 #   curl -fsSL https://get.aperire.one/uninstall | bash -s -- --wipe --yes
 #
-# The same values can arrive as environment variables, which is what the
-# tests use: APERIRE_UNINSTALL_GET_DIR, APERIRE_UNINSTALL_GET_SELF_URL,
-# APERIRE_UNINSTALL_GET_SCRIPT_URL.
+# Two of the values can arrive as environment variables, which is what the
+# tests use: APERIRE_UNINSTALL_GET_DIR and APERIRE_UNINSTALL_GET_SELF_URL. The
+# address of uninstall.sh and its signed release cannot: root fetches those,
+# and only from the address stamped below.
 #
 # ---- the two guards -------------------------------------------------
 #
@@ -135,12 +152,24 @@ ROOT_CLEANUP_PATHS=()
 # environment could pick what root sources (#943 review). A test maps this path
 # to a fixture in its fake sudo.
 ROOT_LIB_DIR=/usr/local/lib/aperire
+# Where the install and every update keep the signed release this host is on
+# and the high-water mark (#1027): the floor a release on offer has to be
+# newer than before its uninstall.sh runs. A constant for the same reason as
+# the line above, mapped the same way in the test's fake sudo.
+RELEASE_STORE=/var/lib/aperire/release
 
 # Whether the copy on this host understands the keep/wipe question, decided by
 # reading it rather than by asking it: running an unknown script to find out
 # what it accepts is a worse first move than grepping it.
 NEEDS_CURRENT_UNINSTALLER=0
 UPGRADE_WHY=""
+# What root's check of the release on offer found (#1027): newer, same,
+# older, or unknown (this host keeps no record to compare with), with the
+# release it names and the two dates. Set by check_served_release.
+SERVED_VERDICT=""
+SERVED_ID=""
+SERVED_AT=""
+SERVED_FLOOR=""
 ALLOW_UPGRADE=1
 UNINSTALL_SENTINEL='# --- end of uninstall.sh ---'
 
@@ -483,41 +512,40 @@ root_held_dir() { # $1 = a name for it
   run_root chmod 0755 "$ROOT_HELD" || die "cannot set up the directory root runs the uninstaller from. Nothing was removed."
 }
 
-# The current uninstall.sh, fetched and checked here, then put where root can
-# run it without the checkout's say (prepare_uninstaller). It is not written
-# into the checkout: uninstall.sh is told which install it removes
-# (APERIRE_INSTALL_TREE), so it no longer needs to sit in it, and a root write
-# into a directory the install's accounts can change follows whatever link one
-# of them left there.
+# The current uninstall.sh, fetched and checked by root, into a directory only
+# root can write (check_served_release), then put where root can run it
+# without the checkout's say (prepare_uninstaller). It is not written into the
+# checkout: uninstall.sh is told which install it removes (APERIRE_INSTALL_TREE),
+# so it no longer needs to sit in it, and a root write into a directory the
+# install's accounts can change follows whatever link one of them left there.
+#
+# The address is the one stamped into this script (DEFAULT_UNINSTALL_URL), never
+# one from the environment: the login's environment does not pick what root
+# fetches (#1027 review). The test reaches it through its fake curl on PATH.
+#
+# Returns 1, after the same warning as the first look, only on a current
+# install whose endpoint stopped answering after it said "newer": that install
+# still has its own copy to run.
 FETCHED_UNINSTALLER=""
 fetch_current_uninstaller() {
-  local url tmp copy
-  url="${APERIRE_UNINSTALL_GET_SCRIPT_URL:-$DEFAULT_UNINSTALL_URL}"
+  local url="$DEFAULT_UNINSTALL_URL" copy
   step "this install's uninstall.sh ${UPGRADE_WHY}"
   info "using the current one from ${url}"
-
-  tmp="$(mktemp -t aperire-uninstall.XXXXXXXX.sh)"
-  CLEANUP_PATHS+=("$tmp")
-  curl -fsSL --max-time 60 -o "$tmp" "$url" 2>/dev/null \
-    || die "could not fetch ${url}. Nothing was changed and nothing was removed. Update the install (curl -fsSL https://get.aperire.one | bash) and run this again."
-
-  # Into a directory only root can write first, and every check below reads
-  # that copy: the file in /tmp is the login's, so a check on it says nothing
-  # about the bytes root runs. The copy is the one that is checked and the one
-  # that is run (#943 review, L3).
   root_held_dir fetched
   copy="$ROOT_HELD/uninstall.sh"
-  run_root install -m 0755 "$tmp" "$copy" \
-    || die "could not put the current uninstall.sh where root can check it. Nothing was removed."
+  check_served_release "$url" "$copy" || return 1
+  # An install whose own uninstall.sh cannot run, beside a verified record that
+  # this host has installed a release NEWER than the one on offer, is a
+  # contradiction: that record's release took the question. Running the older
+  # copy would be a replayed release choosing what root removes.
+  if [[ $NEEDS_CURRENT_UNINSTALLER -eq 1 && "$SERVED_VERDICT" == older ]]; then
+    die "the release on offer was published ${SERVED_AT}, before the newest this host has installed (${SERVED_FLOOR}), so its uninstall.sh was not run. Nothing was removed.
 
-  # The same guard the bootstraps carry, and it matters more here: a flat
-  # script cut in the middle runs its top half, and the top half of that one
-  # removes things.
-  [[ "$(tail -n 1 "$copy")" == "$UNINSTALL_SENTINEL" ]] \
-    || die "the copy fetched from ${url} did not arrive whole (its last line is not the one uninstall.sh ends with), so it was not installed and nothing was run."
-  # Then the one check that says it is the uninstaller the release shipped,
-  # before anything else reads it as a program (#762).
-  verify_fetched_uninstaller "$url" "$copy"
+  A replayed older release looks exactly like this. And a host that installed
+  ${SERVED_FLOOR} should not carry an uninstall.sh that predates the keep/wipe
+  question, so check what changed ${DIR}/uninstall.sh, then put the release back
+  as it shipped: curl -fsSL https://get.aperire.one | bash -s -- --update --force"
+  fi
   # And that what arrived is actually newer, rather than another copy of the
   # one already here. Without this a stale endpoint would hand an old script
   # flags it does not know, which is the failure this whole path exists to end.
@@ -528,23 +556,64 @@ fetch_current_uninstaller() {
   FETCHED_UNINSTALLER="$copy"
 }
 
-# The fetched uninstall.sh, held to the release signature (#762), the way the
+# The release on offer, held to the release signature (#762), the way the
 # updater holds the bootstrap (scripts/aperire-update.sh, verify_published):
 # release.json only says WHICH release, and everything else is read from the
 # signed release-<sha256>.json once it verifies. One root call does it all, in
-# the directory root made for the copy, against root's own copy of the
-# verifier and the key set. Nothing is forked: the functions are the ones in
+# a directory root made for it, against root's own copy of the verifier and
+# the key set. Nothing is forked: the functions are the ones in
 # scripts/release-verify-lib.sh, sourced from where every install and update
 # puts them, after the same owner and mode checks the staging call makes.
 #
-# The file it checks is the root-held copy, the same bytes root will run.
-verify_fetched_uninstaller() { # $1 = the url uninstall.sh came from, $2 = the root-held copy
-  local url="$1" copy="$2" base out rc=0
+# With a destination ($2), the same call then fetches uninstall.sh itself,
+# straight into root's directory, and holds it to its last line and to the
+# signed uninstaller_sha256: no file the login wrote is ever a source for root
+# (#1027 review). Without one, only the release is read, to say whether it is
+# newer.
+#
+# Newer is judged in the same call, once the signature verifies (#1027): the
+# signed publish date against this host's floor, the later of the kept signed
+# release (believed only when root's key set verifies it) and the root-owned
+# high-water mark. That is the floor get-aperire.sh --update and
+# aperire-update.sh refuse an older release by, read the same way. The answer
+# is newer, same, older, or unknown (no floor on this host).
+#
+# Returns 1, with a warning, only on a current install, and only when nothing
+# was served to refuse: this host has no release key, or the endpoint did not
+# answer (for release.json, or for uninstall.sh after the record said newer).
+# Its own copy can still run. Anything served that does not verify ends the
+# run.
+check_served_release() { # $1 = the url uninstall.sh comes from, $2 = where root puts it, or ""
+  local url="$1" copy="$2" base out rc=0 hint=""
   base="${url%/*}"
-  info "checking it against this host's release key"
+  if [[ -n "$copy" ]]; then
+    info "root fetches it and checks it against this host's release key"
+  else
+    info "checking the release ${base} serves against this host's release key"
+  fi
+  # A current install has its own uninstall.sh to fall back on, and the way to
+  # choose it without any of this is named in every refusal.
+  [[ $NEEDS_CURRENT_UNINSTALLER -eq 1 ]] || hint="
+
+  To remove with this install's own uninstall.sh and download nothing, run it again with --no-upgrade."
+  # The scheme root's curl may use, and may be redirected to, comes from the
+  # stamped address (part of this script, not of the login's environment).
+  # Every release is https. The lab gate stamps its loopback stand-in, which
+  # is plain http on this host, so that one shape is allowed http and nothing
+  # else; any other http address is refused before root fetches anything. The
+  # signature is what vouches for the bytes either way.
+  local scheme
+  if [[ "$url" == https://* ]]; then
+    scheme="=https"
+  elif [[ "$url" =~ ^http://(127\.0\.0\.1|localhost):[0-9]+/ ]]; then
+    scheme="=http"
+  else
+    die "this script's uninstaller address (${url}) is not https, and not the loopback stand-in a lab gate serves, so root fetches nothing from it. Nothing was removed.${hint}"
+  fi
   # shellcheck disable=SC2016  # the root shell's own positional parameters
   out="$(run_root bash -c '
-    d="$1"; held="$2"; base="$3"; copy="$4"
+    d="$1"; held="$2"; url="$3"; copy="$4"; store="$5"; sentinel="$6"; scheme="$7"; base="${url%/*}"
+    re_at="^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
     [[ -d "$d" && ! -L "$d" && -O "$d" ]] || exit 3
     (( (8#$(stat -c %a -- "$d") & 8#022) == 0 )) || exit 3
     for f in release-verify-lib.sh release-signers; do
@@ -555,38 +624,81 @@ verify_fetched_uninstaller() { # $1 = the url uninstall.sh came from, $2 = the r
     . "$d/release-verify-lib.sh" || exit 3
     s="$held/signed"
     mkdir -m 0755 -- "$s" || exit 2
-    get() { curl -fsSL --max-time 60 --max-filesize 8388608 -o "$s/$2" "$base/$1"; }
-    get release.json pointer.json || exit 4
+    get() { curl -fsSL --proto "$scheme" --proto-redir "$scheme" --max-time 60 --max-filesize 8388608 -o "$2" "$1"; }
+    get "$base/release.json" "$s/pointer.json" || exit 4
     sha="$(release_json_field "$s/pointer.json" sha256)" || sha=""
     [[ "$sha" =~ ^[0-9a-f]{64}$ ]] || exit 5
-    get "release-$sha.json" release.json || exit 6
-    get "release-$sha.json.sig" release.json.sig || exit 6
+    get "$base/release-$sha.json" "$s/release.json" || exit 6
+    get "$base/release-$sha.json.sig" "$s/release.json.sig" || exit 6
     if ! release_verify "$s/release.json" "$s/release.json.sig" "$d/release-signers"; then exit 7; fi
     named="$(release_json_field "$s/release.json" sha256)" || named=""
     [[ "$named" == "$sha" ]] || { echo "the signed release.json names the archive ${named:-nothing}, and release.json names $sha" >&2; exit 7; }
-    want="$(release_json_field "$s/release.json" uninstaller_sha256)" || want=""
-    [[ "$want" =~ ^[0-9a-f]{64}$ ]] || exit 8
-    got="$(sha256sum -- "$copy" | cut -d" " -f1)"
-    [[ "$got" == "$want" ]] || { echo "fetched $got, signed $want" >&2; exit 9; }
-    echo "${sha:0:12}"' rd-verify-uninstaller "$ROOT_LIB_DIR" "$ROOT_HELD" "$base" "$copy" 2>&1)" || rc=$?
+    at="$(release_json_field "$s/release.json" published_at)" || at=""
+    [[ "$at" =~ $re_at ]] || exit 10
+    floor=""
+    cur="$(head -c 64 -- "$store/current" 2>/dev/null)" || cur=""
+    if [[ "$cur" =~ ^[0-9a-f]{64}$ ]] \
+       && release_verify "$store/$cur/release.json" "$store/$cur/release.json.sig" "$d/release-signers" >/dev/null 2>&1; then
+      floor="$(release_json_field "$store/$cur/release.json" published_at)" || floor=""
+      [[ "$floor" =~ $re_at ]] || floor=""
+    fi
+    hw="$store/high-water"
+    if [[ -f "$hw" && ! -L "$hw" && -O "$hw" ]] && (( (8#$(stat -c %a -- "$hw") & 8#022) == 0 )); then
+      hw="$(head -c 64 -- "$hw" | head -1)"
+      [[ "$hw" =~ $re_at ]] && { [[ -z "$floor" || "$hw" > "$floor" ]] && floor="$hw"; }
+    fi
+    if [[ -z "$floor" ]]; then v=unknown
+    elif [[ "$at" > "$floor" ]]; then v=newer
+    elif [[ "$at" == "$floor" ]]; then v=same
+    else v=older; fi
+    if [[ -n "$copy" ]]; then
+      want="$(release_json_field "$s/release.json" uninstaller_sha256)" || want=""
+      [[ "$want" =~ ^[0-9a-f]{64}$ ]] || exit 8
+      ( umask 022; get "$url" "$copy" ) || exit 11
+      [[ "$(tail -n 1 -- "$copy")" == "$sentinel" ]] || exit 12
+      got="$(sha256sum -- "$copy" | cut -d" " -f1)"
+      [[ "$got" == "$want" ]] || { echo "fetched $got, signed $want" >&2; exit 9; }
+      chmod 0755 -- "$copy" || exit 2
+    fi
+    echo "${sha:0:12} $v $at ${floor:--}"' rd-verify-uninstaller "$ROOT_LIB_DIR" "$ROOT_HELD" "$url" "$copy" "$RELEASE_STORE" "$UNINSTALL_SENTINEL" "$scheme" 2>&1)" || rc=$?
+  if [[ $rc -eq 0 ]]; then
+    read -r SERVED_ID SERVED_VERDICT SERVED_AT SERVED_FLOOR <<<"${out##*$'\n'}"
+    if [[ -n "$copy" ]]; then
+      ok "signed by the release key: release ${SERVED_ID}, and its uninstall.sh is the one fetched"
+    else
+      ok "signed by the release key: release ${SERVED_ID}, published ${SERVED_AT}"
+    fi
+    return 0
+  fi
+  if [[ $NEEDS_CURRENT_UNINSTALLER -eq 0 ]] && [[ $rc -eq 3 || $rc -eq 4 || $rc -eq 11 ]]; then
+    case "$rc" in
+      3)  warn "this host has no release key root can check a newer uninstall.sh against (in $ROOT_LIB_DIR), so this install's own runs." ;;
+      4)  warn "could not fetch release.json from ${base}, so nothing says whether a newer release has a newer uninstall.sh. This install's own runs." ;;
+      11) warn "could not fetch ${url} after the release said it is newer, so this install's own runs." ;;
+    esac
+    warn "If a newer release removes something this one does not know about, it stays. Update first and run this again to have it removed: curl -fsSL https://get.aperire.one | bash -s -- --update"
+    return 1
+  fi
   case "$rc" in
-    0) ok "signed by the release key: release ${out##*$'\n'}, and its uninstall.sh is the one fetched"; return 0 ;;
     3) die "this host has no release key root can check the current uninstall.sh against (release-verify-lib.sh and release-signers, root-owned, in $ROOT_LIB_DIR), so it was not run. Nothing was removed. Update the install first, which puts the key there and the current uninstall.sh with it: curl -fsSL https://get.aperire.one | bash -s -- --update" ;;
-    4) die "could not fetch release.json from ${base}, which names the release the uninstall.sh beside it belongs to, so it was not run. Nothing was removed." ;;
-    5) die "release.json at ${base} names no archive, so there is no signed release to check the uninstall.sh against, and it was not run. Nothing was removed." ;;
-    6) die "${base} serves no signed release.json for the release it names, so the uninstall.sh beside it cannot be checked and was not run. Nothing was removed. An unsigned uninstaller is never run as root." ;;
+    4) die "could not fetch release.json from ${base}, which names the release the uninstall.sh beside it belongs to, so nothing was run and nothing was removed. Update the install (curl -fsSL https://get.aperire.one | bash) and run this again." ;;
+    5) die "release.json at ${base} names no archive, so there is no signed release to check the uninstall.sh against, and it was not run. Nothing was removed.${hint}" ;;
+    6) die "${base} serves no signed release.json for the release it names, so the uninstall.sh beside it cannot be checked and was not run. Nothing was removed. An unsigned uninstaller is never run as root.${hint}" ;;
     7) die "the release at ${base} is not signed by a key this host trusts, so the uninstall.sh beside it was not run. Nothing was removed.
 
   ${out}
 
-  If it says the same thing twice, do not run anything from that address." ;;
-    8) die "the signed release.json at ${base} names no uninstaller, so the uninstall.sh beside it cannot be checked and was not run. Nothing was removed." ;;
+  If it says the same thing twice, do not run anything from that address.${hint}" ;;
+    8) die "the signed release.json at ${base} names no uninstaller, so the uninstall.sh beside it cannot be checked and was not run. Nothing was removed.${hint}" ;;
     9) die "the uninstall.sh fetched from ${url} is not the one the signed release names, so it was not run. Nothing was removed.
 
-  ${out}" ;;
-    *) die "root could not check the fetched uninstall.sh against the release key (exit ${rc}), so it was not run. Nothing was removed.${out:+
+  ${out}${hint}" ;;
+    10) die "the signed release.json at ${base} states no publish date, so it cannot be told apart from an older release, and the uninstall.sh beside it was not run. Nothing was removed.${hint}" ;;
+    11) die "could not fetch ${url}. Nothing was changed and nothing was removed. Update the install (curl -fsSL https://get.aperire.one | bash) and run this again." ;;
+    12) die "the copy fetched from ${url} did not arrive whole (its last line is not the one uninstall.sh ends with), so it was not installed and nothing was run.${hint}" ;;
+    *) die "root could not check the release at ${base} against the release key (exit ${rc}), so its uninstall.sh was not run. Nothing was removed.${out:+
 
-  ${out}}" ;;
+  ${out}}${hint}" ;;
   esac
 }
 
@@ -617,13 +729,22 @@ stage_install_for_root() {
     done
     . "$d/release-digests-lib.sh" || exit 2
     mkdir -m 0755 -- "$2/run" || exit 2
-    rd_stage_tree "$3" "$2/run" || { [[ "${RD_REFUSED_WHY:-}" == accounts ]] && exit 6; exit 1; }' rd-stage-tree "$ROOT_LIB_DIR" "$held" "$DIR" || rc=$?
+    rd_stage_tree "$3" "$2/run" || { [[ "${RD_REFUSED_WHY:-}" == accounts ]] && exit 6; [[ "${RD_REFUSED_WHY:-}" == python3 ]] && exit 7; exit 1; }' rd-stage-tree "$ROOT_LIB_DIR" "$held" "$DIR" || rc=$?
   if [[ $rc -eq 3 ]]; then
     if [[ "$soft" == soft ]]; then
       warn "this host has no root-owned copy of the checking libraries in $ROOT_LIB_DIR, so root cannot check the scripts in $DIR."
       return 1
     fi
     die "this host has no root-owned copy of the checking libraries in $ROOT_LIB_DIR (release-digests-lib.sh and trusted-path-lib.sh), so root cannot check the uninstaller it would run out of $DIR, and runs none of it. Nothing was removed. Put the release back as it shipped, which places them even on a host already on the published release: curl -fsSL https://get.aperire.one | bash -s -- --update --force"
+  fi
+  if [[ $rc -eq 7 ]]; then
+    # No python3 for the check to run in (#1355): no file was judged, and the
+    # line above says so once. Not a file that changed.
+    if [[ "$soft" == soft ]]; then
+      warn "root would not run the scripts in $DIR: this host has no python3 at /usr/bin or /bin, and the check on every file runs in it, so no file there was judged."
+      return 1
+    fi
+    die "root would not run the uninstaller in $DIR: this host has no python3 at /usr/bin or /bin, and the check on every file runs in it, so no file there was judged. Nothing was removed. Install it, then run this again: sudo apt-get install -y python3"
   fi
   if [[ $rc -eq 6 ]]; then
     # The account check could not run: no file was judged (#1111).
@@ -658,9 +779,36 @@ stage_install_for_root() {
 # at all (no root-owned libraries on an old host, or a refused file) the fetched
 # copy runs alone: it runs no code from the install, and the uninstaller says
 # so itself if the dashboard's files could not be handed back.
+#
+# A current install's own copy is replaced the same way when the release on
+# offer is newer than the one this host is on (#1027), because a removal that
+# release added is only in its uninstall.sh. The verdict that counts is the one
+# from the call that checked the fetched bytes, not the first look.
 prepare_uninstaller() {
   if [[ $NEEDS_CURRENT_UNINSTALLER -eq 0 ]]; then
     stage_install_for_root
+    [[ $ALLOW_UPGRADE -eq 1 ]] || return 0
+    step "is there a newer uninstall.sh?"
+    root_held_dir release
+    check_served_release "$DEFAULT_UNINSTALL_URL" "" || return 0
+    case "$SERVED_VERDICT" in
+      newer) ;;
+      same|older)
+        ok "no: it is not newer than the newest release this host has installed (${SERVED_FLOOR}), so this install's own uninstall.sh runs"
+        return 0 ;;
+      *)
+        ok "this host keeps no signed record of the release it is on, so nothing says the one on offer is newer. This install's own uninstall.sh runs"
+        return 0 ;;
+    esac
+    UPGRADE_WHY="is older than the release on offer (${SERVED_AT}; this host's newest is ${SERVED_FLOOR})"
+    fetch_current_uninstaller || return 0
+    if [[ "$SERVED_VERDICT" != newer ]]; then
+      ok "on the second read the release on offer is not newer after all, so this install's own uninstall.sh runs"
+      return 0
+    fi
+    run_root install -m 0755 "$FETCHED_UNINSTALLER" "$UNINSTALL_RUN" \
+      || die "could not put the newer uninstall.sh where root can run it. Nothing was removed."
+    ok "the newer uninstall.sh is ready, beside the install's checked scripts; ${DIR}/uninstall.sh is left as it is"
     return 0
   fi
   fetch_current_uninstaller
@@ -688,6 +836,11 @@ announce() {
     info "downloads  the current uninstall.sh, because the one here ${UPGRADE_WHY}"
     info "           and cannot be staged for root, and the signed release.json"
     info "           that says which uninstall.sh is genuine. Nothing else."
+  elif [[ $ALLOW_UPGRADE -eq 1 ]]; then
+    info "running    a checked copy of ${DIR}/uninstall.sh, which is part of that install,"
+    info "           or the current one if the release on offer is newer than this install"
+    info "downloads  the signed release.json, to see whether it is newer, and only then the"
+    info "           current uninstall.sh. Nothing else. --no-upgrade downloads nothing."
   else
     info "running    a checked copy of ${DIR}/uninstall.sh, which is part of that install"
     info "downloads  nothing. This script fetched only itself."

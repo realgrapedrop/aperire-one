@@ -116,6 +116,17 @@
 
 set -euo pipefail
 
+# The instance names units and paths, so it is held to the rule
+# advisor-owner-lib.sh holds it to, and anything else is refused (#1206).
+instance_name_ok() { # $1 = a name; [a-z] is held to ASCII, whatever the locale
+  local LC_ALL=C
+  [[ "$1" =~ ^[a-z0-9][a-z0-9-]{0,30}$ && "$1" != credcheck && "$1" != credcheck-* ]]
+}
+if [[ -n "${APERIRE_INSTANCE:-}" ]] && ! instance_name_ok "$APERIRE_INSTANCE"; then
+  printf 'refused: APERIRE_INSTANCE=%q is not an instance name (a-z, 0-9 and -, at most 31, not credcheck)\n' "$APERIRE_INSTANCE" >&2
+  exit 2
+fi
+
 CONF=/etc/aperire/node-wrapper.conf
 # The node installer's own record of the node on this host. The wrapper's
 # configuration exists only where the Advisor was installed, and this script,

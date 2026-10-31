@@ -63,6 +63,35 @@
 
 set -euo pipefail
 
+# As root the environment chooses no path (#1206): every APERIRE_* variable
+# is dropped except the ones a root caller passes on purpose, before any
+# library below is sourced (trusted-path-lib.sh reads seven directories):
+#   APERIRE_INSTALL_TREE   get-aperire.sh names the tree a staged copy serves (#764)
+#   APERIRE_INSTANCE       install.sh exports it; --run advisor-account and
+#                          install-advisor-stack.sh pass it; checked below
+#   APERIRE_ACCOUNT        --run advisor-account --account passes it (above)
+#   APERIRE_ADVISOR_PORT   install-advisor-stack.sh passes it; install.sh exports it
+#   APERIRE_PORT           install.sh exports it
+#   APERIRE_NODE_CONTAINER the operator setting above (ADVISOR-SETUP.md)
+# An account id(1) says is not root keeps them all, which is what every
+# suite is. id(1) at a fixed path, never bash's $EUID (#1109).
+if ! [[ "$(/usr/bin/id -u 2>/dev/null)" =~ ^[1-9][0-9]*$ ]]; then
+  for _v in $(compgen -e); do
+    case "$_v" in APERIRE_INSTALL_TREE|APERIRE_INSTANCE|APERIRE_ACCOUNT|APERIRE_ADVISOR_PORT|APERIRE_PORT|APERIRE_NODE_CONTAINER) ;; APERIRE_*) unset "$_v" ;; esac
+  done
+fi
+
+# The instance names units and paths, so it is held to the rule
+# advisor-owner-lib.sh holds it to, and anything else is refused (#1206).
+instance_name_ok() { # $1 = a name; [a-z] is held to ASCII, whatever the locale
+  local LC_ALL=C
+  [[ "$1" =~ ^[a-z0-9][a-z0-9-]{0,30}$ && "$1" != credcheck && "$1" != credcheck-* ]]
+}
+if [[ -n "${APERIRE_INSTANCE:-}" ]] && ! instance_name_ok "$APERIRE_INSTANCE"; then
+  printf 'refused: APERIRE_INSTANCE=%q is not an instance name (a-z, 0-9 and -, at most 31, not credcheck)\n' "$APERIRE_INSTANCE" >&2
+  exit 2
+fi
+
 # ── No systemd floor ─────────────────────────────────────────────────────
 # This script used to refuse systemd 249 (Ubuntu 22.04): any seccomp directive
 # in a unit forces no_new_privs onto a non-root User= service there, sudo
@@ -228,6 +257,19 @@ NODE_SERVICE="$(wconf_value SERVICE)"
 NODE_CONTAINER="${APERIRE_NODE_CONTAINER:-}"
 if [[ "$NODE_KIND" != native && -z "$NODE_CONTAINER" && "$NODE_SERVICE" != none && -r "$WCONF" ]]; then
   NODE_CONTAINER="$NODE_SERVICE"
+fi
+# The two ports and the container go into the unit's ExecStart= line. Kept
+# from the environment as root (above), so each is held to its shape here,
+# before anything changes, whichever source it came from: a port is 1 to
+# 65535, and a container name is the set the rotation timer holds it to.
+port_ok() { local LC_ALL=C; [[ "$1" =~ ^[1-9][0-9]{0,4}$ ]] && (( 10#$1 <= 65535 )); }
+port_ok "$ADVISOR_PORT" \
+  || { printf 'refused: the Advisor port %q is not a port (1 to 65535)\n' "$ADVISOR_PORT" >&2; exit 2; }
+port_ok "$DASH_PORT" \
+  || { printf 'refused: the dashboard port %q (from %s) is not a port (1 to 65535)\n' "$DASH_PORT" "$DASH_PORT_FROM" >&2; exit 2; }
+if [[ -n "$NODE_CONTAINER" ]] && ! (LC_ALL=C; [[ "$NODE_CONTAINER" =~ ^[A-Za-z0-9._-]+$ ]]); then
+  printf 'refused: the node container %q is not a container name (A-Z, a-z, 0-9, . _ -)\n' "$NODE_CONTAINER" >&2
+  exit 2
 fi
 # The sudo rule an older release wrote for this instance. Nothing writes one
 # now (ADR 0025); this run removes it once the Advisor is running on the

@@ -759,11 +759,22 @@ fi
 # --refresh-nodes rows do. Only the copy is under test: the run stops later
 # on things a scratch directory is not, which is why RC is not asserted.
 if command -v fakeroot >/dev/null 2>&1 && python3 -c 'import yaml' 2>/dev/null; then
+  # As root the grant drops every APERIRE_* variable but the install tree
+  # (#1206), so its copy has the paths it used to take from the environment
+  # rewritten to this fixture's, each asserted.
+  # shellcheck disable=SC2016  # the program's own text, matched as text
+  sed -i -e 's#^DEST="\${APERIRE_FLEET_BROKER_PATH:-/usr/local/sbin/aperire-fleet-broker}"$#DEST='"$G/sbin/aperire-fleet-broker"'#' \
+         -e 's#^SOCK="\${APERIRE_FLEET_BROKER_SOCKET:-/run/aperire/fleet-broker.sock}"$#SOCK='"$G/run/fb.sock"'#' \
+         -e 's#^ETC="\${APERIRE_ETC:-/etc/aperire}"$#ETC='"$G/etc"'#' \
+         -e 's#^UNIT_DIR="\${APERIRE_UNIT_DIR:-/etc/systemd/system}"$#UNIT_DIR='"$G/units"'#' \
+         -e 's#^INSTALL_DIR="\${APERIRE_DIR:-\$REPO}"$#INSTALL_DIR='"$G/tree"'#' \
+    "$G/tree/scripts/install-fleet-broker-grant.sh"
+  for _pin in "DEST=$G/sbin/aperire-fleet-broker" "SOCK=$G/run/fb.sock" "ETC=$G/etc" "UNIT_DIR=$G/units" "INSTALL_DIR=$G/tree"; do
+    grep -qxF -e "$_pin" "$G/tree/scripts/install-fleet-broker-grant.sh" \
+      || { echo "the broker grant's copy was not pinned to the fixture ($_pin); the rows below would act on this host's paths"; exit 1; }
+  done
   run_broker() {
     OUT="$(cd "$G" && env PATH="$G/bin:$PATH" \
-      APERIRE_FLEET_BROKER_PATH="$G/sbin/aperire-fleet-broker" APERIRE_ETC="$G/etc" \
-      APERIRE_UNIT_DIR="$G/units" APERIRE_FLEET_BROKER_SOCKET="$G/run/fb.sock" \
-      APERIRE_DIR="$G/tree" APERIRE_RELEASE_DIGESTS="$G/release.sha256" \
       timeout 120 fakeroot bash "$G/tree/scripts/install-fleet-broker-grant.sh" 2>&1)"; RC=$?
   }
   cp "$G/tree/scripts/aperire-fleet-broker.sh" "$G/broker.orig"
@@ -1018,6 +1029,50 @@ if [[ "$OUT" == *"the account check could not run: systemd did not answer"* && "
 else
   bad "rd_stage_tree names the account check" "$OUT"
 fi
+
+# #1355: a host with no python3. Every file the stage copies is checked in it,
+# so each one was refused on its own and named python3 each time (198 of 596
+# lines for the real tree, on a host with no record). It is said once, before a file is
+# touched, and the reason the callers read is python3, so none of them tells
+# the operator a file changed. _tp_python is stood in for after the library
+# loads, the way test-trusted-path-lib.sh makes a host without it.
+rm -rf "$TMP/stageout-py"; mkdir -p "$TMP/stageout-py"
+# shellcheck disable=SC2016  # the inner shell's own arguments
+OUT="$(env LC_ALL=C APERIRE_RELEASE_DIGESTS="$TMP/no-record-here/release.sha256" bash -c '. "$1"; _tp_python() { return 1; }; rd_stage_tree "$2" "$3"; echo "rc=$? why=${RD_REFUSED_WHY:-}"' _ "$LIB" "$TMP/tree" "$TMP/stageout-py" 2>&1)"
+npy="$(grep -c 'python3' <<<"$OUT")"
+if [[ $npy -eq 2 && "$OUT" == *"refused: this host has no python3 at /usr/bin or /bin"*"sudo apt-get install -y python3"* \
+      && "$OUT" == *"rc=1 why=python3"* && -z "$(ls -A "$TMP/stageout-py")" ]]; then
+  ok "rd_stage_tree on a host with no python3 names it once, returns 1 with the reason python3, and stages nothing (#1355)"
+else
+  bad "rd_stage_tree names python3 once" "python3 lines=$npy (want 2: the sentence and the reason): $(head -6 <<<"$OUT")"
+fi
+# Beside it, the same stage on a host that has python3 never says so.
+rm -rf "$TMP/stageout-py"; mkdir -p "$TMP/stageout-py"
+# shellcheck disable=SC2016  # the inner shell's own arguments
+OUT="$(env LC_ALL=C APERIRE_RELEASE_DIGESTS="$TMP/no-record-here/release.sha256" bash -c '. "$1"; rd_stage_tree "$2" "$3"; echo "rc=$? why=${RD_REFUSED_WHY:-}"' _ "$LIB" "$TMP/tree" "$TMP/stageout-py" 2>&1)"
+if [[ "$OUT" != *"no python3"* && "$OUT" != *"why=python3"* ]]; then
+  ok "  and with python3 there it does not (the control)"
+else
+  bad "the python3 sentence is only for a host without it" "$(head -6 <<<"$OUT")"
+fi
+rm -rf "$TMP/stageout-py"
+
+# rd_digest_for reads the recorded digests from a pipe. A reader that stops on
+# its match closes the pipe while printf is still writing a body bigger than a
+# pipe buffer: printf dies of SIGPIPE, and under pipefail the lookup exits 141
+# (#973). A release of 480 files is under the buffer today; this is the size at
+# which it was not. The match is the first line, which is the worst case.
+{ printf '%064d  first/file\n' 7; for i in $(seq 1 4000); do printf '%064d  some/path/number-%s\n' 2 "$i"; done; } > "$TMP/bigbody"
+for copy in "$LIB" "$GET"; do
+  label="$(basename "$copy")"
+  # shellcheck disable=SC2016  # the inner shell's own arguments
+  got="$(bash -c 'set -uo pipefail; eval "$(sed -n "/^rd_digest_for() {/,/^}/p" "$1")"; RD_BODY="$(cat "$2")"$'"'"'\n'"'"'; d="$(rd_digest_for first/file)"; echo "rc=$? ${d: -4}"' _ "$copy" "$TMP/bigbody" 2>&1)"
+  if [[ "$got" == "rc=0 0007" ]]; then
+    ok "$label looks a digest up in a body larger than a pipe buffer without dying of SIGPIPE"
+  else
+    bad "$label looks up the first line of a large digest list" "$got (want rc=0 0007)"
+  fi
+done
 
 echo
 echo "$PASS passed, $FAIL failed"

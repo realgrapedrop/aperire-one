@@ -156,6 +156,7 @@
   }
 
   // ── Presentation 1: the account chip (the shell, the normal case) ──
+  var IDLE_TIP = 'Session idle, tap to stay signed in';
   var chip = null, chipIdle = null, chipSecs = null, chipBound = false;
   function ensureChip() {
     if (chip) return chip;
@@ -210,7 +211,17 @@
       if (chipSecs) chipSecs.textContent = secs;
       chip.classList.add('is-idle-warn');
       chipIdle.hidden = false;
-      chip.setAttribute('title', 'Session idle — tap to stay signed in');
+      // The pill's hover help, from theme-toggle.js. It was a native title=
+      // that nothing ever took back off, so the idle text outlived the warning.
+      if (chip.getAttribute('data-hdr-tip') !== IDLE_TIP) {
+        // Keep what the pill said so the end of the warning can put it back.
+        // index.html writes the account text to -rest itself; this is the
+        // case where the warning is up before that answer has landed.
+        if (!chip.hasAttribute('data-hdr-tip-rest') && chip.hasAttribute('data-hdr-tip')) {
+          chip.setAttribute('data-hdr-tip-rest', chip.getAttribute('data-hdr-tip'));
+        }
+        chip.setAttribute('data-hdr-tip', IDLE_TIP);
+      }
     } else {
       ensureToast();
       if (toastSecsEl) toastSecsEl.textContent = secs;
@@ -219,8 +230,14 @@
   }
   function hideWarn() {
     if (chip) {
+      var wasWarn = chip.classList.contains('is-idle-warn');
       chip.classList.remove('is-idle-warn');
       if (chipIdle) chipIdle.hidden = true;
+      if (wasWarn) {
+        var rest = chip.getAttribute('data-hdr-tip-rest');
+        if (rest) chip.setAttribute('data-hdr-tip', rest);
+        else chip.removeAttribute('data-hdr-tip');
+      }
     }
     if (toastEl) toastEl.style.display = 'none';
   }

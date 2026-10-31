@@ -223,6 +223,15 @@ install_stage_self() { # the arguments this run was given
   # It loads trusted-path-lib.sh from beside itself.
   # shellcheck source=scripts/release-digests-lib.sh
   . "$rdlib"
+  # python3, asked once and before anything is staged (#1279). Every file the
+  # stage copies goes through a check that runs in it, at /usr/bin or /bin and
+  # never off a PATH, so a host without it would refuse each file on its own
+  # and name python3 once per file. Same two paths, same sentence the
+  # bootstrap uses (#1193).
+  if declare -F _tp_python >/dev/null && ! _tp_python >/dev/null; then
+    echo "error: this install needs python3, and this host has none at /usr/bin or /bin: the check on every file root runs out of $REPO_DIR runs in it. Nothing was staged or installed. Install it, then run this again: sudo apt-get install -y python3" >&2
+    exit 1
+  fi
   held="$(mktemp -d -t aperire-install.XXXXXXXX)" || { echo "error: could not make a directory to stage the installers in. Nothing was run." >&2; exit 1; }
   # shellcheck disable=SC2064  # the path is fixed now, on purpose
   trap "rm -rf -- '$held'" EXIT
@@ -256,6 +265,14 @@ fi
   || { echo "error: ${SCRIPTS_DIR}/fleet-origin.sh is missing from this checkout" >&2; exit 1; }
 # shellcheck source=scripts/fleet-origin.sh
 . "${SCRIPTS_DIR}/fleet-origin.sh"
+
+# The one reader of authn.yaml's values, shared with scripts/aperire-setup.sh
+# and scripts/aperire-fleet-pair.sh so a public_url written as a list is read
+# the same way by all three (#1358). Refused by name, like the files above.
+[[ -r "${SCRIPTS_DIR}/authn-value.sh" ]] \
+  || { echo "error: ${SCRIPTS_DIR}/authn-value.sh is missing from this checkout" >&2; exit 1; }
+# shellcheck source=scripts/authn-value.sh
+. "${SCRIPTS_DIR}/authn-value.sh"
 
 # Is there a terminal to ask a question on? Opened for real rather than tested
 # with -r: /dev/tty is mode 0666, so -r says yes on a host with no controlling
@@ -1431,7 +1448,7 @@ done
 
 # ── Closing summary ─────────────────────────────────────────────────
 # Where operators reach this dashboard, read exactly the way the guided setup
-# reads it (scripts/aperire-setup.sh, authn_value / authn_is_localhost) so the
+# reads it (scripts/aperire-setup.sh, authn_public_url / authn_is_localhost) so the
 # two install paths cannot disagree about what "still localhost" means. The
 # guided path refuses to issue a link against localhost; this path cannot
 # refuse anything, because the operator creates the account themselves after
@@ -1775,14 +1792,7 @@ aggregator_pairing_fingerprint_text() {
 }
 
 AUTHN="${REPO_DIR}/dashboard/config/authn.yaml"
-authn_value() {
-  [[ -f "$AUTHN" ]] || return 0
-  sed -n "s/^${1}:[[:space:]]*//p" "$AUTHN" | head -1 | tr -d '"'
-}
-authn_is_localhost() {
-  local u; u="$(authn_value public_url)"
-  [[ -z "$u" || "$u" == *localhost* || "$u" == *127.0.0.1* ]]
-}
+authn_is_localhost() { authn_public_url_is_local "$AUTHN"; }
 
 cat <<EOF
 

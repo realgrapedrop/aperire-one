@@ -14,8 +14,8 @@
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "test": "npm run test:unit && npm run test:e2e",
-    "test:unit": "node --import tsx --test test/unit/*.test.ts",
-    "test:e2e": "node --import tsx --test test/e2e/*.test.ts"
+    "test:unit": "node tools/tmp-guard.mjs node --import tsx --import ./test/support/tmp-sweep.mjs --test test/unit/*.test.ts",
+    "test:e2e": "node tools/tmp-guard.mjs node --import tsx --import ./test/support/tmp-sweep.mjs --test test/e2e/*.test.ts"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

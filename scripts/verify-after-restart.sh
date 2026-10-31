@@ -262,15 +262,28 @@ check_advisor_account_evidence() {
 
   # The retired sudo rule. Amber, not red: an update keeps it for an Advisor
   # still running on it and removes it once that process restarts.
+  #
+  # The directory is 0750 root:root on every lab box checked for #575, so
+  # this account cannot list it and the glob finds nothing whatever is there.
+  # Listed through `sudo -n` then, the names only, the way the checks above
+  # reach what this account cannot (#575). A host with no passwordless sudo
+  # says nothing here, as before: a rule nobody can find is not a finding.
+  local -a rules=()
   if [[ -d "$SUDOERS_DIR" && -r "$SUDOERS_DIR" && -x "$SUDOERS_DIR" ]]; then
     for rule in "$SUDOERS_DIR"/aperire-advisor "$SUDOERS_DIR"/aperire-advisor-*; do
-      [[ -e "$rule" ]] || continue
-      chk advisor-sudo-rule
-      warn "advisor-sudo-rule: $rule still grants the Advisor a sudo rule, which ADR 0025 retired; the Advisor reaches the node through its root socket"
-      note "sudo systemctl restart $ADVISORD_UNIT && curl -fsSL https://get.aperire.one | bash -s -- --update --force"
-      chk ""
+      [[ -e "$rule" ]] && rules+=("$rule")
     done
+  elif [[ -d "$SUDOERS_DIR" ]] && sudo -n true 2>/dev/null; then
+    mapfile -t rules < <(sudo -n find "$SUDOERS_DIR" -mindepth 1 -maxdepth 1 \
+      \( -name aperire-advisor -o -name 'aperire-advisor-*' \) -print 2>/dev/null | LC_ALL=C sort)
   fi
+  for rule in "${rules[@]}"; do
+    [[ -n "$rule" ]] || continue
+    chk advisor-sudo-rule
+    warn "advisor-sudo-rule: $rule still grants the Advisor a sudo rule, which ADR 0025 retired; the Advisor reaches the node through its root socket"
+    note "sudo systemctl restart $ADVISORD_UNIT && curl -fsSL https://get.aperire.one | bash -s -- --update --force"
+    chk ""
+  done
 
   have="$(systemctl show "$ADVISORD_UNIT" -p User --value 2>/dev/null)"
   dash="$(dashboard_account)"

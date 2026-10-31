@@ -33,6 +33,13 @@ umask 022
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
+# Everything the installer makes with mktemp goes to a folder of this suite's
+# own, so the last row can say whether anything outlived the run that made it
+# (#588). A signing key that failed its fingerprint check, and the log of the
+# image check, used to stay in the temp dir.
+SCRATCH="$TMP/scratch"
+mkdir -p "$SCRATCH"
+export TMPDIR="$SCRATCH"
 
 # Native-mode paths, named here rather than where they are first read: the
 # fakes on PATH below are generated as heredocs that expand these immediately
@@ -4234,6 +4241,85 @@ if [[ "$(stat -c '%a' "$NATIVE_CFG")" == 640 ]]; then
   ok "and the native config ends the run at 640"
 else
   bad "the native config ends closed" "mode $(stat -c '%a' "$NATIVE_CFG")"
+fi
+
+# ── The scrap list and the EXIT trap that empties it (#588) ──────────────
+# on_exit removes whatever is still on SCRAPS. errexit is live inside an EXIT
+# trap, so a removal that fails (a name another account replaced with
+# something root cannot delete) used to end the run with status 1 before the
+# status being reported was returned or the "said why" line was written. The
+# block is cut out of the installer and run on its own.
+SCRAP_BLOCK="$TMP/scrap-block.sh"
+# shellcheck disable=SC2016  # the sed program is literal text to match, not shell
+sed -n '/^SAID_WHY_MARK="\$(mktemp/,/^trap on_exit EXIT$/p' "$REPO_DIR/scripts/install-aperire-node.sh" > "$SCRAP_BLOCK"
+if grep -q '^trap on_exit EXIT$' "$SCRAP_BLOCK" && grep -q '^scrap_rm()' "$SCRAP_BLOCK"; then
+  ok "the scrap list, scrap_rm and the EXIT trap were found in the installer"
+else
+  bad "the scrap block was found" "markers moved in install-aperire-node.sh"
+fi
+# Removal fails for ONE path, by an rm shim first on PATH inside the harness:
+# it refuses the planted name and passes every other call to the real rm. That
+# fails for root as well as for any other account, which a directory the
+# account cannot delete does not (root deletes it), so these rows run as any uid.
+BUSY="$TMP/busy-scrap"
+: > "$BUSY"
+mkdir -p "$TMP/rmshim"
+cat > "$TMP/rmshim/rm" <<SHIM
+#!/usr/bin/env bash
+for a in "\$@"; do
+  if [[ "\$a" == "$BUSY" ]]; then echo "rm: cannot remove '\$a': Device or resource busy" >&2; exit 1; fi
+done
+exec $(command -v rm) "\$@"
+SHIM
+chmod 0755 "$TMP/rmshim/rm"
+scrap_run() { # $1 = block file, $2 = body; prints the output, then rc=N
+  local out rc=0
+  out="$(PATH="$TMP/rmshim:$PATH" bash -c 'set -Eeuo pipefail; E_RED=""; E_OFF=""; . "$1"; eval "$2"' _ "$1" "$2" 2>&1)" || rc=$?
+  printf '%s\nrc=%s\n' "$out" "$rc"
+}
+# shellcheck disable=SC2016  # the body is run by the harness shell
+out="$(scrap_run "$SCRAP_BLOCK" 'SCRAPS+=("'"$BUSY"'"); exit 0')"
+if [[ "$out" == *"rc=0" && "$out" != *"stopped with"* && -e "$BUSY" ]]; then
+  ok "a scrap whose removal fails (the shim refused it) does not turn a clean run into a failure"
+else
+  bad "an unremovable scrap leaves a clean run clean" "$out"
+fi
+# shellcheck disable=SC2016  # the body is run by the harness shell
+out="$(scrap_run "$SCRAP_BLOCK" 'SCRAPS+=("'"$BUSY"'"); exit 7')"
+if [[ "$out" == *"rc=7" && "$out" == *"stopped with status 7"* ]]; then
+  ok "  and a failing run keeps its own status and still says why"
+else
+  bad "an unremovable scrap leaves a failing run's status alone" "$out"
+fi
+# The same block with the guard cut out must go red.
+sed 's/ 2>\/dev\/null || true; done$/; done/' "$SCRAP_BLOCK" > "$TMP/scrap-block-ablated.sh"
+if cmp -s "$SCRAP_BLOCK" "$TMP/scrap-block-ablated.sh"; then
+  bad "the ablation of the on_exit guard cut something" "the loop line moved"
+else
+  # shellcheck disable=SC2016  # the body is run by the harness shell
+  out="$(scrap_run "$TMP/scrap-block-ablated.sh" 'SCRAPS+=("'"$BUSY"'"); exit 0')"
+  if [[ "$out" == *"rc=1" ]]; then
+    ok "  control: without the guard the same run exits 1"
+  else
+    bad "the guard is what keeps the status" "$out"
+  fi
+fi
+rm -f "$BUSY"
+ONE="$(mktemp)"; TWO="$(mktemp)"
+# shellcheck disable=SC2016  # the body is run by the harness shell, which expands ${SCRAPS[@]}
+out="$(scrap_run "$SCRAP_BLOCK" 'SCRAPS+=("'"$ONE"'" "'"$TWO"'"); scrap_rm "'"$ONE"'"; echo "left=${#SCRAPS[@]} first=${SCRAPS[0]}"; exit 0')"
+if [[ "$out" == *"left=1 first=$TWO"* && ! -e "$ONE" ]]; then
+  ok "scrap_rm removes the file and takes only that name off the list"
+else
+  bad "scrap_rm keeps the list in step" "$out"
+fi
+rm -f "$ONE" "$TWO"
+
+LEFT="$(find "$SCRATCH" -mindepth 1 -maxdepth 1 -printf '%f ')"
+if [[ -z "$LEFT" ]]; then
+  ok "no run left a file or folder behind in the temp dir"
+else
+  bad "no run leaves anything in the temp dir" "left: $LEFT"
 fi
 
 echo

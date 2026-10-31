@@ -104,9 +104,10 @@ func IsSelectable(name string) bool {
 // every question needs regardless of WHICH node, and a per-node file is by
 // definition about one node.
 var floorFiles = map[string]bool{
-	"field-guide-diagnostics.md":          true,
-	"field-guide-maintenance-upgrades.md": true,
-	"node-profile.md":                     true,
+	"field-guide-diagnostics.md": true,
+	"field-guide-maintenance.md": true,
+	"field-guide-upgrading.md":   true,
+	"node-profile.md":            true,
 }
 
 // scoreCoreWeight is the rank every non-floor core candidate (IsSelectable

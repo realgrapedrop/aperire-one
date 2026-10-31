@@ -1300,6 +1300,21 @@ export function isPairUrl(raw: string): boolean {
   return true;
 }
 
+/** `::ffff:` or its zero-padded long form, then the IPv4 address as a dotted
+ *  quad or as two hex groups (the form `new URL()` writes). */
+const MAPPED_IPV4 = /^(?:::|(?:0{1,4}:){5})ffff:(?:(\d{1,3}(?:\.\d{1,3}){3})|([0-9a-f]{1,4}):([0-9a-f]{1,4}))$/;
+
+/** The IPv4 address inside an IPv4-mapped IPv6 host, dotted; any other host
+ *  as it came. Lower-case, bracket-free input. */
+function unmapIPv4(h: string): string {
+  const m = MAPPED_IPV4.exec(h);
+  if (!m) return h;
+  if (m[1]) return m[1];
+  const hi = parseInt(m[2], 16);
+  const lo = parseInt(m[3], 16);
+  return `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`;
+}
+
 /**
  * An address only the node itself could open — #339.
  *
@@ -1317,9 +1332,15 @@ export function isPairUrl(raw: string): boolean {
  * Over-matching costs a link an operator has to fix by re-pairing;
  * under-matching leaves the row that started this. Over-matching is
  * cheaper, so `0.0.0.0` and all of 127/8 are in.
+ *
+ * Two spellings are undone first (#1233), because each names the same
+ * machine and the checks below would miss it. A trailing dot is the root of
+ * the DNS tree: `localhost.` resolves to loopback exactly as `localhost`
+ * does. An IPv4-mapped IPv6 address wraps an IPv4 one: `[::ffff:127.0.0.1]`
+ * is 127.0.0.1, and `new URL()` hands it back in hex, `[::ffff:7f00:1]`.
  */
 export function isLocalOnlyHost(host: string): boolean {
-  const h = host.toLowerCase().replace(/^\[|\]$/g, '');
+  const h = unmapIPv4(host.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.+$/, ''));
   if (h === 'localhost' || h.endsWith('.localhost')) return true;
   if (h === '::1' || h === '0.0.0.0' || h === '::') return true;
   // All of 127/8, not 127.0.0.1 alone: a dashboard bound to 127.0.0.2 is

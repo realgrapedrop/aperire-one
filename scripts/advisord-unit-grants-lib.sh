@@ -35,10 +35,6 @@ ADVISORD_RW_GRANTS=("$ADVISORD_WRAPPER_STATE")
 #   advisor/state, advisor/evidence   in every unit any installer has ever
 #                                     written, harden-advisord.sh's fallback
 #                                     line included
-#   advisor/knowledge-fleet           needs a directory owned by the
-#                                     Advisor's account before a unit may name
-#                                     it, which is more than a fixed root grant.
-#                                     Open as #746
 #
 # The node's own config and compose directories are the fourth kind, and
 # the update DOES ensure them (#767): read from the wrapper's configuration
@@ -47,7 +43,25 @@ ADVISORD_RW_GRANTS=("$ADVISORD_WRAPPER_STATE")
 # to write its unit before that file existed and name none of them, so an
 # existing host converges here or nowhere. advisord_deploy_dirs is the one
 # reading of it, for the program and the suites alike.
-ADVISORD_RW_NOT_ENSURED=(advisor/state advisor/evidence advisor/knowledge-fleet)
+ADVISORD_RW_NOT_ENSURED=(advisor/state advisor/evidence)
+
+# The Advisor's fleet corpus, relative to the tree the unit runs from (#746).
+# The update ensures it in two steps: the node wrapper step makes it, owned by
+# the unit's User= (_tp_ensure_corpus in trusted-path-lib.sh), and then the
+# unit names it, the converter for a socket unit and advisord-unit-grants.sh
+# for any other. Named only when it is a real directory (#1310), never a link,
+# because ReadWritePaths= on a missing path fails the unit with 226/NAMESPACE.
+ADVISORD_RW_TREE_GRANTS=(advisor/knowledge-fleet)
+
+# The fleet corpus of the tree a unit runs from, read off its ExecStart=
+# (<tree>/advisor/bin/aperire-advisord), the same reading the converter
+# makes. Nothing when the unit does not start the Advisor from a tree.
+advisord_unit_corpus() { # $1 = unit file
+  local bin
+  bin="$(grep -m1 '^ExecStart=' "$1" 2>/dev/null | sed 's/^ExecStart=//; s/^[-@:+!]*//; s/ .*//')"
+  [[ "$bin" == /*/advisor/bin/aperire-advisord ]] || return 0
+  printf '%s/%s\n' "${bin%/advisor/bin/aperire-advisord}" "${ADVISORD_RW_TREE_GRANTS[0]}"
+}
 
 # Is $2 one of the entries in the ReadWritePaths string $1? Whole words only:
 # /var/lib/aperire-old is not /var/lib/aperire. systemd renders an optional
@@ -78,7 +92,7 @@ advisord_rw_entry_covered() { # $1 = entry, $2 = install dir, $3 = node-wrapper.
   for g in "${ADVISORD_RW_GRANTS[@]}"; do
     [[ "$entry" == "${g%/}" ]] && return 0
   done
-  for rel in "${ADVISORD_RW_NOT_ENSURED[@]}"; do
+  for rel in "${ADVISORD_RW_NOT_ENSURED[@]}" "${ADVISORD_RW_TREE_GRANTS[@]}"; do
     [[ "$entry" == "$dir/$rel" ]] && return 0
   done
   while IFS= read -r f; do

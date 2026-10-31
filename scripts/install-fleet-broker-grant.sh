@@ -210,6 +210,18 @@
 
 set -euo pipefail
 
+# As root the environment chooses no path or program (#1206): every
+# APERIRE_* variable is dropped except the one a root caller passes on
+# purpose:
+#   APERIRE_INSTALL_TREE  get-aperire.sh names the tree a staged copy serves (#764)
+# An account id(1) says is not root keeps them all, which is what every
+# suite is. id(1) at a fixed path, never bash's $EUID (#1109).
+if ! [[ "$(/usr/bin/id -u 2>/dev/null)" =~ ^[1-9][0-9]*$ ]]; then
+  for _v in $(compgen -e); do
+    case "$_v" in APERIRE_INSTALL_TREE) ;; APERIRE_*) unset "$_v" ;; esac
+  done
+fi
+
 # Where this program and its siblings are (BROKER_SELF), and the install tree it acts
 # on (REPO): a directory and its parent from a checkout, two when it is a copy
 # root staged out of the release and APERIRE_INSTALL_TREE names the tree
@@ -1712,6 +1724,7 @@ FLEET_TRUST_LEAF=fleet-trust.yaml
 FLEET_TRUST_STATE=''
 FLEET_TRUST_WHY=''
 FLEET_TRUST_MADE=0
+FLEET_TRUST_MADE_PUB=''
 
 # classify_fleet_trust_file <install-dir> <dashboard-uid>
 # Sets FLEET_TRUST_STATE to absent or kept and returns 0, or sets
@@ -1805,9 +1818,19 @@ ensure_fleet_trust_key() {
   # PKCS8 DER, base64url, no padding. It crosses to dirsafe on a pipe from
   # printf, a builtin, so it is never an argument any process carries.
   seed="$(openssl pkey -in "$pem" -outform DER 2>/dev/null | tail -c 32 | base64 -w0 | tr '+/' '-_' | tr -d '=')"
+  # Its public half, from root's own bytes, for root's pin (#1008). Never
+  # read back out of the placed file, which the dashboard account can
+  # rewrite between this write and any later read.
+  FLEET_TRUST_MADE_PUB="$(openssl pkey -in "$pem" -pubout -outform DER 2>/dev/null | tail -c 32 | base64 -w0 | tr '+/' '-_' | tr -d '=')"
   rm -f -- "$pem"
   if [[ ! "$seed" =~ ^[A-Za-z0-9_-]{43}$ ]]; then
     seed=''; FLEET_TRUST_WHY="the key openssl generated did not come out as a 32-byte seed"; return 1
+  fi
+  # Without its public half there is nothing for root to pin from its own
+  # bytes, and the pin would fall back to whatever file stands there later.
+  if [[ ! "$FLEET_TRUST_MADE_PUB" =~ ^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$ ]]; then
+    seed=''; FLEET_TRUST_MADE_PUB=''
+    FLEET_TRUST_WHY="the public half of the key openssl generated did not come out as a 32-byte key. Nothing was written."; return 1
   fi
   printf 'private_key: %s\npeers: {}\n' "$seed" \
     | dirsafe "$dir" dashboard/config "$uid" 002 create "$owner" "$group" "$mode" - "$FLEET_TRUST_LEAF" 2>/dev/null \
@@ -1816,13 +1839,11 @@ ensure_fleet_trust_key() {
   case "$rc" in
     0) FLEET_TRUST_MADE=1; say "$path  (made: this aggregator's fleet trust key, $owner:$group $mode)"; return 0 ;;
     3)
-      # Something made one between the check and this write. Whatever it
-      # is stands; it is judged the way a file found at the start would be.
-      if classify_fleet_trust_file "$dir" "$uid" && [[ "$FLEET_TRUST_STATE" == kept ]]; then
-        say "$path  (kept: one appeared while this ran, and it holds a fleet trust key)"
-        return 0
-      fi
-      [[ -n "$FLEET_TRUST_WHY" ]] || FLEET_TRUST_WHY="$path appeared while this ran and holds no fleet trust key. Nothing was written. Look at it by hand."
+      # Something made one between the check and this write. It is left as
+      # it is, and this run stops: on a host that had no key, root pins only
+      # a key it made itself (#1008), never one that appeared beside it.
+      FLEET_TRUST_MADE_PUB=''
+      FLEET_TRUST_WHY="$path appeared while this ran, after this program found no trust file, so it is not a key root made and root does not pin it. Nothing was written. Look at it by hand, move it aside if you did not put it there, and run this again."
       return 1 ;;
     2) FLEET_TRUST_WHY="$path could not be made safely (a link or a directory the dashboard account does not own is in the way). Nothing was written." ; return 1 ;;
     *) FLEET_TRUST_WHY="$path could not be written" ; return 1 ;;
@@ -2053,7 +2074,14 @@ fleet_keys_gate() {
   if [[ "$FLEET_TRUST_STATE" == absent ]]; then
     FLEET_KEYS_MISSING+="the fleet trust key  $dir/dashboard/config/$FLEET_TRUST_LEAF"$'\n'
   fi
-  local marked=0
+  local marked=0 pinned=0
+  # #1008 review: root's pin of the trust key says this host has had one, the
+  # way fleet-arm.made does for the arm key. A missing trust key next to it
+  # was lost, whatever the records say by now, so it is not re-made (and the
+  # pin replaced) without --new-fleet-keys.
+  if [[ "$FLEET_TRUST_STATE" == absent ]] && [[ -e "$etc/fleet-trust.pub" || -L "$etc/fleet-trust.pub" ]]; then
+    pinned=1
+  fi
   if [[ ! -e "$etc/fleet-arm.key" && ! -L "$etc/fleet-arm.key" ]]; then
     FLEET_KEYS_MISSING+="the fleet arm key    $etc/fleet-arm.key"$'\n'
     # Review L1: this host made or held an arm key before, so a missing one
@@ -2063,7 +2091,7 @@ fleet_keys_gate() {
   [[ -n "$FLEET_KEYS_MISSING" ]] || return 0
   recs="$(fleet_paired_records "$dir" "$uid" "$etc" "$GRANT_WORK" "" \
     "$(fleet_self_facts "${UNIT_DIR:-/etc/systemd/system}" "$GRANT_WORK" 2>/dev/null | sed -n 's/^port //p')")" || recs=''
-  [[ -n "$recs" ]] || (( marked )) || return 0
+  [[ -n "$recs" ]] || (( marked || pinned )) || return 0
   FLEET_REPAIR="$recs"
   (( ${NEW_FLEET_KEYS:-0} == 1 )) && return 0
   nodes="$(sed -n 's/^node \([a-z0-9-]*\) .*/\1/p' <<<"$recs" | sort -u | paste -sd, - | sed 's/,/, /g')"
@@ -2072,12 +2100,15 @@ fleet_keys_gate() {
   {
     if [[ -n "$recs" ]]; then
       printf 'error: this aggregator already has paired nodes, and a fleet key they trust is missing:\n'
-    else
+    elif (( marked )); then
       printf 'error: this aggregator has had a fleet arm key before, and it is missing:\n'
+    else
+      printf 'error: this aggregator has had a fleet trust key before, and it is missing:\n'
     fi
     while IFS= read -r _k; do [[ -n "$_k" ]] && printf '    %s\n' "$_k"; done <<<"$FLEET_KEYS_MISSING"
     printf '  No new key was made, and nothing was written.\n\n'
     (( marked )) && printf '  %s says this host has had a fleet arm key before, so the missing one was lost.\n' "$etc/fleet-arm.made"
+    (( pinned )) && printf '  %s is root'"'"'s pin of the fleet trust key, so this host has had one, and the missing one was lost.\n' "$etc/fleet-trust.pub"
     [[ -n "$nodes" ]] && printf '  paired nodes: %s\n' "$nodes"
     while IFS= read -r _f; do
       [[ -n "$_f" ]] && printf '  a row in %s has no usable label; counted as a paired node\n' "$_f"
@@ -2494,7 +2525,17 @@ ensure_fleet_trust_key "$INSTALL_DIR" "$(id -u "$DASH_ACCOUNT")" "$FK_OWNER" "$F
 # Then the public half, made or remade from the key file, and a key file
 # kept from before #868 narrowed to its owner. Not fatal: the key is already
 # made, and a run that stops after it is a host the line below names red.
+# Root's pin of the trust key (#1008) sits beside the arm key. A key made
+# just now is pinned from the bytes root generated; one kept from before is
+# pinned on first sight, and checked against the pin after that. Both are
+# read by fts_converge, a function sourced above, so they are not exported.
+# So is the unit directory it reads the Advisor's unit from: this program's
+# own, never the environment's (#1206).
 FTS_RC=0
+FTS_PIN_FILE="$ETC/fleet-trust.pub"
+FTS_UNIT_DIR="$UNIT_DIR"
+FTS_PIN_FROM=''
+(( FLEET_TRUST_MADE )) && FTS_PIN_FROM="$FLEET_TRUST_MADE_PUB"
 FTS_OUT="$(fts_converge "$INSTALL_DIR" "$DASH_ACCOUNT" "$FT_GROUP" "$FTS_TOOL" 2>&1)" || FTS_RC=$?
 while IFS= read -r _l; do [[ -n "$_l" ]] && say "  $_l"; done <<<"$FTS_OUT"
 (( FTS_RC == 0 )) || say "  WARNING: the fleet trust key is not split (above). Once fixed: curl -fsSL https://get.aperire.one | bash -s -- --update --force"

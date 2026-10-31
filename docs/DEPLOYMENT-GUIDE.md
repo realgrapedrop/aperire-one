@@ -16,10 +16,10 @@ Nothing here is a black box. The guided setup prints every command before it run
 |---|---|
 | **Ubuntu 24.04 LTS** | Verified end to end: the install, the Advisor on its own account, everything back after a reboot. |
 | **Linux Mint 22** | Verified the same way, dedicated Advisor account included. The installer recognises Mint and says nothing about it. |
-| **Ubuntu 22.04 LTS** | Works, with one exception. The Advisor's dedicated account needs systemd 250 or newer and 22.04 ships 249, so on 22.04 the Advisor runs under your own account instead. The one-line install notices and says so; the clone path takes `--advisor-shared-account` to say it up front. The dashboard, the relay and the tunnel are unaffected. |
+| **Ubuntu 22.04 LTS** | Works, the Advisor on its own account included, as on 24.04. One difference: 22.04 ships systemd 249, which has no `systemd-creds`, so the Advisor's model key is a root-only file instead of a credential sealed to the machine. [Advisor Setup](ADVISOR-SETUP.md) has the detail. The dashboard, the relay and the tunnel are unaffected. |
 | **Debian 12 and other systemd distributions** | Should work on the same criterion. Untested, so you are the first. The one-line install refuses a system nobody has verified and points you at the clone path, which is not gated: `install.sh` prints `warning: Aperire One is verified on Ubuntu 24.04 / 22.04 LTS and Linux Mint 22.` and carries on. That is a note about what has been tested, not a refusal. |
 
-The real requirement is systemd 250+, and only for that one Advisor account. Check yours with `systemctl --version`, first line.
+The real requirement is systemd. Version 250 or newer seals the Advisor's model key to the machine, and 249 keeps it as a file only root can read. Check yours with `systemctl --version`, first line.
 
 | Hardware | What it needs |
 |---|---|
@@ -686,12 +686,12 @@ with the two sanctioned fixes.
 
 ```bash
 systemctl is-active aperire-server
-curl -fsS http://127.0.0.1:7800/healthz
+curl -sS -w '\nHTTP %{http_code}\n' http://127.0.0.1:7800/healthz
 ```
 
-**What you should see:** `active`, then a line of JSON. In it, `ok` is the whole host's verdict, `rippled_connected` says whether the node answered, and a small `relay_last_push_ms` means the relay is feeding.
+**What you should see:** `active`, then a line of JSON with the HTTP status under it. In it, `ok` is the whole host's verdict, `rippled_connected` says whether the node answered, and a small `relay_last_push_ms` means the relay is feeding.
 
-A node that has no ledgers yet reports ok:false honestly — that is the node syncing, not a broken install.
+A node that has no ledgers yet reports ok:false honestly — that is the node syncing, not a broken install. The status is 503 then, and the step says what that means: the dashboard is up, whether it's connected to the node, and when it last saw a ledger close. That's expected right after an install, and the status turns 200 once the node is current.
 
 On a host with the Advisor the step also offers the full after-a-reboot check, which asserts all three services, the node, its config permissions and both loopback endpoints:
 
@@ -976,6 +976,52 @@ The relay finds the node's four ports by reading its config, so the Network tab'
 
 **Ports, when you are done:** the validator has `:51235` public (peers) and `:6006` LAN-only, scoped to the dashboard host. The dashboard host has `:7800` LAN-only, scoped to the validator. Nothing else. The [Hardening Guide](HARDENING-GUIDE.md#firewall) has the UFW rules per host.
 
+### Dashboard on a VPS, node at home
+
+A common setup puts the dashboard on a rented VPS and the node on a box behind your home router. Nothing has to reach into your home network. The relay dials out to the dashboard, and one SSH connection from home carries the other hop too, so the router needs no port forward and the VPS opens no port for this beyond SSH.
+
+Two things cross: the relay's pushes (home to VPS) and the dashboard's admin WebSocket to the node (VPS to home). Both ride the same connection, and both ends stay on loopback.
+
+1. **On the VPS, install the dashboard only.** `sudo bash install.sh --role=dashboard`. It keeps its defaults, `HOST=127.0.0.1` and `RIPPLED_URL=ws://127.0.0.1:6006`. Note the token the installer prints, which goes in `RELAY_TOKENS`.
+2. **At home, keep the node's admin stanza on loopback.** The default `[port_ws_admin_local]` on `127.0.0.1:6006` with `admin = 127.0.0.1` is already right.
+3. **At home, open the tunnel.** It's one command. Run it as a systemd unit or under `autossh` so it comes back after a drop:
+
+```bash
+ssh -N -L 127.0.0.1:7800:127.0.0.1:7800 -R 127.0.0.1:6006:127.0.0.1:6006 <operator>@<vps-address>
+```
+
+   `-L` puts the VPS dashboard on this box's `127.0.0.1:7800`. `-R` puts this box's admin port on the VPS's `127.0.0.1:6006`, where the dashboard already looks.
+4. **At home, install the relay** and fill in `/etc/aperire/relay.conf`:
+
+```toml
+dashboard_url = "ws://127.0.0.1:7800/ingest"
+auth_token    = "<the token from step 1>"
+node_label    = "validator-01"
+```
+
+5. **Restart the relay, then ask it whether the path works.**
+
+```bash
+sudo systemctl restart aperire-relay
+sudo aperire-relay --check-dashboard
+```
+
+The check tries `dashboard_url` once with the relay's own handshake, sends no data, and names what is in the way:
+
+| It says | What it means | Fix |
+|---|---|---|
+| `check=accepted` | Reached, token accepted. | Nothing. Data shows up within a few seconds. |
+| `check=dns` | The name in `dashboard_url` does not resolve from this box. | Fix the spelling, or use `127.0.0.1` through the tunnel. |
+| `check=refused` | Nothing is listening on that address. | The tunnel is down, or the port is wrong. Start the tunnel. |
+| `check=timeout` | No answer. A firewall is dropping it. | Allow the port at the far end and at the provider's firewall. |
+| `check=tls` | The handshake failed (`wss://` only). | Use the certificate's name, or install its CA on this box. |
+| `check=unauthorized` | Reached, token refused (401). | Add the token to `RELAY_TOKENS` on the VPS and restart the dashboard. |
+| `check=forbidden` | Reached, refused (403). | A plain `ws://` push from another host. Use the tunnel or `wss://`. |
+
+The Add a node step in Settings & Updates shows the same list when no frame has arrived after a minute.
+
+The cost is that the `-R` forward puts your node's admin port on the VPS's loopback, so anyone with a shell on the VPS can send admin commands to the node. Keep logins on that box to yourself. If that's not acceptable, run a dashboard on the node's own box instead and [join it to a fleet](FLEET-GUIDE.md) from the VPS, which keeps the admin port inside your network.
+
 ### Reaching it from the internet, with a Cloudflare tunnel
 
 Optional. It publishes the dashboard without opening a port: `cloudflared` dials out to Cloudflare and the traffic comes back down that stream. Skip it for LAN, localhost or SSH access.
@@ -1084,7 +1130,7 @@ bash install.sh --role=cli-only                 # a workstation, no sudo
 | `--role=` | Required: `co-located`, `dashboard`, `validator` or `cli-only`. |
 | `--with-tunnel` | Also install the `cloudflared-aperire` unit. Do the [tunnel steps](#reaching-it-from-the-internet-with-a-cloudflare-tunnel) first: this one runs before everything else and stops the whole install if `cloudflared` or its config is not there yet. |
 | `--with-advisor` | Also install the Advisor, its dedicated account and the node wrapper. Needs a node on this host, container or native, for the wrapper to drive. |
-| `--advisor-shared-account` | Run the Advisor as your account instead of its own. Weaker, because that account is in the `docker` group, so the wrapper becomes an audit trail rather than a boundary. Required on Ubuntu 22.04. |
+| `--advisor-shared-account` | Retired. The Advisor always gets its own account, on 22.04 as on 24.04. The flag is accepted and ignored, and the install summary says so. |
 | `--relay-binary=PATH` | Use a prebuilt relay binary instead of the one the prepare step builds. |
 | `--no-prepare` | Skip the toolchain step and manage Node, Go and `npm ci` yourself. `APERIRE_OFFLINE=1` makes the prepare step refuse downloads and only report what is missing. |
 | `--no-preflight` | Skip the [prerequisite check](#will-this-work-on-my-system) it runs first. Only for tooling that has already checked. `--yes` does not skip it, and nor should you: an unattended run that installs half a product is worse than one that refuses. |
@@ -1148,7 +1194,12 @@ There is no release to fetch here: the uninstaller is part of the install alread
 
 Root never runs the `uninstall.sh` in your checkout. The install's scripts are staged first, each file read once and held to the release's digests and to the trusted-path check, into a directory only root can write, and that copy runs, told which install it removes. That needs the root-owned checking libraries an install or update puts under `/usr/local/lib/aperire`. A host without them is told to update first, and nothing is removed.
 
-The one thing it ever downloads is the uninstaller, and only when the copy on your host can't be staged: it is older than the keep/wipe question, or older than staged runs. An install made before the keep/wipe change carries an `uninstall.sh` that requires `--role` and refuses `--keep` and `--wipe` as unknown arguments, so the line above would end on `unknown argument: --wipe`. When that is what it finds, it fetches the current `uninstall.sh` from beside itself, checks it arrived whole, says on screen that it did so and where from, puts it in a directory only root can write and runs that. The file in your checkout is left as it is. A copy that arrives short, arrives stale, or does not arrive at all is refused, and nothing is removed. `--no-upgrade` turns the download off, so on an install like that it is refused by name; update the install first.
+It downloads the uninstaller only when yours is too old to do the job, and only once the release key on your host vouches for it:
+
+- **A newer release is on offer.** It reads the signed release record first. If that release was published after the newest one your host has installed, its `uninstall.sh` runs instead of yours, since only its uninstaller has the removals it added. The same release or an older one leaves yours. If the endpoint stops answering at any point, yours runs and the output warns that a newer release's removals may stay behind. Update and run it again to remove them.
+- **Your copy can't be staged.** An install made before the keep/wipe change carries an `uninstall.sh` that requires `--role` and refuses `--keep` and `--wipe`, so the line above would end on `unknown argument: --wipe`. The current `uninstall.sh` runs instead. If it can't be fetched, or it's older than a release your host's records say it installed, nothing is removed.
+
+Either way, the download is checked whole and against the signed release, put in a directory only root can write and run from there. The file in your checkout is left as it is. A copy that arrives short or stale, or doesn't match what the release signed, is refused and nothing is removed. `--no-upgrade` turns the download off, so a current install runs its own uninstaller and an install too old to stage is refused by name. Update that one first.
 
 ### What it works out, and what it asks
 

@@ -20,7 +20,7 @@
  * the reconnect that re-runs the pin check), and a transport failure.
  */
 import type { FleetNodeConfig } from './fleet-registry.js';
-import { readTokenFresh, isRefusedStatus } from './fleet-health.js';
+import { readTokenFileExplained, tokenUnreadableDetail, tokenUnreadableLog, isRefusedStatus } from './fleet-health.js';
 import { DEFAULT_TIMEOUT_MS, readBoundedBody } from './fleet-fetch-through.js';
 import { verifyPeerPin, type PeerReadErrorCode } from './peer-read-proxy.js';
 import { READ_STREAM_PATH, type ReadStreamChannel } from '../types/read-contract.js';
@@ -36,6 +36,8 @@ export interface PeerStreamOpenOk {
 export interface PeerStreamOpenError {
   ok: false;
   error: PeerReadErrorCode;
+  /** Only on `token_unreadable`: this host's sentence about its own file. */
+  detail?: string;
   /** The peer's own status when it answered but refused (its stream
    *  concurrency cap, say) — carried so the browser is told which end said
    *  no, rather than a generic "bad response". */
@@ -94,11 +96,13 @@ export async function openPeerStream(
     notSupportedUntil.delete(capabilityKey(node));
   }
 
-  const token = readTokenFresh(node.token_path);
-  if (!token) {
-    console.warn(`[peer-stream-proxy] ${node.label}: token unreadable`);
-    return { ok: false, error: 'peer_unreachable' };
+  const tokenRead = readTokenFileExplained(node.token_path);
+  if (!tokenRead.ok) {
+    console.warn(`[peer-stream-proxy] ${node.label}: token unreadable: ${tokenUnreadableLog(tokenRead)}`);
+    // #1305: its own answer, not peer_unreachable. Nothing was sent.
+    return { ok: false, error: 'token_unreadable', detail: tokenUnreadableDetail(node.label, 'read', tokenRead) };
   }
+  const token = tokenRead.token;
 
   // The pin BEFORE the stream opens, and the same rule the JSON proxy runs
   // on every single request — not a lenient variant of it.

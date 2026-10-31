@@ -196,6 +196,8 @@ curl -fsSL https://get.aperire.one | bash -s -- \
 
 There is no install directory to edit: the aggregator cannot know the other box's path, so it does not print one. This is the same bootstrap a fresh box runs, and on a box that already has Aperire it finds that install and pairs it instead of installing over it. It reads the node's own read token and its own node key, asks for the fingerprint, then dials the aggregator and waits. If you would rather keep the code out of your shell history, `--code -` reads it from standard input instead.
 
+On a box that runs a second Aperire instance beside the default one, tell it which dashboard to pair by adding `--instance <name>` and `--dir <that instance's checkout>` to the line. A name given with the wrong checkout is refused, and the refusal names the right one. A box with more than one dashboard refuses a line that names none, lists them and spends no code. To pair the default instance on such a box, pass `--instance=` with nothing after the equals sign.
+
 **Before it calls in**, the command asks you to paste the aggregator's **pairing fingerprint**. It's one value over the two keys the node is about to take: the aggregator's fleet trust key and its fleet arm key. Get it on the aggregator, as root:
 
 ```bash
@@ -302,6 +304,8 @@ It also makes the two keys a node's pairing fingerprint covers, when either is m
 
 - **The fleet trust key**, the `private_key:` line in `dashboard/config/fleet-trust.yaml`. It's made only where there is no file, owned by the dashboard's account, mode `0600`. The Advisor never reads it. It reads `dashboard/config/fleet-trust.pub.yaml` beside it instead: the same `peers:` and the key's public half, mode `0640`, in `aperire-svc` when the dashboard and the Advisor are both in it (otherwise the group they do share).
 - **The fleet arm key**, `/etc/aperire/fleet-arm.key`, root only, mode `0600`.
+
+Root also pins the fleet trust key's public half in `/etc/aperire/fleet-trust.pub` (root, `0644`) and takes the key from there alone. The dashboard's account can write `fleet-trust.yaml`, so root ignores any key put there later. `sudo aperire-fleet-arm --fingerprint` prints the pinned key's fingerprint, the broker won't sign a model push with any other key, and the update won't make the Advisor's public file from one. The grant pins a key it makes, and an update pins the key an older aggregator already holds. A backup set carries the pin and a restore puts it back, but the restore refuses a set whose pin differs from the one already here unless you pass `--replace-trust-pin`. If the key in `fleet-trust.yaml` stops matching the pin, put it back from a backup set. To start a new fleet key on purpose, move `fleet-trust.yaml` aside, run the grant with `--new-fleet-keys` (it pins the key it makes), then pair every node again.
 
 A key that is already there is never rewritten. Every paired node trusts it, and a new one would break all of them. A `fleet-trust.yaml` that exists with no usable key (a node's own file with only `peers:`, an empty file, a key that isn't 32 bytes) is refused by name, and so is a link or anything but a plain file at either name. The installer stops before writing anything, and you move the file aside by hand. A second run says it kept both keys.
 
@@ -452,7 +456,7 @@ bash <repo>/scripts/aperire-fleet-add.sh \
   --role node
 ```
 
-Root is needed once, to put a second copy where the dashboard and the Advisor read it. The join asks sudo for that and nothing else. Root runs the root-held `aperire-state-file` helper, not a file in the checkout. The token reaches it on standard input, never as an argument. The helper makes `<repo>/advisor/state/peer-tokens` (`0750`) and writes `<label>.token` in it: owned by root, in the group of this host's own `read.token`, mode `0640`. The dashboard and the Advisor read it through that group, and both registries record that path. Your copy is removed once the join is verified.
+Root is needed once, to put a second copy where the dashboard and the Advisor read it. The join asks sudo for that step. The step is `--run peer-token`. It writes that one file and its folder and takes the token on standard input. It is a named step of the bootstrap: root runs the release's checked copy of one small program, not a file in the checkout, and the one argument it takes, `--label`, is held to 32 letters, digits and hyphens, starting with a letter or digit, before any root call. The token reaches it on standard input, never as an argument. The step makes `<repo>/advisor/state/peer-tokens` (`0750`) and writes `<label>.token` in it: owned by root, in the group of this host's own `read.token`, mode `0640`. The dashboard and the Advisor read it through that group, and both registries record that path. Your copy is removed once the join is verified.
 
 The placed copy is root's on purpose. The Advisor narrows every peer token it owns to `0600` each time it starts, which would lock the dashboard out of a copy it owned. It leaves a file it doesn't own alone.
 
@@ -700,7 +704,8 @@ The two address fields do different jobs:
 | `read_origin` | A loopback address only this server ever calls. Required. |
 
 `dashboard_url` is optional because a node cannot always name its own address.
-A node that joins through pairing sends the address from its own `public_url`,
+A node that joins through pairing sends the address from its own `public_url`
+(the first entry another machine can open, when it lists several),
 and a box whose `public_url` is still the shipped default sends none, so the
 row it gets has no `dashboard_url` line. That is the honest answer: nothing in
 the fleet knows where that dashboard is reached until somebody says. To fill
@@ -968,7 +973,7 @@ When it's done, the answer lists each step on its own line:
 
 The node itself is untouched. It keeps running, keeps its own dashboard, and can pair again with a fresh code. What ends is this aggregator's side of the relationship.
 
-When the node's link is up at the moment you revoke it, the refusal it receives is signed with this aggregator's fleet trust key and names that node's credential. The node checks the signature against the key it pinned when it paired, keeps it, and stops dialling for good. A node that was offline at the time is refused when it next dials, and asks again once an hour after that. Pairing again replaces the credential, and the old revocation no longer applies.
+When the node's link is up at the moment you revoke it, the refusal it receives is signed with this aggregator's fleet trust key and names that node's credential. The node checks the signature against the key it pinned when it paired, keeps it, and stops dialling for good. A node that was offline at the time gets the same signed revocation when it next dials, because the aggregator keeps the revocations it signed (the newest 256) and puts the right one in the refusal for that credential. The node checks it the same way and stops. Pairing again replaces the credential, and the old revocation no longer applies.
 
 **Where the record lands.** Three places now. The aggregator's Operator audit gets the row it always gets: who revoked what, which key, and what the broker reported. The node's own Advisor gets an entry naming you, the label and the key, written to its hash-chained ledger a moment before the link closes. That order is deliberate: the link is how the entry reaches the node, so the entry goes first and the link closes after. And this aggregator's own Advisor, when it has one, gets a second copy of that same entry on its own ledger, so a revoke performed here is readable from here as well as from the node it was done to. A node with no Advisor, one whose Advisor is down, or one answering on a key this fleet does not pin gets no entry on its own side, and the confirmation says which of those it was rather than implying a copy was kept. An aggregator running as a dashboard alone, with no Advisor installed on this host, has no ledger of its own to hold that third copy, and the confirmation says that plainly too. The revoke itself happens either way. That third copy names itself as this aggregator's own record of the act, in its own words, rather than reading as if it arrived from the node: it is what this host believes it did, not a second witness to it.
 

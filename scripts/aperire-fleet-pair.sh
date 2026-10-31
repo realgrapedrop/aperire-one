@@ -67,6 +67,30 @@
 # link credential, which is permanent.
 set -euo pipefail
 
+# As root the environment chooses no path or program (#1206): every
+# APERIRE_* variable is dropped except the ones a root caller passes on
+# purpose:
+#   APERIRE_INSTALL_TREE  get-aperire.sh names the tree a staged copy pairs (#764)
+#   APERIRE_INSTANCE      install.sh exports it to every step; checked below
+# An account id(1) says is not root keeps them all, which is what every
+# suite is. id(1) at a fixed path, never bash's $EUID (#1109).
+if ! [[ "$(/usr/bin/id -u 2>/dev/null)" =~ ^[1-9][0-9]*$ ]]; then
+  for _v in $(compgen -e); do
+    case "$_v" in APERIRE_INSTALL_TREE|APERIRE_INSTANCE) ;; APERIRE_*) unset "$_v" ;; esac
+  done
+fi
+# The instance names a unit file and a drop-in path, so it is held to the
+# rule advisor-owner-lib.sh holds it to, under the C locale (under
+# en_US.UTF-8, [a-z] matches é), and anything else is refused.
+instance_name_ok() { # $1 = a name; [a-z] is held to ASCII, whatever the locale
+  local LC_ALL=C
+  [[ "$1" =~ ^[a-z0-9][a-z0-9-]{0,30}$ && "$1" != credcheck && "$1" != credcheck-* ]]
+}
+if [[ -n "${APERIRE_INSTANCE:-}" ]] && ! instance_name_ok "$APERIRE_INSTANCE"; then
+  printf 'refused: APERIRE_INSTANCE=%q is not an instance name (a-z, 0-9 and -, at most 31, not credcheck)\n' "$APERIRE_INSTANCE" >&2
+  exit 2
+fi
+
 SELF="${BASH_SOURCE[0]}"
 say()  { printf '   %s\n' "$*"; }
 info() { printf '   %s\n' "$*" >&2; }
@@ -106,6 +130,13 @@ PAIR_SCRIPTS_DIR="$(cd "$(dirname "$SELF")" && pwd)"
   || die "${PAIR_SCRIPTS_DIR}/fleet-origin.sh is missing from this checkout, and it holds the rule for which aggregator origins this node may carry its tokens to"
 # shellcheck source=scripts/fleet-origin.sh
 . "${PAIR_SCRIPTS_DIR}/fleet-origin.sh"
+# The reader of authn.yaml's values, shared with install.sh and the guided
+# setup so a public_url written as a list is read the same way by all three
+# (#1358). Refused by name, the same way.
+[[ -r "${PAIR_SCRIPTS_DIR}/authn-value.sh" ]] \
+  || die "${PAIR_SCRIPTS_DIR}/authn-value.sh is missing from this checkout, and it reads this node's public_url"
+# shellcheck source=scripts/authn-value.sh
+. "${PAIR_SCRIPTS_DIR}/authn-value.sh"
 # The one reader of the Advisor's account (#809), refused by name the same
 # way: a tree without it cannot say which group the trust file belongs to.
 [[ -r "${PAIR_SCRIPTS_DIR}/advisor-owner-lib.sh" ]] \
@@ -163,6 +194,17 @@ CONFIG_ROOT="$REPO/dashboard"
 STATE_DIR="$REPO/advisor/state"
 ETC="${APERIRE_ETC:-/etc/aperire}"
 UNIT_DIR="${APERIRE_UNIT_DIR:-/etc/systemd/system}"
+# The instance this tree is (#1205). install.sh exports it to every script it
+# runs, this one included; empty is the single-node layout. A named instance's
+# units, env file and port are its own, and the default instance's port is
+# another dashboard's. It goes into paths root reads, so it is held to the
+# name rule advisor-owner-lib.sh uses.
+INSTANCE="${APERIRE_INSTANCE:-}"
+if [[ -n "$INSTANCE" ]]; then
+  [[ "$INSTANCE" =~ ^[a-z0-9][a-z0-9-]{0,30}$ && "$INSTANCE" != credcheck && "$INSTANCE" != credcheck-* ]] \
+    || refuse "APERIRE_INSTANCE='$INSTANCE' is not an instance name (lowercase letters, digits and dashes, 31 at most). Nothing was sent and nothing was written"
+fi
+UNIT_SUFFIX="${INSTANCE:+-$INSTANCE}"
 
 (( DRY_RUN )) || [[ $EUID -eq 0 ]] || die "run with sudo: this writes a credential the dashboard account must own, a root-owned trust file, and $ETC/fleet-arm.pub"
 
@@ -244,9 +286,11 @@ printf '%s' "$LABEL" | grep -Eq '^[a-z0-9-]{1,32}$' \
 # ── this node's dashboard ────────────────────────────────────────────────
 # The account and the port come from the unit, not from $SUDO_USER and not
 # from a default: on a host where one operator installs and the service runs
-# as another, everything this writes has to follow the service.
+# as another, everything this writes has to follow the service. This
+# instance's unit and file, in the order install.sh's fleet_dash_port reads
+# them, so the port the install waited on is the port this asks.
 DASH_UNIT='' DASH_USER='' DASH_ENV_FILE='' DASH_PORT=''
-for _u in aperire-server aperire-read; do
+for _u in "aperire-server$UNIT_SUFFIX" "aperire-read$UNIT_SUFFIX"; do
   _f="$UNIT_DIR/${_u}.service"
   [[ -f "$_f" ]] || continue
   DASH_UNIT="$_u"
@@ -256,7 +300,7 @@ for _u in aperire-server aperire-read; do
   break
 done
 if [[ -z "$DASH_PORT" ]]; then
-  for _e in "$DASH_ENV_FILE" "$ETC/aperire.env"; do
+  for _e in "$DASH_ENV_FILE" "$ETC/aperire$UNIT_SUFFIX.env"; do
     [[ -n "$_e" && -f "$_e" ]] || continue
     DASH_PORT="$(awk -F= '$1=="PORT"{sub(/^[^=]*=/,""); gsub(/"/,""); print; exit}' "$_e")"
     [[ -n "$DASH_PORT" ]] && break
@@ -289,46 +333,34 @@ fi
 # honest gap the operator closes by re-pairing once the host has a real name;
 # a row with a `.localhost` link is a lie with a click target.
 AUTHN="$CONFIG_DIR/authn.yaml"
-# The reader scripts/aperire-setup.sh and install.sh use, third copy, same
-# three lines: first occurrence of the key, quotes off. There is no YAML
-# parser to hand here, and this file is a flat map of scalars. It reads
-# $WORK/authn.yaml, the bytes one safe read of $AUTHN produced below (#888 N3),
-# never the name itself: that name is in a folder the dashboard's account can
-# rewrite, and root reading it with sed follows a link.
-authn_value() {  # <key> -> the value, or empty
-  [[ -f "$WORK/authn.yaml" ]] || return 0
-  sed -n "s/^${1}:[[:space:]]*//p" "$WORK/authn.yaml" | head -1 | tr -d '"'
+# The reader scripts/aperire-setup.sh and install.sh use, sourced from
+# scripts/authn-value.sh (#1358), which reads a list the same way for all
+# three. There is no YAML parser to hand here, and this file is a map of
+# scalars with the odd list. It reads $WORK/authn.yaml, the bytes one safe read
+# of $AUTHN produced below (#888 N3), never the name itself: that name is in a
+# folder the dashboard's account can rewrite, and root reading it follows a
+# link. A YAML list, in either spelling, comes back as the comma-joined line
+# the dashboard and aperire-auth read it as (#1231, #1275).
+authn_value() {  # <key> -> the value as one line, or empty
+  authn_file_value "$WORK/authn.yaml" "$1"
 }
 
-# The host out of a plain origin, lower-cased, brackets off an IPv6 literal.
-# Only ever called on a value fleet_origin_plain_ok has already accepted, so
-# there is no path, no userinfo and no query left to strip. That is why it is
-# asked first.
-origin_host() {  # <origin> -> the host
-  local rest="${1#*://}" host
-  if [[ "$rest" == \[* ]]; then
-    host="${rest%%]*}"; host="${host#\[}"
-  else
-    host="${rest%%:*}"
-  fi
-  printf '%s' "$host" | tr '[:upper:]' '[:lower:]'
+# The host rules that decide which public_url entry this node gives out. The
+# four that read a host live in scripts/authn-value.sh (host_is_local_only and
+# the three beside it), where the installer and the guided setup use them too
+# (#1358), and origin_usable is this command's own question of them.
+# scripts/test-fleet-pair.sh cuts the marked block out of both files and runs it
+# beside the dashboard's own rules (#1275).
+# >>> pair host rules >>>
+# An origin this node can give out as its own address: a plain origin, a host
+# `new URL()` leaves as written, and not one only this machine can open.
+origin_usable() {  # <origin>
+  local h
+  fleet_origin_plain_ok "$1" || return 1
+  h="$(origin_host "$1")"
+  host_is_carryable "$h" && ! host_is_local_only "$h"
 }
-
-# An address only this machine can open. The HOST, anchored, never a prefix
-# glob: `https://localhost.evil.example` is not a loopback name and
-# `https://127.0.0.1.evil.example` is not a loopback address, and a glob says
-# both are. That is P3-059's mistake one layer down, and the same rule lives
-# in TypeScript as isLocalOnlyHost() in types/fleet-link-contract.ts.
-#
-# `.localhost` is in the set because it is what this bug was: RFC 6761
-# reserves that whole tree for loopback, so no name under it reaches another
-# machine.
-host_is_local_only() {  # <host> -> 0 when only this machine can reach it
-  case "$1" in
-    localhost|*.localhost|::1|::|0.0.0.0) return 0 ;;
-  esac
-  [[ "$1" =~ ^127\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]
-}
+# <<< pair host rules <<<
 
 # ── the tokens ───────────────────────────────────────────────────────────
 command -v python3 >/dev/null || die "python3 is not on this host, and this reads its files and JSON with it"
@@ -342,7 +374,7 @@ command -v python3 >/dev/null || die "python3 is not on this host, and this read
 # to $2 and "uid gid mode" to $3.
 READ_UIDS="0,$(id -u)"
 _u="$(id -u "$DASH_USER" 2>/dev/null || true)"; [[ -z "$_u" ]] || READ_UIDS+=",$_u"
-_a="$(advisor_owner_account "$UNIT_DIR" 2>/dev/null || true)"
+_a="$(advisor_owner_account "$UNIT_DIR" "$INSTANCE" 2>/dev/null || true)"
 if [[ -n "$_a" ]]; then
   _u="$(id -u "$_a" 2>/dev/null || true)"; [[ -z "$_u" ]] || READ_UIDS+=",$_u"
 fi
@@ -418,12 +450,28 @@ if [[ -e "$AUTHN" || -L "$AUTHN" ]]; then
   fi
 fi
 # public_url may name several origins, comma-separated (dashboard/auth.ts,
-# scripts/aperire-auth.sh). The first is the one this product treats as this
-# dashboard's own address, so it is the one a fleet row would carry.
-PUBLIC_URL="$(authn_value public_url)"
-PUBLIC_URL="${PUBLIC_URL%%,*}"
-PUBLIC_URL="$(printf '%s' "$PUBLIC_URL" | tr -d '[:space:]')"
-PUBLIC_URL="${PUBLIC_URL%/}"
+# scripts/aperire-auth.sh), or a YAML list that authn_value joins the same way.
+# The address this node gives out is the one dashboardIdentity() gives out,
+# firstUsableUrl() in dashboard/lib/authn-fields.ts (#1233): the first entry
+# another machine can open, and the first entry when none is, so a default
+# install keeps saying why it sends nothing. An entry is trimmed and loses its
+# trailing slashes. "Can open" is asked of what this command can carry, a
+# plain origin whose host is not local-only: the dashboard also accepts an
+# entry with a path, but this one appends /overview.html to the origin.
+PUBLIC_URL_ALL="$(authn_value public_url)"
+PUBLIC_URL=''
+_rest="$PUBLIC_URL_ALL,"
+while [[ -n "$_rest" ]]; do
+  _entry="${_rest%%,*}"; _rest="${_rest#*,}"
+  _entry="${_entry#"${_entry%%[![:space:]]*}"}"; _entry="${_entry%"${_entry##*[![:space:]]}"}"
+  while [[ "$_entry" == */ ]]; do _entry="${_entry%/}"; done
+  [[ -n "$_entry" ]] || continue
+  [[ -n "$PUBLIC_URL" ]] || PUBLIC_URL="$_entry"
+  if origin_usable "$_entry"; then
+    PUBLIC_URL="$_entry"
+    break
+  fi
+done
 DASHBOARD_URL=''
 DASHBOARD_URL_WHY=''
 if [[ -n "$AUTHN_UNREAD" ]]; then
@@ -436,6 +484,8 @@ elif ! fleet_origin_plain_ok "$PUBLIC_URL"; then
   # enrollment links, and this command is not where a malformed one is
   # caught.
   DASHBOARD_URL_WHY="public_url is not a plain origin this command can carry"
+elif ! host_is_carryable "$(origin_host "$PUBLIC_URL")"; then
+  DASHBOARD_URL_WHY="public_url writes its host in a form this command does not carry ($PUBLIC_URL). Write the host as a name or as an address of four numbers"
 elif host_is_local_only "$(origin_host "$PUBLIC_URL")"; then
   DASHBOARD_URL_WHY="public_url still names this machine only ($PUBLIC_URL)"
 else
@@ -456,12 +506,12 @@ HAVE_ADVISOR=0
 # Is there an advisord unit on this host at all? The second half of "is
 # there an Advisor here" (#331), beside the token above. A unit file, not a
 # running service: a stopped Advisor is still an Advisor, and this question
-# is about what the host is meant to have. aperire-advisord.service by that
-# exact name: the credcheck unit (#541) is not an Advisor, and a host where
+# is about what the host is meant to have. aperire-advisord.service (with
+# this instance's suffix) by that exact name: the credcheck unit (#541) is not an Advisor, and a host where
 # only it was left behind has none (#809).
 advisor_unit_here() {
   local adv rc=0
-  adv="$(advisor_owner_account "$UNIT_DIR")" || rc=$?
+  adv="$(advisor_owner_account "$UNIT_DIR" "$INSTANCE")" || rc=$?
   # 3: the unit is there, its account just cannot be read. Still an Advisor;
   # the trust-file step below refuses it by name.
   [[ $rc -eq 3 || -n "$adv" ]]
@@ -484,7 +534,7 @@ IDENTITY_RAW="$(curl -fsS --max-time 10 --config "$WORK/curl.cfg" "$IDENTITY_URL
 shred -u "$WORK/curl.cfg" 2>/dev/null || rm -f "$WORK/curl.cfg"
 if [[ -z "$IDENTITY_RAW" ]]; then
   info "$(cat "$WORK/identity.err" 2>/dev/null || true)"
-  die "this node's own dashboard did not answer $IDENTITY_URL. Start it (sudo systemctl start ${DASH_UNIT:-aperire-server}) and run this again"
+  die "this node's own dashboard did not answer $IDENTITY_URL. Start it (sudo systemctl start ${DASH_UNIT:-aperire-server$UNIT_SUFFIX}) and run this again"
 fi
 printf '%s' "$IDENTITY_RAW" > "$WORK/identity.json"
 PUBKEY_NODE="$(python3 -I - "$WORK/identity.json" <<'PY' || true
@@ -603,7 +653,7 @@ TRUST_FILE="$CONFIG_DIR/fleet-trust.yaml"
 # subshell and is refused by name below: the dashboard's own group is the
 # answer for no Advisor, never for one whose account could not be read.
 TRUST_GROUP="$(
-  adv_user="$(advisor_owner_account "$UNIT_DIR")" || exit 3
+  adv_user="$(advisor_owner_account "$UNIT_DIR" "$INSTANCE")" || exit 3
   if [[ -n "$adv_user" && "$adv_user" != root ]] && id -u "$adv_user" >/dev/null 2>&1; then
     dash_groups=" $(id -nG "$DASH_USER" 2>/dev/null) "
     for cand in $(id -nG "$adv_user" 2>/dev/null); do
@@ -611,7 +661,7 @@ TRUST_GROUP="$(
     done
   fi
   id -gn "$DASH_USER" 2>/dev/null || true
-)" || refuse "$(advisor_owner_unread_msg "$UNIT_DIR/aperire-advisord.service")"
+)" || refuse "$(advisor_owner_unread_msg "$UNIT_DIR/aperire-advisord$UNIT_SUFFIX.service")"
 if [[ -e "$LINK_TARGET" || -L "$LINK_TARGET" ]]; then
   read_once "$LINK_TARGET" "$WORK/.pre" "$WORK/.pre.meta" "$CONFIG_ROOT" \
     || refuse "$LINK_TARGET is not a plain file this can read safely (a link, a second hard link or another account's file; the reason is above). Nothing was sent and nothing was written"
@@ -1341,6 +1391,37 @@ fi
 # above, before the first write.
 if [[ ! -f "$PAIR_SCRIPTS_DIR/install-model-key-sealer.sh" ]]; then
   say "no install-model-key-sealer.sh in this tree, so the arm key was not installed."
+elif (( HAVE_ADVISOR == 0 )) && ! advisor_unit_here; then
+  # There is no Advisor on this host, so there was never a sealer for the
+  # key to be trusted by or refused BY (#331), and none is asked (#1222):
+  # asking printed the sealer's own "error: no sealer" in the middle of a
+  # pairing that worked, on the order the guide teaches, node first. Read
+  # off this tree rather than off the sealer's exit code. The two facts
+  # together, so a host part-way through an Advisor install is not called
+  # Advisor-less on a missing token alone.
+  #
+  # install.sh reads the first line and the "held" line back by their
+  # opening words, so both keep them.
+  say "no Advisor here, so there is nothing to arm and no model to seal. The link is registered and works."
+  if (( HOLD_RC == 0 )); then
+    # #720: the key is held, so adding the Advisor later is the whole of it.
+    say "the arm key is held for it at $FLEET_ARM_HELD. Installing the Advisor"
+    say "places it, and the aggregator can arm this host from then on. Nothing to run."
+  elif [[ -e "$FLEET_ARM_HELD" || -L "$FLEET_ARM_HELD" ]]; then
+    # #720 review: the hold was refused, and something is ALREADY held.
+    # The Advisor install would place that one, which is not this
+    # pairing's key, and a later --trust-arm-key would then refuse this
+    # one as different. So the way on clears both before trusting.
+    say "the arm key could NOT be held (the reason is above), and $FLEET_ARM_HELD"
+    say "already holds another key, which installing the Advisor would place. If this"
+    say "pairing's key is the right one, clear both and trust it after adding the Advisor:"
+    say "  sudo rm -f $FLEET_ARM_HELD $ETC/fleet-arm.pub"
+    say "  curl -fsSL https://get.aperire.one | bash -s -- --dir $REPO --run model-key-sealer --trust-arm-key <key>"
+  else
+    say "the arm key could not be held here, so installing the Advisor will not place"
+    say "it. If you add the Advisor later, trust the key then:"
+    say "  curl -fsSL https://get.aperire.one | bash -s -- --dir $REPO --run model-key-sealer --trust-arm-key <key>"
+  fi
 else
   ARM_RC=0
   APERIRE_INSTALL_TREE="$REPO" bash "$PAIR_SCRIPTS_DIR/install-model-key-sealer.sh" --trust-arm-key "$ARM_PUB" || ARM_RC=$?
@@ -1376,34 +1457,6 @@ else
         say "  curl -fsSL https://get.aperire.one | bash -s -- --dir $REPO --run model-key-sealer --arm"
       fi
     fi
-  elif (( HAVE_ADVISOR == 0 )) && ! advisor_unit_here; then
-    # There is no Advisor on this host, so there was never a sealer for the
-    # key to be refused BY (#331). Read off this tree rather than off the
-    # sealer's exit code: an installer that reports "the sealer refused that
-    # key, fix it" on a host that was never meant to have one sends an
-    # operator to fix something that is not broken. The two facts together,
-    # so a host part-way through an Advisor install is not called
-    # Advisor-less on a missing token alone.
-    say "no Advisor here, so there is nothing to arm. The link is registered and works."
-    if (( HOLD_RC == 0 )); then
-      # #720: the key is held, so adding the Advisor later is the whole of it.
-      say "the arm key is held for it at $FLEET_ARM_HELD. Installing the Advisor"
-      say "places it, and the aggregator can arm this host from then on. Nothing to run."
-    elif [[ -e "$FLEET_ARM_HELD" || -L "$FLEET_ARM_HELD" ]]; then
-      # #720 review: the hold was refused, and something is ALREADY held.
-      # The Advisor install would place that one, which is not this
-      # pairing's key, and a later --trust-arm-key would then refuse this
-      # one as different. So the way on clears both before trusting.
-      say "the arm key could NOT be held (the reason is above), and $FLEET_ARM_HELD"
-      say "already holds another key, which installing the Advisor would place. If this"
-      say "pairing's key is the right one, clear both and trust it after adding the Advisor:"
-      say "  sudo rm -f $FLEET_ARM_HELD $ETC/fleet-arm.pub"
-      say "  curl -fsSL https://get.aperire.one | bash -s -- --dir $REPO --run model-key-sealer --trust-arm-key <key>"
-    else
-      say "the arm key could not be held here, so installing the Advisor will not place"
-      say "it. If you add the Advisor later, trust the key then:"
-      say "  curl -fsSL https://get.aperire.one | bash -s -- --dir $REPO --run model-key-sealer --trust-arm-key <key>"
-    fi
   else
     # This host HAS an Advisor and its sealer said no. Unchanged: that is a
     # refusal with a reason above it, and it is a thing to fix.
@@ -1430,7 +1483,8 @@ wait "$DIAL_PID" 2>/dev/null || true
 
 step "Reload"
 RELOADED=0
-for _u in aperire-server aperire-read; do
+# This instance's, never the default's: the credential is in this tree.
+for _u in "aperire-server$UNIT_SUFFIX" "aperire-read$UNIT_SUFFIX"; do
   if systemctl is-active --quiet "$_u" 2>/dev/null; then
     if systemctl reload "$_u"; then
       say "reloaded $_u — the credential is read in place"
@@ -1443,7 +1497,7 @@ for _u in aperire-server aperire-read; do
   fi
 done
 if (( ! RELOADED )); then
-  say "no active aperire-server or aperire-read unit here, so restart your dashboard"
+  say "no active aperire-server$UNIT_SUFFIX or aperire-read$UNIT_SUFFIX unit here, so restart your dashboard"
   say "process to pick up the credential."
 fi
 
@@ -1462,7 +1516,7 @@ say "  sudo rm $LINK_TARGET"
 # Whenever the file is there, not only when this run wrote it: a key held by
 # an earlier pairing is placed by the next Advisor install all the same.
 if [[ -e "$FLEET_ARM_HELD" || -L "$FLEET_ARM_HELD" ]]; then say "  sudo rm $FLEET_ARM_HELD"; fi
-say "  sudo systemctl reload ${DASH_UNIT:-aperire-server}"
+say "  sudo systemctl reload ${DASH_UNIT:-aperire-server$UNIT_SUFFIX}"
 say "That stops this node dialling. The aggregator's own row stays until an operator"
 say "removes it there, which is what revokes the credential."
 exit 0

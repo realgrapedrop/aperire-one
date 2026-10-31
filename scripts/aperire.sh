@@ -656,7 +656,8 @@ menu_verify() {
     item b "back"
     case "$(pick)" in
       1) run bash "$S/verify-after-restart.sh" ;;
-      2) run bash -c 'curl -fsS http://127.0.0.1:${PORT:-7800}/healthz | head -c 400; echo' ;;
+      # No -f (#1204): a syncing node's 503 is the answer, and -f hid it.
+      2) run bash -c 'curl -sS -w "\nHTTP %{http_code}\n" http://127.0.0.1:${PORT:-7800}/healthz | head -c 600; echo' ;;
       b|q) return ;;
     esac
   done

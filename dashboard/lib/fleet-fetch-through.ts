@@ -34,7 +34,7 @@
  * confirm" and "confirmed wrong" both refuse to serve.
  */
 import type { FleetNodeConfig } from './fleet-registry.js';
-import { readTokenFresh, isRefusedStatus } from './fleet-health.js';
+import { readTokenFileExplained, tokenUnreadableDetail, tokenUnreadableLog, isRefusedStatus } from './fleet-health.js';
 import type { NodeStatusResponse, PeersResponse, ValidationSummaryResponse } from '../types/read-contract.js';
 
 type FetchImpl = typeof fetch;
@@ -90,11 +90,20 @@ export type PeerOverviewErrorCode =
   // `peer_bad_response` (and from there into the browser's UNREACHABLE) it
   // sent an operator to check a network path that was fine.
   | 'peer_refused'
-  | 'peer_integrity_mismatch';
+  | 'peer_integrity_mismatch'
+  // A third (#1305): this host could not read the token it needs, so nothing
+  // was sent to the peer at all. It is a fact about a file on THIS box, which
+  // is why it may carry a `detail` (below) where no other code here does: the
+  // sentence names that file and says what was not sent, and never holds the
+  // token, an upstream's text or a peer's address.
+  | 'token_unreadable';
 
 export interface PeerOverviewError {
   ok: false;
   error: PeerOverviewErrorCode;
+  /** Only on `token_unreadable`: this host's own sentence about its own file
+   *  (tokenUnreadableDetail). Never an upstream's words. */
+  detail?: string;
 }
 
 /** peers/validation-summary are PER-GROUP (P2-031: "return PARTIAL data
@@ -378,11 +387,18 @@ async function fetchFromPeerDetailed(
   node: FleetNodeConfig, opts: FetchFromPeerOpts,
 ): Promise<{ result: PeerOverviewResult; transient: boolean }> {
   const doFetch = opts.fetchImpl ?? fetch;
-  const token = readTokenFresh(node.token_path);
-  if (!token) {
-    logUpstreamFailure(node.label, 'node-status', 'token unreadable');
-    return { result: { ok: false, error: 'peer_unreachable' }, transient: false };
+  const tokenRead = readTokenFileExplained(node.token_path);
+  if (!tokenRead.ok) {
+    logUpstreamFailure(node.label, 'node-status', `token unreadable: ${tokenUnreadableLog(tokenRead)}`);
+    // Its own answer (#1305), never peer_unreachable: nothing was sent. A
+    // local file read costs nothing, so the failure is not held, and the
+    // next ask sees a file the operator has just fixed.
+    return {
+      result: { ok: false, error: 'token_unreadable', detail: tokenUnreadableDetail(node.label, 'read', tokenRead) },
+      transient: true,
+    };
   }
+  const token = tokenRead.token;
 
   const statusOutcome = await fetchOneRoute(node.read_origin, token, 'node-status', opts.timeoutMs, opts.maxBodyBytes, doFetch);
   if (!statusOutcome.ok) {

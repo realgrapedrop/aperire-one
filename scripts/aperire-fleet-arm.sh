@@ -86,6 +86,16 @@
 
 set -euo pipefail
 
+# As root the environment chooses no path or program (#1206): every
+# APERIRE_* variable is dropped, and no root caller passes one.
+# An account id(1) says is not root keeps them all, which is what every
+# suite is. id(1) at a fixed path, never bash's $EUID (#1109).
+if ! [[ "$(/usr/bin/id -u 2>/dev/null)" =~ ^[1-9][0-9]*$ ]]; then
+  for _v in $(compgen -e); do
+    case "$_v" in APERIRE_*) unset "$_v" ;; esac
+  done
+fi
+
 ETC="${APERIRE_ETC:-/etc/aperire}"
 
 # Which install this is. Run from a checkout (scripts/ inside a tree), the
@@ -160,66 +170,60 @@ trap 'rm -rf "$WORK"' EXIT
 # account is the one thing that could put a different arm key in a welcome,
 # so a value the dashboard showed would be worth nothing.
 #
-# The trust key's private half is in dashboard/config/fleet-trust.yaml, a
-# file the DASHBOARD account owns, in a directory it owns, and root reads it
-# here. So it is read the way the broker reads that directory: the final name
-# is never followed through a link, a FIFO cannot hold this open (O_NONBLOCK,
-# then a regular-file check on the descriptor), and it is bounded. What comes
-# out is only the PUBLIC half, derived here and never printed as a seed. The
-# trust key being the dashboard's own is not new (it signs everything the
-# aggregator sends): what this fingerprint adds is the arm key, which is
-# root's.
-TRUST_FILE="${APERIRE_FLEET_TRUST_FILE:-$REPO/dashboard/config/fleet-trust.yaml}"
+# The trust key is taken from root's pin, $ETC/fleet-trust.pub, and from
+# nowhere else (#1008). Its private half is in dashboard/config/
+# fleet-trust.yaml, a file the DASHBOARD account owns and can write, so this
+# program never reads that file: a key planted there is not the one root
+# vouches for, and a node handed a welcome signed by it refuses the paste.
+# fleet-trust-split.sh makes the pin, as root, on the update after this
+# release lands, and the grant and a restore pin the key they place.
+PIN="$ETC/fleet-trust.pub"
+# The root step that makes this aggregator's keys, named wherever one is missing.
+FP_GRANT="curl -fsSL https://get.aperire.one | bash -s -- --dir $REPO --run fleet-broker-grant"
 
-# The public half of this aggregator's fleet trust key, base64url, on stdout.
-# Returns 1 (printing nothing) when there is none this program will read.
-fleet_trust_pub_b64url() {
-  local der="$WORK/trust.der"
-  rm -f "$der"
-  python3 -I - "$TRUST_FILE" "$der" <<'PYTRUST' || return 1
-import base64, os, stat, sys
-path, out = sys.argv[1], sys.argv[2]
-try:
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
-except OSError:
-    sys.exit(1)
-try:
-    st = os.fstat(fd)
-    if not stat.S_ISREG(st.st_mode) or st.st_size > 65536:
-        sys.exit(1)
-    data = os.read(fd, 65537)
-finally:
-    os.close(fd)
-seed = ""
-for line in data.decode("utf-8", "replace").splitlines():
-    # Top level only, the rule lib/trust-bundle.ts's readOwnPrivateKey keeps.
-    # The value exactly as readOwnPrivateKey reads it: trimmed, then ONE
-    # quote character off each end, the first such line only.
-    if line.startswith("private_key:"):
-        seed = line[len("private_key:"):].strip()
-        if seed[:1] in ("'", '"'):
-            seed = seed[1:]
-        if seed[-1:] in ("'", '"'):
-            seed = seed[:-1]
-        break
-if not seed:
-    sys.exit(1)
-try:
-    raw = base64.urlsafe_b64decode(seed + "=" * (-len(seed) % 4))
-except Exception:
-    sys.exit(1)
-if len(raw) != 32:
-    sys.exit(1)
-fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-with os.fdopen(fd, "wb") as f:
-    f.write(bytes.fromhex("302e020100300506032b657004220420") + raw)
-PYTRUST
-  local pub
-  pub="$(openssl pkey -in "$der" -pubout -outform DER 2>/dev/null | tail -c 32 \
-    | python3 -I -c 'import sys,base64; sys.stdout.write(base64.urlsafe_b64encode(sys.stdin.buffer.read()).decode().rstrip("="))')" || pub=''
-  rm -f "$der"
-  [[ -n "$pub" ]] || return 1
-  printf '%s' "$pub"
+# ---- BEGIN read_fleet_trust_pin (one rule, three copies: #1008) ---------
+# Sets FLEET_TRUST_PIN to the fleet trust public key root pinned at $1 and
+# returns 0, or returns 1 with FLEET_TRUST_PIN_WHY. No subshell, so call it
+# bare and read the two variables. The same text is in aperire-fleet-arm.sh,
+# aperire-fleet-broker.sh and fleet-trust-split.sh, and
+# scripts/test-fleet-trust-split.sh fails if the copies differ: the installed
+# programs source nothing out of the tree.
+#
+# A pin is a plain file, never a link, owned by the account running this
+# (root, on a host), writable by nobody else, holding one line: 32 bytes as
+# canonical unpadded base64url. Anything else is no pin at all.
+# shellcheck disable=SC2034
+FLEET_TRUST_PIN='' FLEET_TRUST_PIN_WHY=''
+read_fleet_trust_pin() {  # $1 = the pin's path
+  local pin="$1" mode line
+  FLEET_TRUST_PIN='' FLEET_TRUST_PIN_WHY=''
+  if [[ ! -e "$pin" && ! -L "$pin" ]]; then
+    FLEET_TRUST_PIN_WHY="there is no $pin"; return 1
+  fi
+  if [[ -L "$pin" || ! -f "$pin" || ! -O "$pin" ]]; then
+    FLEET_TRUST_PIN_WHY="$pin is not a plain file this account owns"; return 1
+  fi
+  mode="$(stat -c '%a' -- "$pin" 2>/dev/null)" || mode=777
+  if (( (8#$mode & 8#022) != 0 )); then
+    FLEET_TRUST_PIN_WHY="$pin can be written by another account"; return 1
+  fi
+  line="$(head -c 128 -- "$pin" 2>/dev/null)" || line=''
+  if [[ ! "$line" =~ ^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$ ]]; then
+    FLEET_TRUST_PIN_WHY="$pin does not hold one 32-byte public key"; return 1
+  fi
+  FLEET_TRUST_PIN="$line"
+}
+# ---- END read_fleet_trust_pin --------------------------------------------
+
+# What to do about a pin root will not read. An absent one is the update's to
+# make; one that is there and unusable the update never replaces, so the way
+# through is the file itself, or a restore, or a new fleet key on purpose.
+pin_remedy() {
+  if [[ ! -e "$PIN" && ! -L "$PIN" ]]; then
+    printf 'On an aggregator, the update pins it: curl -fsSL https://get.aperire.one | bash -s -- --update --force. One with no key yet gets it from the pairing grant: %s' "$FP_GRANT"
+  else
+    printf 'The update never replaces a pin that is there. Look at %s by hand; put the pin back from a backup set with curl -fsSL https://get.aperire.one | bash -s -- --restore --from <backup set> --replace-trust-pin, or start a new fleet key with the pairing grant'"'"'s --new-fleet-keys and pair every node again.' "$PIN"
+  fi
 }
 
 # ---- BEGIN fleet_pairing_fingerprint (#741) ---------------------------
@@ -264,12 +268,13 @@ PYFP
 # it and what an operator copies here is what --fingerprint prints.
 print_pairing_fingerprint() {
   local trust fp
-  if ! trust="$(fleet_trust_pub_b64url)"; then
+  if ! read_fleet_trust_pin "$PIN"; then
     echo
-    say "no pairing fingerprint: this host holds no fleet trust key that root will read at"
-    say "$TRUST_FILE, so it is not an aggregator nodes pair with."
+    say "no pairing fingerprint: root holds no fleet trust key pin it will read ($FLEET_TRUST_PIN_WHY)."
+    say "$(pin_remedy)"
     return 1
   fi
+  trust="$FLEET_TRUST_PIN"
   fp="$(fleet_pairing_fingerprint "$trust" "$1")" || {
     echo
     say "no pairing fingerprint: one of this host's two keys is not a 32-byte key."
@@ -291,17 +296,18 @@ if (( FP_ONLY )); then
   # apart by exit status so the installer's closing summary can say the
   # right one:
   #   0  the fingerprint, printed
-  #   2  this host holds no fleet trust key root will read: not an aggregator,
-  #      or one whose broker grant predates the grant making that key
+  #   2  root has pinned no fleet trust key here: not an aggregator, one
+  #      whose broker grant predates the grant making that key, or one whose
+  #      update has not run since the pin (#1008)
   #   3  an aggregator with no arm key yet (the broker grant's installer, the
   #      Settings page's pairing check and the first approval each make it;
   #      this never does)
   #   1  anything else, said by name
-  FP_GRANT="curl -fsSL https://get.aperire.one | bash -s -- --dir $REPO --run fleet-broker-grant"
-  if ! FP_TRUST="$(fleet_trust_pub_b64url)"; then
-    printf 'error: no pairing fingerprint: this host holds no fleet trust key that root will read at %s. On an aggregator, the pairing grant makes it: %s\n' "$TRUST_FILE" "$FP_GRANT" >&2
+  if ! read_fleet_trust_pin "$PIN"; then
+    printf 'error: no pairing fingerprint: root holds no fleet trust key pin it will read (%s). %s\n' "$FLEET_TRUST_PIN_WHY" "$(pin_remedy)" >&2
     exit 2
   fi
+  FP_TRUST="$FLEET_TRUST_PIN"
   if [[ ! -e "$KEY" && ! -L "$KEY" ]]; then
     printf 'error: this host has no fleet arm key yet at %s, so there is no pairing fingerprint. The pairing grant makes it: %s, then run this again.\n' "$KEY" "$FP_GRANT" >&2
     exit 3

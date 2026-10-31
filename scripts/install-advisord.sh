@@ -51,8 +51,10 @@ fi
 # name selects the unit and the listen port together, so a second pairing on
 # the same host collides with nothing. Empty is the single-instance layout.
 INSTANCE="${APERIRE_INSTANCE:-}"
-if [[ -n "$INSTANCE" && ! "$INSTANCE" =~ ^[a-z0-9][a-z0-9-]{0,30}$ ]]; then
-  echo "error: instance name must be lowercase letters, digits and dashes" >&2
+# Under the C locale, and never credcheck: aperire-advisord-credcheck is the
+# recovery unit's own name (#1206 review).
+if [[ -n "$INSTANCE" ]] && ! (LC_ALL=C; [[ "$INSTANCE" =~ ^[a-z0-9][a-z0-9-]{0,30}$ && "$INSTANCE" != credcheck && "$INSTANCE" != credcheck-* ]]); then
+  echo "error: instance name must be lowercase letters, digits and dashes, and not credcheck" >&2
   exit 2
 fi
 SUFFIX="${INSTANCE:+-$INSTANCE}"
@@ -421,6 +423,9 @@ fi
 BUILD_LDFLAGS="-s -w -X main.version=${BUILD_COMMIT}"
 # <<< advisord build stamp <<<
 
+# Set when the prebuilt branch below warns that knowledge-lint is missing, so
+# the start report can say it again at the end of the run (#1215).
+ADV_LINT_MISSING=0
 if [[ -z "$GO_BIN" ]]; then
   if [[ -x "$BIN" && -x "$REPO/advisor/bin/aperire-executor" ]]; then
     echo "== Using the prebuilt binaries (no Go toolchain on this host)"
@@ -445,6 +450,7 @@ if [[ -z "$GO_BIN" ]]; then
         echo "         or put Go on this host, which builds it:"
         echo "             curl -fsSL https://get.aperire.one | bash -s -- --dir $REPO --run prepare-host --with-advisor"
       } >&2
+      ADV_LINT_MISSING=1
     fi
   else
     # Says which of the pair is short. A host with the daemon and no executor
@@ -1056,6 +1062,18 @@ if (( LOGIN_UNIT )); then
   fi
   echo "   the unit that names $RUN_USER is kept at $LOGIN_COPY before it is rewritten for the account."
 fi
+# advisor/knowledge-fleet is named only when it is a real directory now
+# (#1310). It was made above unless the state helper refused it (a link at
+# the name, say), and ReadWritePaths= on a path that is not there fails the
+# unit with 226/NAMESPACE: an Advisor that cannot take a knowledge push yet
+# is better than one that does not start.
+KF_RW=""
+if [[ -d "$REPO/advisor/knowledge-fleet" && ! -L "$REPO/advisor/knowledge-fleet" ]]; then
+  KF_RW=" $REPO/advisor/knowledge-fleet"
+else
+  echo "   !! $REPO/advisor/knowledge-fleet is not a directory, so the unit does not name it." >&2
+  echo "      A knowledge push from an aggregator cannot land until it is; put it right and run this again." >&2
+fi
 sudo tee "$UNIT" >/dev/null <<UNITFILE
 [Unit]
 Description=Aperire Advisor (read-only state service)
@@ -1144,7 +1162,7 @@ ProtectHome=read-only
 # while root can plainly write the same path from a shell. The directory is
 # root-owned and this account cannot write in it; the mount only decides
 # what root reaches once it is there.
-ReadWritePaths=$REPO/advisor/state $REPO/advisor/evidence $REPO/advisor/knowledge-fleet /var/lib/aperire$NODE_RW
+ReadWritePaths=$REPO/advisor/state $REPO/advisor/evidence$KF_RW /var/lib/aperire$NODE_RW
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectKernelLogs=true
@@ -1517,6 +1535,12 @@ else
   exit 1
 fi
 unset _status_tok
+# The missing-linter warning is printed where the binaries are chosen, and a
+# real run has scrolled it away by now. One line again where the eye lands,
+# the way the update repeats its own (#1215).
+if [[ "${ADV_LINT_MISSING:-0}" -eq 1 ]]; then
+  echo "warning: advisor/bin/knowledge-lint is still missing (named above). Promote and the knowledge pull answer 503 until it is in place." >&2
+fi
 # <<< advisord start report <<<
 
 echo

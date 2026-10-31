@@ -27,6 +27,7 @@ import (
 	"os/signal"
 	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -987,6 +988,31 @@ func doExecute(o opts) {
 		return r == "yes"
 	}
 
+	// The approval has to last until the run reaches its last step that
+	// needs it, the restart of a config change approved together with it
+	// included (#772). Refused before the grant is claimed, so nothing is
+	// spent and nothing has moved.
+	runStages := []string{o.stage}
+	if o.stage == approval.StageConfig {
+		if _, cerr := approval.Check(ex.ApprovalDir, p.planID, p.fingerprint, p.node,
+			approval.StageRestart, time.Now()); cerr == nil {
+			runStages = append(runStages, approval.StageRestart)
+		}
+	}
+	if serr := execute.ApprovalLasts(ex.ApprovalDir, p.planID, p.fingerprint, p.node,
+		runStages, steps, time.Now()); serr != nil {
+		data := map[string]any{"error": serr.Error()}
+		var short *execute.ShortApprovalError
+		if errors.As(serr, &short) {
+			data = short.Data()
+		}
+		data["door"] = "cli"
+		l.AppendAs(ledger.KindRefusal, p.planID,
+			"run refused: the approval would run out before the run reached its last step that needs it",
+			data, osActor())
+		fail("%v", serr)
+	}
+
 	if err := ex.RunStage(ctx, o.stage, steps, confirm); err != nil {
 		fmt.Fprintf(os.Stderr, "\n%v\n", err)
 		if h := ex.RollbackHint(); h != "" {
@@ -1325,6 +1351,12 @@ func fail(format string, args ...any) {
 // without reading.
 
 func doMemory(o opts) {
+	// Opening the store makes its directory. For these verbs that would
+	// answer "no memory" from a directory this command just created in the
+	// wrong place (#1238).
+	if _, serr := os.Stat(o.stateDir); errors.Is(serr, os.ErrNotExist) {
+		fail("there is no Advisor state directory at %s. Nothing was changed.\nName the right one with --state, or run from the advisor directory.", o.stateDir)
+	}
 	store, err := memory.Open(filepath.Join(o.stateDir, "memory.jsonl"))
 	if err != nil {
 		fail("%v", err)
@@ -1335,7 +1367,7 @@ func doMemory(o opts) {
 	if o.retract != "" {
 		e, err := retractMemory(store, o.stateDir, o.retract, o.reason)
 		if err != nil {
-			fail("%v", err)
+			fail("%s", memoryFailure(err, o.stateDir, os.Args))
 		}
 		fmt.Printf("retracted %s: %s\n", e.ID, e.Title)
 		fmt.Println("The Advisor will not recall it again. The memory file keeps the note with this retraction, and the ledger records it.")
@@ -1344,7 +1376,7 @@ func doMemory(o opts) {
 	if o.confirm != "" {
 		e, err := store.Confirm(o.confirm, operatorName())
 		if err != nil {
-			fail("%v", err)
+			fail("%s", memoryFailure(err, o.stateDir, os.Args))
 		}
 		fmt.Printf("confirmed %s — %s\n", e.ID, e.Title)
 		fmt.Println("The Advisor may now cite this as Documented rather than as its own guess.")
@@ -1353,7 +1385,7 @@ func doMemory(o opts) {
 
 	all, err := store.All()
 	if err != nil {
-		fail("%v", err)
+		fail("%s", memoryFailure(err, o.stateDir, os.Args))
 	}
 	if len(all) == 0 {
 		fmt.Println("Nothing remembered yet.")
@@ -1393,6 +1425,54 @@ func doMemory(o opts) {
 	} else {
 		fmt.Println()
 	}
+}
+
+// memoryFailure words a failed memory verb. A file this account cannot read
+// is not a note that is missing: the note may be live, and the operator has to
+// hear that it was not looked for, and which account can look (#1238). The
+// account is whoever owns the state directory, the same rule
+// aperire-compact-check uses; the command to repeat is the one they typed.
+func memoryFailure(err error, stateDir string, argv []string) string {
+	var ue *memory.UnreadableError
+	if errors.As(err, &ue) && ue.Permission() {
+		owner := "<the account the Advisor runs as>"
+		if fi, serr := os.Stat(stateDir); serr == nil {
+			if st, ok := fi.Sys().(*syscall.Stat_t); ok {
+				if u, uerr := user.LookupId(strconv.Itoa(int(st.Uid))); uerr == nil {
+					owner = u.Username
+				}
+			}
+		}
+		return fmt.Sprintf("this account cannot read the Advisor's notes (%s: permission denied), so nothing was looked up or changed.\n"+
+			"Run the same command as the account that owns %s:\n  sudo -u %s %s", ue.Path, stateDir, owner, shellWords(argv))
+	}
+	if errors.Is(err, memory.ErrNoStore) {
+		return fmt.Sprintf("%v. Nothing was changed.\nThis command looks in %s; if the Advisor's notes live elsewhere, name that directory with --state.", err, stateDir)
+	}
+	return err.Error()
+}
+
+// shellWords is argv as one line a shell reads back as the same words. The
+// command printed for the operator to repeat carries their --reason, which
+// has spaces: unquoted, it would run again with a different, shorter reason
+// and write that into the ledger.
+func shellWords(argv []string) string {
+	out := make([]string, len(argv))
+	for i, a := range argv {
+		safe := a != ""
+		for _, r := range a {
+			if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || strings.ContainsRune("@%_+=:,./-", r)) {
+				safe = false
+				break
+			}
+		}
+		if safe {
+			out[i] = a
+		} else {
+			out[i] = "'" + strings.ReplaceAll(a, "'", `'\''`) + "'"
+		}
+	}
+	return strings.Join(out, " ")
 }
 
 // retractMemory withdraws one note and records who did it, in the memory

@@ -156,9 +156,10 @@ func gatingFindings(sh NodeShape, official bool) []Finding {
 			Value: strings.Join(append(append([]string{}, sh.EntrypointOverride...), sh.CommandOverride...), " "),
 			Sentence: "--silent blanks docker logs, and that stream is where the rotation guard and the " +
 				"can-delete timer read what the ledger store is doing. A guard that cannot read its " +
-				"evidence refuses, so this node would refuse every restart the Advisor drives.",
+				"evidence refuses, so this node would refuse every restart the Advisor drives. The Advisor " +
+				"will not rewrite arguments you named, so take --silent out of them in the file by hand.",
 			Change: "    command: [\"--conf\", \"" + EtcConfigPath + "\"]",
-			Fix:    runbook.NormaliseNodeArgs,
+			Fix:    nodeArgsFix(sh),
 		})
 	}
 
@@ -172,7 +173,10 @@ func gatingFindings(sh NodeShape, official bool) []Finding {
 			Sentence: "the arguments come from whichever image this node runs, so swapping the image " +
 				"would change how it starts without anyone asking for it.",
 			Change: "    entrypoint: [\"/usr/bin/xrpld\"]\n    command: [\"--conf\", \"" + EtcConfigPath + "\"]",
-			Fix:    runbook.NormaliseNodeArgs,
+			Fix:    nodeArgsFix(sh),
+		}
+		if runbook.NodeArgsNamed(sh.EntrypointOverride, sh.CommandOverride) {
+			handEditArgsRow(&f, sh)
 		}
 		// A build's image carries its own entrypoint, which a deployment
 		// that names an entrypoint: of its own replaces. So the row relaxes
@@ -189,7 +193,8 @@ func gatingFindings(sh NodeShape, official bool) []Finding {
 				f.Sentence = "the image's own entrypoint decides how this node starts, ahead of the command: " +
 					"it names. This upgrade builds an image with its own entrypoint, so it does not need an " +
 					"entrypoint: written down, but a later swap to another image would change how the node " +
-					"starts without anyone asking for it."
+					"starts without anyone asking for it. The Advisor will not add one beside a command: " +
+					"you chose; that line is yours to write."
 			}
 		}
 		out = append(out, f)
@@ -232,6 +237,45 @@ func gatingFindings(sh NodeShape, official bool) []Finding {
 	}
 	out = append(out, f)
 	return out
+}
+
+// nodeArgsFix is the one RB-005 change that writes the arguments down, or
+// nothing where the deployment already names an entrypoint: or a command:.
+// The wrapper's set-node-args refuses either and will not overwrite what an
+// operator chose, so a button for it would only be refused after the
+// approval (#1311). Empty Fix is the card's "lines for your own hand".
+func nodeArgsFix(sh NodeShape) string {
+	if runbook.NodeArgsNamed(sh.EntrypointOverride, sh.CommandOverride) {
+		return ""
+	}
+	return runbook.NormaliseNodeArgs
+}
+
+// handEditArgsRow rewrites the arguments row for a deployment that names an
+// entrypoint: or a command: but not both: what it names, the one line it
+// lacks, and (while the config is not mounted at /etc/xrpld) that the mount
+// comes first, because an entrypoint written beside a /config-only
+// deployment bypasses the image's script and the node comes back on the
+// package's stock config.
+func handEditArgsRow(f *Finding, sh NodeShape) {
+	if hand := runbook.NodeArgsHandLines(sh.EntrypointOverride, sh.CommandOverride); len(hand) > 0 {
+		// A command: that starts with a program: their program moves to
+		// entrypoint:, their arguments stay. Never the image's own.
+		f.Value = "no entrypoint: in the deployment; command: " + strings.Join(sh.CommandOverride, " ")
+		f.Change = "    " + strings.Join(hand, "\n    ")
+	} else if len(sh.CommandOverride) > 0 {
+		f.Value = "no entrypoint: in the deployment; command: " + strings.Join(sh.CommandOverride, " ")
+		f.Change = "    entrypoint: [\"/usr/bin/xrpld\"]"
+	} else {
+		f.Value = "entrypoint: " + strings.Join(sh.EntrypointOverride, " ") + "; no command: in the deployment"
+		f.Change = "    command: [\"--conf\", \"" + EtcConfigPath + "\"]"
+	}
+	f.Sentence = runbook.NodeArgsHandEdit(sh.EntrypointOverride, sh.CommandOverride) + "."
+	if !sh.ConfigAtEtc {
+		f.Sentence += " Mount the config at " + EtcConfigPath + " first: an entrypoint written " +
+			"before that bypasses the image's script that puts the config there, and the node " +
+			"comes back on the package's stock config."
+	}
 }
 
 // ── everything else: advice, and it stays advice ─────────────────────────

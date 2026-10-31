@@ -124,7 +124,7 @@ Cookie attributes, transport hardening, and systemd sandboxing are in the [Tech 
 - **Advisor:** Go (`aperire-advisord`, `aperire-executor`) with a privilege wrapper configured as data, not code. Its own account, one root socket to the wrapper.
 - **Frontend:** Vanilla HTML/CSS/JS. No framework. Dark theme. Inline SVG charts.
 - **Transport:** Cloudflare Zero Trust tunnel (`cloudflared` systemd service on the dashboard host). Outbound-only QUIC to the Cloudflare edge; no inbound ports beyond rippled's peer protocol.
-- **Deployment:** systemd units for the dashboard (`aperire-server.service`, with memory caps, sandboxing, auto-restart and a `/healthz` liveness endpoint), the relay, the tunnel, and the Advisor. Verified on Ubuntu 24.04 LTS and Linux Mint 22; any systemd 250+ distro should work on the same criterion, and 22.04 works with the shared-account Advisor. See the [deployment guide](docs/DEPLOYMENT-GUIDE.md) to install from scratch, and the [operational guide](docs/OPERATIONAL-GUIDE.md) for day-to-day ops.
+- **Deployment:** systemd units for the dashboard (`aperire-server.service`, with memory caps, sandboxing, auto-restart and a `/healthz` liveness endpoint), the relay, the tunnel, and the Advisor. Verified on Ubuntu 24.04 LTS and Linux Mint 22; other systemd distros should work on the same criterion, and 22.04 works with the Advisor on its own account there too. See the [deployment guide](docs/DEPLOYMENT-GUIDE.md) to install from scratch, and the [operational guide](docs/OPERATIONAL-GUIDE.md) for day-to-day ops.
 
 ## Quick install
 

@@ -121,12 +121,13 @@ rd_say_refused() { # $1 = path in the release, rest = why
 }
 
 # Load the record once per process. 0 = loaded, 3 = there is none on this
-# host, 1 = there is one and it cannot be trusted (said on stderr).
+# host, 1 = there is one and it cannot be trusted, or the check that judges
+# where it sits could not run (RD_STATE=fault). Said on stderr.
 rd_manifest_load() {
   case "$RD_STATE" in
     ok) return 0 ;;
     none) return 3 ;;
-    bad) return 1 ;;
+    bad|fault) return 1 ;;
   esac
   local f="$RD_DIGESTS" meta want_uid line
   # The owner a real run needs is root. A fixture that runs unprivileged
@@ -185,6 +186,14 @@ rd_manifest_load() {
     walk="$(_tp_run --strict check "$f")" || wrc=$?
     if [[ $wrc -ne 0 ]]; then
       _tp_say "$walk"
+      # 2 is a finding. Anything else is a walk that never ran (no python3,
+      # #1193): nothing was judged about where the record sits, so it is not
+      # told as a finding about that.
+      if [[ $wrc -ne 2 ]]; then
+        RD_STATE=fault
+        printf 'refused: the release digests at %s could not be judged: the check of the directories above them did not run (above), so nothing is copied as root.\n' "$f" >&2
+        return 1
+      fi
       printf 'refused: the release digests at %s sit where a service account can change them (above), so nothing is copied as root until that is put right.\n' "$f" >&2
       return 1
     fi
@@ -223,7 +232,10 @@ rd_manifest_load() {
 
 # The digest the release records for one path, or nothing.
 rd_digest_for() { # $1 = path in the release
-  printf '%s' "$RD_BODY" | awk -v k="$1" 'substr($0, 67) == k { print substr($0, 1, 64); exit }'
+  # Reads to the end rather than exiting on the match: an early exit closes the
+  # pipe while printf is still writing a body bigger than a pipe buffer, printf
+  # dies of SIGPIPE, and pipefail turns that into exit 141 (#973).
+  printf '%s' "$RD_BODY" | awk -v k="$1" '!found && substr($0, 67) == k { print substr($0, 1, 64); found = 1 }'
 }
 
 # A path inside the release, spelled one way only: no leading slash, no
@@ -281,6 +293,8 @@ rd_stage() { # $1 = tree, $2 = path in the release, $3 = the file to fill
   if [[ $rc -eq 1 ]]; then
     if [[ "${RD_REFUSED_WHY:-}" == accounts ]]; then
       rd_say_refused "$rel" "was not copied: $(tp_accounts_refusal). Nothing about the file was judged."
+    elif [[ "$RD_STATE" == fault ]]; then
+      rd_say_refused "$rel" "was not copied: the check it is held to could not run (above). Nothing about the file was judged."
     else
       rd_say_refused "$rel" "was not copied, because the record it would be checked against cannot be trusted."
     fi
@@ -533,10 +547,24 @@ rd_stage_tree() { # $1 = tree, $2 = out
   fi
   rc=0
   RD_REFUSED_WHY=""
+  # python3, asked once and before anything is staged (#1355). Every file this
+  # copies goes through a check that runs in it, at /usr/bin or /bin and never
+  # off a PATH, so a host without it refused each file on its own and named
+  # python3 once per file (198 lines for this tree). Said once, with the
+  # reason the callers read (RD_REFUSED_WHY=python3), so none of them blames a
+  # file for it. Where the trusted-path block is not loaded the next check
+  # says so.
+  if declare -F _tp_python >/dev/null 2>&1 && ! _tp_python >/dev/null; then
+    printf 'refused: this host has no python3 at /usr/bin or /bin, and the check on every file root runs out of %s runs in it, so nothing was staged. Install it, then run this again: sudo apt-get install -y python3\n' "$tree" >&2
+    RD_REFUSED_WHY=python3
+    return 1
+  fi
   rd_manifest_load || rc=$?
   if [[ $rc -eq 1 ]]; then
     if [[ "${RD_REFUSED_WHY:-}" == accounts ]]; then
       printf 'refused: the scripts in %s were not staged: %s.\n' "$tree" "$(tp_accounts_refusal)" >&2
+    elif [[ "$RD_STATE" == fault ]]; then
+      printf 'refused: the scripts in %s were not staged: the check they are held to could not run (above), so none of them was judged.\n' "$tree" >&2
     else
       printf 'refused: the scripts in %s were not staged, because the record they would be checked against cannot be trusted.\n' "$tree" >&2
     fi

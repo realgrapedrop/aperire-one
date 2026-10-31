@@ -481,6 +481,28 @@ export interface UpdateStateResponse {
    * Nothing here is inferred by the reader.
    */
   last_run: UpdateStateLastRun | null;
+  /**
+   * The release key root's updater on that node checks every update against
+   * (#784), read from its root-owned `/usr/local/lib/aperire/release-signers`
+   * exactly as its own Settings & Updates card reads it. `lab` is that node's
+   * own updater saying the key is not the one committed for its releases,
+   * carried only when it said so.
+   *
+   * OPTIONAL: a node on an older build omits it, and the reader takes the
+   * absence as "did not say", never as a key that differs.
+   */
+  release_key?: UpdateStateReleaseKey;
+}
+
+/** One node's release key, as that node read it (#784). */
+export interface UpdateStateReleaseKey {
+  /** ok: fingerprints below. none: no file. unreadable: a file that node's
+   *  updater would not accept. */
+  state: 'ok' | 'none' | 'unreadable';
+  /** `SHA256:<base64, no padding>`, the string `ssh-keygen -l` prints. One
+   *  normally, two while the key is rotated. Empty unless `state` is ok. */
+  fingerprints: string[];
+  lab?: true;
 }
 
 export interface UpdateStateLastRun {

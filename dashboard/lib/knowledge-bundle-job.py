@@ -17,6 +17,10 @@
 #   PUSHED_BY   the operator account building it
 #   ONLY        optional single node label to target
 #   FLEET_FILE  path to the aggregator's fleet.yaml
+#   WITHDRAW_ALL  "1" when the operator asked for an empty corpus (#1219)
+#   COUNT_ONLY  "1" to walk the corpus, print how many files it holds and stop.
+#               With RECORD_DIR (the bundle directory) and FLEET_FILE, a second
+#               line says whether the delivery record names every target node
 #
 # Emits the job JSON on stdout, or exits non-zero with a message on stderr.
 import gzip
@@ -30,11 +34,6 @@ import tarfile
 import time
 
 know = os.environ["KNOW_DIR"]
-out_tar = os.environ["OUT_TAR"]
-seq = int(os.environ["SEQ"])
-issuer = os.environ.get("ISSUER") or "aggregator"
-pushed_by = os.environ.get("PUSHED_BY") or "unknown"
-only = os.environ.get("ONLY") or ""
 
 # ── the corpus ────────────────────────────────────────────────────────────
 # Only the two layers, only markdown, only regular files. The node refuses
@@ -64,8 +63,70 @@ for layer in ("base", "local"):
             rel = os.path.relpath(full, know).replace(os.sep, "/")
             files.append((rel, full))
 
-if not files:
-    print(f"nothing to push: no markdown under {know}/base or {know}/local", file=sys.stderr)
+def fleet_targets(path):
+    """Every fleet.yaml block with BOTH advisor_origin and advisor_token_path."""
+    found, cur = [], {}
+
+    def flush():
+        if cur.get("label") and cur.get("origin") and cur.get("token_path"):
+            found.append(dict(cur))
+
+    for line in open(path):
+        m = re.match(r"\s*-\s*label:\s*(\S+)", line)
+        if m:
+            flush()
+            cur.clear()
+            cur["label"] = m.group(1)
+            continue
+        m = re.match(r"\s*advisor_origin:\s*(\S+)", line)
+        if m:
+            cur["origin"] = m.group(1)
+        m = re.match(r"\s*advisor_token_path:\s*(\S+)", line)
+        if m:
+            cur["token_path"] = m.group(1)
+    flush()
+    return found
+
+
+def every_target_on_record(bundle_dir, fleet_file, only):
+    """True when this host's delivery record names every node a push would
+    reach. Read here only to decide which way on an empty-corpus refusal leads
+    with (#1219); the push itself checks each node's status against it."""
+    try:
+        with open(os.path.join(bundle_dir, "delivered.json")) as fh:
+            book = json.load(fh)
+        labels = [t["label"] for t in fleet_targets(fleet_file) if not only or t["label"] == only]
+    except (OSError, ValueError):
+        return False
+    if not isinstance(book, dict) or not labels:
+        return False
+    return all(isinstance(book.get(l), dict) and isinstance(book[l].get("seq"), int) for l in labels)
+
+
+if os.environ.get("COUNT_ONLY") == "1":
+    print(len(files))
+    if os.environ.get("RECORD_DIR") and os.environ.get("FLEET_FILE"):
+        print("recorded" if every_target_on_record(os.environ["RECORD_DIR"], os.environ["FLEET_FILE"],
+                                                  os.environ.get("ONLY") or "") else "unrecorded")
+    sys.exit(0)
+
+out_tar = os.environ["OUT_TAR"]
+seq = int(os.environ["SEQ"])
+issuer = os.environ.get("ISSUER") or "aggregator"
+pushed_by = os.environ.get("PUSHED_BY") or "unknown"
+only = os.environ.get("ONLY") or ""
+
+# An empty corpus is a bundle only when the operator asked for one by name: it
+# removes every fleet note from every node that applies it (#1219). The caller
+# checks this before it reserves a sequence; this is the same rule held where
+# the bundle is built, for a corpus emptied between the two.
+if not files and os.environ.get("WITHDRAW_ALL") != "1":
+    print(f"nothing to push: no markdown under {know}/base or {know}/local, and an empty corpus "
+          "is pushed only with --withdraw-all", file=sys.stderr)
+    sys.exit(3)
+if files and os.environ.get("WITHDRAW_ALL") == "1":
+    print(f"refusing to push: --withdraw-all pushes an empty corpus, and {know} holds {len(files)} file(s)",
+          file=sys.stderr)
     sys.exit(3)
 
 # ── the archive ───────────────────────────────────────────────────────────
@@ -98,28 +159,7 @@ os.chmod(out_tar, 0o640)
 # skipped. Same rule and same shape as lib/fleet-trust-job.py's parse; kept
 # separate on purpose, so a change to how knowledge is pushed can never
 # alter which nodes a CREDENTIAL push reaches.
-targets, cur = [], {}
-
-
-def flush():
-    if cur.get("label") and cur.get("origin") and cur.get("token_path"):
-        targets.append(dict(cur))
-
-
-for line in open(os.environ["FLEET_FILE"]):
-    m = re.match(r"\s*-\s*label:\s*(\S+)", line)
-    if m:
-        flush()
-        cur.clear()
-        cur["label"] = m.group(1)
-        continue
-    m = re.match(r"\s*advisor_origin:\s*(\S+)", line)
-    if m:
-        cur["origin"] = m.group(1)
-    m = re.match(r"\s*advisor_token_path:\s*(\S+)", line)
-    if m:
-        cur["token_path"] = m.group(1)
-flush()
+targets = fleet_targets(os.environ["FLEET_FILE"])
 
 out = []
 for t in targets:

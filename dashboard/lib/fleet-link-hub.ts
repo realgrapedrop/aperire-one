@@ -287,9 +287,10 @@ import {
   pairSettledSigningBytes,
   linkChallengeSigningBytes, pairChallengeSigningBytes, linkTombstoneSigningBytes,
   isFleetArmPubkey, fleetKnownNodeProofMatches,
-  parseLinkFrame, encodeLinkFrame, refusal, normaliseHeaders, pairDashboardUrl,
+  parseLinkFrame, encodeLinkFrame, refusal, normaliseHeaders, pairDashboardUrl, parseLinkTombstone,
   type LinkRefusalCode, type LinkTarget, type LinkFrame, type LinkTombstone,
 } from '../types/fleet-link-contract.js';
+import { readOwnedJson, writeOwnedJson } from './owned-json-file.js';
 
 // ── The registry file ────────────────────────────────────────────────────
 
@@ -914,6 +915,102 @@ export function credentialHash(credential: string): string {
   return createHash('sha256').update(credential, 'utf8').digest('hex');
 }
 
+// ── The tombstones this aggregator signed (#738) ─────────────────────────
+
+/** Where an aggregator keeps the revocations it signed, beside the node's own
+ *  tombstone in data/: the one directory of the install its unit may write. */
+export const FLEET_LINK_ISSUED_TOMBSTONES_BASENAME = 'fleet-link-tombstones-issued.json';
+
+/** How many it keeps. A revoke is a passkey ceremony, so this is years of
+ *  them; past it the oldest goes, and that node asks hourly as it did
+ *  before #738. */
+export const ISSUED_TOMBSTONES_MAX = 256;
+
+/** The file's bound: a tombstone is a few hundred bytes. */
+const ISSUED_TOMBSTONES_MAX_BYTES = ISSUED_TOMBSTONES_MAX * 1024;
+
+/**
+ * The revocations this aggregator signed, by credential hash (#738).
+ *
+ * A node revoked while its link was down never received the frame its
+ * tombstone rides on, so it came back to a 401 and asked again every hour for
+ * as long as it ran. Kept here, the 401 for that exact credential carries the
+ * tombstone in its body. Nothing in it is secret: a label, a hash and a
+ * signature, handed only to a caller that presented the credential itself.
+ */
+export interface IssuedTombstoneStore {
+  find: (credentialSha256: string) => LinkTombstone | null;
+  /** Throws when it could not be kept; the caller logs it. */
+  put: (t: LinkTombstone) => void;
+  /** Drop the entries for these credential hashes, and answer how many went.
+   *  Dropped from memory first, so this process never answers with one
+   *  again; throws when the file could not be rewritten. */
+  forget: (credentialSha256s: ReadonlySet<string>) => number;
+  size: () => number;
+}
+
+/**
+ * Drop every kept tombstone whose credential a row now serves or holds
+ * (#738 review, L1). A restore can put a revoked node's row back in
+ * fleet-links.json while its tombstone stays in data/, and the 401 path
+ * answers the tombstone ahead of the unreadable-registry 503: after a restart
+ * with the registry missing, that node would be told, validly signed, that it
+ * was revoked, and stop until it was paired again. Run on every reload that
+ * read the registry, so a node back in it is never answered with its old
+ * tombstone. Answers the labels it dropped.
+ */
+export function pruneIssuedTombstones(
+  store: IssuedTombstoneStore,
+  serving: readonly LinkRegistryRow[],
+  withheld: readonly WithheldLinkRow[],
+): string[] {
+  const live = new Set<string>([
+    ...serving.map((r) => r.credential_sha256),
+    ...withheld.map((h) => h.row.credential_sha256),
+  ]);
+  const labels: string[] = [];
+  for (const h of live) {
+    const t = store.find(h);
+    if (t) labels.push(t.label);
+  }
+  if (labels.length) store.forget(live);
+  return labels;
+}
+
+/** The file store, read once when built and written through on every put,
+ *  the way lib/owned-json-file.ts writes a file this account trusts. A file
+ *  that is not one (another owner, a link, too large, not a list) reads as
+ *  empty: the cost is an hourly probe, never a tombstone nobody signed. */
+export function createIssuedTombstoneFileStore(path: string, max = ISSUED_TOMBSTONES_MAX): IssuedTombstoneStore {
+  const held = new Map<string, LinkTombstone>();
+  const raw = readOwnedJson(path, ISSUED_TOMBSTONES_MAX_BYTES);
+  if (Array.isArray(raw)) {
+    for (const item of raw) {
+      const t = parseLinkTombstone(item);
+      if (t) held.set(t.credential_sha256, t);
+    }
+  }
+  return {
+    find: (h) => held.get(h) ?? null,
+    put(t) {
+      const next = new Map(held);
+      next.delete(t.credential_sha256);
+      next.set(t.credential_sha256, t);
+      const kept = [...next.values()].sort((a, b) => a.issued_at - b.issued_at).slice(-max);
+      writeOwnedJson(path, kept);
+      held.clear();
+      for (const k of kept) held.set(k.credential_sha256, k);
+    },
+    forget(hashes) {
+      let gone = 0;
+      for (const h of hashes) if (held.delete(h)) gone += 1;
+      if (gone) writeOwnedJson(path, [...held.values()].sort((a, b) => a.issued_at - b.issued_at));
+      return gone;
+    },
+    size: () => held.size,
+  };
+}
+
 /**
  * Which row does this credential belong to, if any.
  *
@@ -957,6 +1054,10 @@ export interface LinkUpgradeInput {
    *  401 would be a final refusal built on no reading at all. Defaults to
    *  true, so a caller that does not pass it behaves exactly as before. */
   registryJudgeable?: boolean;
+  /** #738: the tombstone this aggregator signed for a credential hash, or
+   *  null. Consulted only when neither `rows` nor `withheldRows` resolved the
+   *  credential, so a serving node never pays for it. */
+  revokedTombstone?: (credentialSha256: string) => LinkTombstone | null;
   pending: number;
   links: number;
   guard: HandshakeGuard;
@@ -992,7 +1093,12 @@ export type LinkUpgradeDecision =
    *  in words; nothing is bound and no Live is created. */
   | { ok: true; kind: 'held'; row: LinkRegistryRow; reason: string; wire: string }
   | { ok: true; kind: 'pair' }
-  | { ok: false; status: number; code: LinkRefusalCode; message: string; countAsFailure: boolean };
+  | {
+    ok: false; status: number; code: LinkRefusalCode; message: string; countAsFailure: boolean;
+    /** #738: a revocation this aggregator signed for exactly this credential,
+     *  to ride in the 401's body. Never set for any other refusal. */
+    tombstone?: LinkTombstone;
+  };
 
 /**
  * Everything decided BEFORE the WebSocket state machine sees anything, in the
@@ -1146,6 +1252,29 @@ export function gateLinkUpgrade(input: LinkUpgradeInput): LinkUpgradeDecision {
     };
   }
 
+  // #738: a credential this aggregator revoked at a passkey, from a node that
+  // was offline when it happened. The 401 it gets carries the tombstone
+  // signed for exactly this credential, so the node stops asking. Before the
+  // rate limit below, the #279 lesson again (the #737 attacker review): a
+  // revoked node whose repeated dials filled its bucket would otherwise be
+  // answered 429, which is transient, and never receive the tombstone that
+  // stops it dialling. Before the unjudgeable-registry 503 too: the
+  // tombstone is a signed fact about this credential that no registry read
+  // changes. A stranger cannot reach this branch with anything but a
+  // credential whose hash this host signed, and learns nothing else.
+  if (presented && input.revokedTombstone) {
+    const tombstone = input.revokedTombstone(credentialHash(presented));
+    if (tombstone) {
+      return {
+        ok: false, status: 401, code: 'revoked',
+        message: `[fleet-link] refused a link from ${address}: ${tombstone.label}'s credential was revoked at a `
+          + 'passkey; sent the signed tombstone with the 401',
+        countAsFailure: true,
+        tombstone,
+      };
+    }
+  }
+
   // This aggregator cannot say the credential is unknown, because it has not
   // read a registry (#688's second door). One aggregator restart while
   // fleet-links.json was missing, with a pairing code armed to build the hub,
@@ -1214,6 +1343,10 @@ export interface LinkHubDeps {
    *  unparseable. A dial it cannot judge is held (503), never refused 401,
    *  which is final on the node. */
   registryJudgeable?: () => boolean;
+  /** #738: the revocations this host signed, so a node revoked while it was
+   *  offline is handed its tombstone in the 401 when it comes back. Absent,
+   *  such a node asks hourly, as before. */
+  issuedTombstones?: IssuedTombstoneStore;
   /** Sign the challenge with this host's fleet trust seed. Null when this
    *  host holds no signing key, which refuses every link: an aggregator that
    *  cannot prove who it is has nothing to offer a node that pinned it. */
@@ -1790,18 +1923,34 @@ export function createFleetLinkHub(deps: LinkHubDeps): FleetLinkHub {
     if (!exp) return null;
     expectedRevokes.delete(live.label);
     if (exp.until < now() || exp.credentialHash !== live.credentialHash) return null;
+    return issueTombstone(live.label, live.credentialHash);
+  };
+
+  /** Sign one revocation and keep it (#738), so a 401 for that credential can
+   *  carry it to a node that missed the frame. Only ever reached through an
+   *  expectRevoke for that label and that credential. */
+  const issueTombstone = (label: string, credentialSha256: string): LinkTombstone | null => {
     const body = {
       v: FLEET_LINK_PROTOCOL_VERSION, issuer_label: FLEET_WRITE_ISSUER_LABEL,
-      label: live.label, credential_sha256: live.credentialHash, issued_at: now(),
+      label, credential_sha256: credentialSha256, issued_at: now(),
     };
     let signature: string | null;
     try { signature = deps.sign(linkTombstoneSigningBytes(body)); } catch { signature = null; }
     if (!signature) {
-      log(`[fleet-link] ${live.label}: revoked, but this host could not sign a tombstone, so that node will `
+      log(`[fleet-link] ${label}: revoked, but this host could not sign a tombstone, so that node will `
         + 'ask again once an hour and be refused each time');
       return null;
     }
-    return { ...body, signature };
+    const t = { ...body, signature };
+    if (deps.issuedTombstones) {
+      try {
+        deps.issuedTombstones.put(t);
+      } catch (err) {
+        log(`[fleet-link] ${label}: revoked and signed, but the signed revocation could not be kept `
+          + `(${(err as Error).message}); a node that missed it will ask again once an hour`);
+      }
+    }
+    return t;
   };
 
   /** One sentence for every way a code fails to resolve. Bad, reused and
@@ -1894,6 +2043,25 @@ export function createFleetLinkHub(deps: LinkHubDeps): FleetLinkHub {
       socket.write(`HTTP/1.1 ${status} ${text}\r\nConnection: close\r\n\r\n`);
     } catch { /* the peer already left */ }
     socket.destroy();
+  };
+
+  /** #738: the 401 with a body, `{"error":"revoked","tombstone":{...}}`. Ended
+   *  rather than destroyed, so the body is flushed before the close; a peer
+   *  that never reads it is cut off after a few seconds all the same. */
+  const refuseWithTombstone = (socket: Duplex, tombstone: LinkTombstone) => {
+    const body = Buffer.from(JSON.stringify({ error: 'revoked', tombstone }), 'utf8');
+    try {
+      socket.end(Buffer.concat([
+        Buffer.from('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n'
+          + `Content-Type: application/json\r\nContent-Length: ${body.length}\r\n\r\n`, 'latin1'),
+        body,
+      ]));
+    } catch {
+      socket.destroy();
+      return;
+    }
+    const cut = setTimeout(() => { try { socket.destroy(); } catch { /* gone */ } }, 5_000);
+    cut.unref?.();
   };
 
   /** Close a live link and everything it holds. Awaited on replacement so a
@@ -3204,6 +3372,7 @@ export function createFleetLinkHub(deps: LinkHubDeps): FleetLinkHub {
       rows: deps.rows(),
       withheldRows: deps.withheldRows?.() ?? [],
       registryJudgeable: deps.registryJudgeable?.() ?? true,
+      ...(deps.issuedTombstones ? { revokedTombstone: deps.issuedTombstones.find } : {}),
       pending: pendingHandshakes,
       links: links.size,
       guard,
@@ -3218,6 +3387,7 @@ export function createFleetLinkHub(deps: LinkHubDeps): FleetLinkHub {
       // so a stranger's refused pairings can never deny the fleet its links.
       if (decision.countAsFailure) (pairing ? pairGuard : guard).fail(rateKey);
       log(decision.message);
+      if (decision.tombstone) { refuseWithTombstone(socket, decision.tombstone); return; }
       refuseSocket(socket, decision.status, decision.status === 401 ? 'Unauthorized'
         : decision.status === 429 ? 'Too Many Requests'
         : decision.status === 404 ? 'Not Found'
@@ -3474,6 +3644,27 @@ export function createFleetLinkHub(deps: LinkHubDeps): FleetLinkHub {
       try { live.ws.send(encodeLinkFrame(frame)); } catch { /* going away anyway */ }
     }
     await Promise.all(doomed.map(({ live, reason }) => tearDown(live, reason)));
+
+    // #738: a revoke approved at a passkey for a node whose link is not up.
+    // The loop above only sees live links, so before this the expectation
+    // simply lapsed and that node, coming back, met a bare 401 and asked
+    // hourly for good. Signed here under the same conditions as the live
+    // branch (the row gone from both lists, the credential the one the
+    // operator approved) and kept for the 401 to carry. A pass over named
+    // links only, or one on a registry this host cannot read, decides
+    // nothing about rows that are not in front of it.
+    if (!only && (deps.registryJudgeable?.() ?? true)) {
+      for (const [label, exp] of [...expectedRevokes]) {
+        if (exp.until < now()) { expectedRevokes.delete(label); continue; }
+        if (links.has(label)) continue;
+        if (rows.some((r) => r.label === label) || withheldRows.some((h) => h.row.label === label)) continue;
+        expectedRevokes.delete(label);
+        if (issueTombstone(label, exp.credentialHash)) {
+          log(`[fleet-link] ${label}: revoked at a passkey while its link was down; signed the revocation and `
+            + 'kept it for when that node dials again');
+        }
+      }
+    }
 
     // #641: a row already carrying a live, ready link can gain or lose an
     // Advisor with no redial at all. Attach and detach both write

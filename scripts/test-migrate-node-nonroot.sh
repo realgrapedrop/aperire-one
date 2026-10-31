@@ -126,6 +126,30 @@ if a[0] == "ancestors":
     if os.path.exists(out):
         sys.stdout.write(open(out).read())
     sys.exit(0)
+# read and plant (the compose put back, #1208) have nothing to stand in for:
+# the real helper answers, and plant's arguments are kept. state/real-helper
+# makes every other call the real one too, for the rows that put the config's
+# group back under fakeroot and look at what happened, not what was asked.
+if a[0] in ("read", "plant") or os.path.exists("$TMP/state/real-helper"):
+    import subprocess
+    if a[0] == "plant":
+        with open("$TMP/state/plant-argv", "a") as log:
+            log.write(" ".join(a) + "\n")
+    if "--list" in a:
+        with open(a[a.index("--list") + 1], "rb") as rec, open("$TMP/state/list-seen", "ab") as seen:
+            seen.write(rec.read().replace(b"\0", b"\n"))
+    # state/plant-tamper names the compose: a plant of the rewrite there (the
+    # bytes carry the user: line) lands, then gains a line, standing for a
+    # landed file that is not what was planted (#1295 re-review).
+    tamper = "$TMP/state/plant-tamper"
+    if a[0] == "plant" and "--stdin" in a and os.path.exists(tamper):
+        data = sys.stdin.buffer.read()
+        rc = subprocess.run(["python3", "-I", "$REPO_DIR/scripts/state-file.py"] + a, input=data).returncode
+        if rc == 0 and a[1] == open(tamper).read().strip() and b'user: "997:997"' in data:
+            with open(a[1], "ab") as landed:
+                landed.write(b"# changed after it landed\n")
+        sys.exit(rc)
+    sys.exit(subprocess.call(["python3", "-I", "$REPO_DIR/scripts/state-file.py"] + a))
 # The list root recorded before it changed anything (#1152), as the walk was
 # handed it: kept so a row can read what the record held.
 if "--list" in a:
@@ -518,14 +542,16 @@ fi
 # The record has to be taken before the first thing this run changes. A row
 # cannot watch the order a run happens in, so this reads it off the shipped
 # script: every record_for_handover call comes before the account is created,
-# which is before anything is written, and before the first hand-over.
+# which is before anything is written, and before the first hand-over. Five:
+# the apply's store, config and validator list, and --hand-store-back's store
+# and the one in its loop over the config and the validator list (#1208).
 rec_last="$(grep -n 'record_for_handover "' "$REPO_DIR/scripts/migrate-node-nonroot.sh" | tail -1 | cut -d: -f1)"
 rec_first="$(grep -n 'record_for_handover "' "$REPO_DIR/scripts/migrate-node-nonroot.sh" | head -1 | cut -d: -f1)"
 # shellcheck disable=SC2016  # the text of the line being looked for
 acct="$(grep -n 'LINE="\$(node_account_ensure)"' "$REPO_DIR/scripts/migrate-node-nonroot.sh" | head -1 | cut -d: -f1)"
 hand="$(grep -n '^if ! hand_store_to_node' "$REPO_DIR/scripts/migrate-node-nonroot.sh" | head -1 | cut -d: -f1)"
 if [[ -n "$rec_first" && -n "$acct" && -n "$hand" && "$rec_last" -lt "$acct" && "$acct" -lt "$hand" ]] \
-   && [[ "$(grep -c 'record_for_handover "' "$REPO_DIR/scripts/migrate-node-nonroot.sh")" == 4 ]]; then
+   && [[ "$(grep -c 'record_for_handover "' "$REPO_DIR/scripts/migrate-node-nonroot.sh")" == 5 ]]; then
   ok "the store, the config and the validator list are recorded (lines $rec_first to $rec_last) before the account is made ($acct) and before the first hand-over ($hand)"
 else
   bad "the records are taken before anything changes" "records at ${rec_first:-none}..${rec_last:-none}, account at ${acct:-none}, hand-over at ${hand:-none}"
@@ -573,10 +599,10 @@ if [[ -n "$BAK" ]] && [[ "$(basename "$BAK")" =~ ^docker-compose\.yml\.[0-9]{8}-
 else
   bad "the backup is named the way restore-compose accepts" "$(basename "${BAK:-<none>}")"
 fi
-if [[ "$OUT" == *"cp ${BAK} ${COMPOSE}"* ]]; then
-  ok "and the run prints the command that puts it back"
+if [[ "$OUT" == *"puts ${BAK} back as the compose file"* ]]; then
+  ok "and the run names the backup the step puts back"
 else
-  bad "the run prints the command that puts it back" "$OUT"
+  bad "the run names the backup the step puts back" "$OUT"
 fi
 if [[ "$OUT" == *"--run migrate-node --hand-store-back"* && "$OUT" != *"chown -R"* ]]; then
   ok "the way back includes the store's old ownership, as the step and not a chown -R to type (#1148)"
@@ -754,7 +780,7 @@ if [[ $RC -eq 0 ]] \
          && ! -f "$TMP/state/useradd-calls" && ! -f "$TMP/state/groupadd-calls" ]] \
    && [[ "$(md5sum < "$COMPOSE")" == "$before_compose" && $(backups | wc -l) -eq 0 ]] \
    && ! has "$OUT" 'chown -R'; then
-  ok "--hand-store-back gives the store to root:root by descriptor from a recorded list, and changes the compose, the config and the accounts not at all"
+  ok "--hand-store-back gives the store to root:root by descriptor from a recorded list, and with no backup and no config in the node's group changes the compose, the config and the accounts not at all"
 else
   bad "--hand-store-back gives only the store back" "rc=$RC: $OUT :: $(cat "$TMP/state/own-many-argv" 2>/dev/null)"
 fi
@@ -851,9 +877,9 @@ put_back_account
 : > "${COMPOSE}.20260303-030303.bak.evil"
 : > "${COMPOSE}.99999999-999999.bak;x"
 run_put_back --hand-store-back
-if [[ $RC -eq 0 && "$OUT" == *"sudo cp ${COMPOSE}.20260202-020202.bak ${COMPOSE}"* \
+if [[ $RC -eq 0 && "$OUT" == *"${COMPOSE} <- ${COMPOSE}.20260202-020202.bak"* \
       && "$OUT" != *"pwned"* && "$OUT" != *".bak.evil"* && "$OUT" != *"99999999"* ]]; then
-  ok "the compose it tells you to copy back is the newest one this script stamped, not a name somebody else left beside it"
+  ok "the compose it puts back is the newest one this script stamped, not a name somebody else left beside it"
 else
   bad "--hand-store-back prints only a backup this script made" "rc=$RC: $OUT"
 fi
@@ -865,6 +891,161 @@ if [[ $RC -eq 0 && "$OUT" == *"no dated .bak beside"* && "$OUT" != *"x y;z"* ]];
   ok "  and with only such names there it says there is no backup to copy back"
 else
   bad "--hand-store-back says there is no backup when only foreign names are there" "rc=$RC: $OUT"
+fi
+
+# =====================================================================
+echo
+echo "The rest of the way back is the step too (#1208):"
+# The migration used to print `sudo cp <bak> <compose>` and `sudo chgrp <group>
+# <config>`, both by name in a directory the login owns: cp as root writes
+# through a link planted at the compose file's name, and chgrp follows one at
+# the config's. --hand-store-back now puts both back by descriptor, and no
+# output of this script prints either command.
+reset
+run_migrate --help
+HELP_OUT="$OUT"
+reset
+run_migrate --apply
+APPLY_OUT="$OUT"
+reset
+echo running > "$TMP/state/container-state"
+run_migrate
+REPORT_OUT="$OUT"
+run_migrate --apply
+REFUSE_OUT="$OUT"
+if [[ "$HELP_OUT$APPLY_OUT$REPORT_OUT$REFUSE_OUT" != *"sudo cp"* && "$HELP_OUT$APPLY_OUT$REPORT_OUT$REFUSE_OUT" != *"sudo chgrp"* \
+      && "$APPLY_OUT" == *"--run migrate-node --hand-store-back"* ]]; then
+  ok "-h, an --apply run, a report and a refusal print no sudo cp and no sudo chgrp: the way back is the one step"
+else
+  bad "no output prints sudo cp or sudo chgrp" "$(grep -hE 'sudo (cp|chgrp)' <<<"$HELP_OUT$APPLY_OUT$REPORT_OUT$REFUSE_OUT")"
+fi
+# The comment on #1208: the report and the running-node refusal printed
+# `sudo bash $0 --apply`, which from a checkout is the checkout's copy root
+# should not run (ADR 0024). They print the --run step instead.
+if [[ "$REPORT_OUT$REFUSE_OUT" != *"sudo bash"* \
+      && "$REPORT_OUT" == *"--run migrate-node --apply"* && "$REFUSE_OUT" == *"--run migrate-node --apply"* ]]; then
+  ok "the report and the running-node refusal name the --run step for --apply, never sudo bash of this copy"
+else
+  bad "the report and the refusal name the --run step" "$(grep -hE 'sudo bash|--apply' <<<"$REPORT_OUT$REFUSE_OUT")"
+fi
+
+# What happened, not what was asked: one fakeroot session holds the state the
+# migration leaves (store and config in the node's group 997), runs the step
+# against the real helper, and reads the result back before the session ends.
+# $PB_SETUP runs first and $PB_READ last, both shell text; the read-back lands
+# in state/after.
+# shellcheck disable=SC2016  # the inner script's own variables
+put_back_real() {
+  if ! command -v fakeroot >/dev/null 2>&1; then
+    OUT="fakeroot is not installed; apt-get install -y fakeroot (what CI uses)"; RC=99; return
+  fi
+  put_back_account
+  : > "$TMP/state/real-helper"
+  OUT="$(NODE_DIR="$NODE_DIR" CFG="$CFG" VAL="$VAL" COMPOSE="$COMPOSE" SUT="$SUT" TMP="$TMP" \
+         PB_SETUP="${PB_SETUP:-:}" PB_READ="${PB_READ:-:}" fakeroot bash -c '
+    /bin/chown -R 997:997 "$NODE_DIR/data"
+    /bin/chgrp 997 "$CFG" "$VAL"
+    eval "$PB_SETUP"
+    bash "$SUT" --hand-store-back; rc=$?
+    eval "$PB_READ" > "$TMP/state/after" 2>&1
+    exit "$rc"' 2>&1)"
+  RC=$?
+  rm -f "$TMP/state/real-helper"
+}
+# A migrated host: the dated backup and the rewritten compose, both from a real
+# --apply (the recorders on PATH leave every owner as it was).
+migrated() {
+  reset
+  run_migrate --apply
+  PB_BAK="$(backups | tail -1)"
+}
+
+migrated
+# shellcheck disable=SC2016  # the text runs inside the fakeroot session, where these expand
+PB_SETUP=':' PB_READ='cmp -s "$COMPOSE" '"$(printf '%q' "$PB_BAK")"' && echo compose=old; [[ -L "$COMPOSE" ]] && echo compose=link; echo "cfg=$(stat -c %g "$CFG") val=$(stat -c %g "$VAL")"' put_back_real
+AFTER="$(cat "$TMP/state/after" 2>/dev/null)"
+if [[ $RC -eq 0 && "$AFTER" == *"compose=old"* && "$AFTER" != *"compose=link"* && "$AFTER" == *"cfg=0 val=0"* \
+      && "$OUT" != *"sudo cp"* && "$OUT" != *"sudo chgrp"* ]]; then
+  ok "--hand-store-back puts the compose back from its backup and the config's and validator list's group back to root, by itself"
+else
+  bad "--hand-store-back puts the compose and the config's group back" "rc=$RC after=[$AFTER]: $OUT"
+fi
+
+# A link at the compose file's name. The file it points at keeps its owner and
+# its content, and the name ends up holding the backup as a plain file: the
+# rename replaces the link instead of writing through it.
+# The target is a copy of the migrated compose, so the run reads its shape
+# through the link and gets as far as putting it back.
+migrated
+cp "$COMPOSE" "$TMP/outside-compose"
+chmod 0644 "$TMP/outside-compose"
+outside_sum="$(md5sum < "$TMP/outside-compose")"
+# shellcheck disable=SC2016  # the text runs inside the fakeroot session, where these expand
+PB_SETUP='/bin/chown 4242:4242 "$TMP/outside-compose"; rm -f "$COMPOSE"; ln -s "$TMP/outside-compose" "$COMPOSE"' \
+PB_READ='echo "outside=$(md5sum < "$TMP/outside-compose") $(stat -c "%u %a" "$TMP/outside-compose")"; [[ -L "$COMPOSE" ]] && echo compose=link; cmp -s "$COMPOSE" '"$(printf '%q' "$PB_BAK")"' && echo compose=old' put_back_real
+AFTER="$(cat "$TMP/state/after" 2>/dev/null)"
+if [[ $RC -eq 0 && "$AFTER" == *"outside=$outside_sum 4242 644"* && "$AFTER" != *"compose=link"* && "$AFTER" == *"compose=old"* ]]; then
+  ok "  a link planted at the compose file's name: its target keeps its owner and content, and the name gets the backup"
+else
+  bad "a link at the compose name is replaced, not written through" "rc=$RC after=[$AFTER]: $OUT"
+fi
+
+# A link at the config's name, itself in the node's group. Its target keeps its
+# group, and the step stops and says why rather than following it.
+migrated
+printf '[x]\n' > "$TMP/outside-cfg"
+# shellcheck disable=SC2016  # the text runs inside the fakeroot session, where these expand
+PB_SETUP='/bin/chgrp 997 "$TMP/outside-cfg"; rm -f "$CFG"; ln -s "$TMP/outside-cfg" "$CFG"; /bin/chgrp -h 997 "$CFG"' \
+PB_READ='echo "outside=$(stat -c %g "$TMP/outside-cfg")"' put_back_real
+AFTER="$(cat "$TMP/state/after" 2>/dev/null)"
+if [[ $RC -ne 0 && "$AFTER" == *"outside=997"* && "$OUT" == *"was not given back to root"* ]]; then
+  ok "  a link planted at the config's name: its target keeps its group, and the step refuses and names it"
+else
+  bad "a link at the config name is not followed" "rc=$RC after=[$AFTER]: $OUT"
+fi
+
+# The newest backup is only the migration's if nothing rewrote the compose
+# since: the wrapper keeps backups under the same name. One that already runs
+# the node as its own account is not put back.
+migrated
+cp "$COMPOSE" "${COMPOSE}.29991231-235959.bak"
+before_compose="$(md5sum < "$COMPOSE")"
+# shellcheck disable=SC2016  # the text runs inside the fakeroot session, where these expand
+PB_SETUP=':' PB_READ='md5sum < "$COMPOSE"' put_back_real
+AFTER="$(cat "$TMP/state/after" 2>/dev/null)"
+if [[ $RC -ne 0 && "$OUT" == *"already has a user: line"* && "$AFTER" == "$before_compose" ]]; then
+  ok "  a newest backup that already has a user: line is refused, and the compose is left as it is"
+else
+  bad "a backup in the new shape is not put back" "rc=$RC after=[$AFTER]: $OUT"
+fi
+# The same refusal on a backup past 64 KiB with the user: line near the top,
+# and on one that spells the key quoted. A `tail | grep -q` under pipefail
+# missed the first: grep quit early, tail took SIGPIPE, the pipeline failed,
+# and the backup was put back (the review of #1206).
+migrated
+{ cat "$COMPOSE"; for _i in $(seq 1 1200); do printf '# padding line %04d to carry the backup past 64 KiB.............\n' "$_i"; done; } \
+  > "${COMPOSE}.29991231-235959.bak"
+before_compose="$(md5sum < "$COMPOSE")"
+# shellcheck disable=SC2016  # the text runs inside the fakeroot session, where these expand
+PB_SETUP=':' PB_READ='md5sum < "$COMPOSE"' put_back_real
+AFTER="$(cat "$TMP/state/after" 2>/dev/null)"
+if (( $(stat -c %s "${COMPOSE}.29991231-235959.bak") > 65536 )) \
+   && [[ $RC -ne 0 && "$OUT" == *"already has a user: line"* && "$AFTER" == "$before_compose" ]]; then
+  ok "  and so is one past 64 KiB with its user: line near the top"
+else
+  bad "a large backup in the new shape is not put back" "size $(stat -c %s "${COMPOSE}.29991231-235959.bak") rc=$RC after=[$AFTER]: $OUT"
+fi
+migrated
+sed -E 's/^([[:space:]]*)user:/\1"user":/' "$COMPOSE" > "${COMPOSE}.29991231-235959.bak"
+before_compose="$(md5sum < "$COMPOSE")"
+# shellcheck disable=SC2016  # the text runs inside the fakeroot session, where these expand
+PB_SETUP=':' PB_READ='md5sum < "$COMPOSE"' put_back_real
+AFTER="$(cat "$TMP/state/after" 2>/dev/null)"
+if grep -q '"user":' "${COMPOSE}.29991231-235959.bak" \
+   && [[ $RC -ne 0 && "$OUT" == *"already has a user: line"* && "$AFTER" == "$before_compose" ]]; then
+  ok "  and so is one that quotes the key, \"user\":"
+else
+  bad "a backup with a quoted user key is not put back" "rc=$RC after=[$AFTER]: $OUT"
 fi
 # The log it tells you to read is printed as a command, from a config the login
 # owns: quoted, and never through a .. (the review of #1207).
@@ -902,6 +1083,10 @@ if locale -a 2>/dev/null | grep -qix 'en_US\.utf-\?8'; then
   else
     bad "only ASCII digits make a backup name" "rc=$RC: $OUT"
   fi
+elif [[ -n "${CI:-}" ]]; then
+  # The workflow generates this locale. A CI job without it would print the
+  # SKIP below and go green having measured nothing (#1213).
+  bad "the en_US.UTF-8 locale is present, so the non-ASCII digit row runs" "CI is set, so this job is meant to have it; the row was not measured"
 else
   echo "  SKIP: no en_US.UTF-8 locale here; the non-ASCII digit row was not measured"
 fi
@@ -1404,13 +1589,13 @@ fi
 
 # =====================================================================
 echo
-echo "The compose file's own ACL survives both patches, body and header (#545):"
+echo "The compose file's own ACL is named, not carried, when a patch replaces it (#545, #1295):"
 
-# #471, above, is about the config file surviving a group MOVE with no
-# chmod at all. This is the other file this script rewrites, through the
-# temp-file-and-rename TMPC and TMPH take, the same shape set-config's
-# rewrite has, and until now the one place in this project that carried it
-# with chown/chmod --reference alone, no ACL, no guard.
+# Both patches build the new file in root's own temporary directory and land
+# it with the state helper's plant, which carries the owner, group and
+# permission bits and not an ACL (#1295): carrying one meant chown, chmod and
+# setfacl by name in the login's directory. A compose with named entries is
+# still migrated, and the run says plainly that the ACL did not come across.
 ACL_COMPOSE_USABLE=0
 if command -v setfacl >/dev/null 2>&1 && command -v getfacl >/dev/null 2>&1; then
   reset
@@ -1419,67 +1604,246 @@ if command -v setfacl >/dev/null 2>&1 && command -v getfacl >/dev/null 2>&1; the
     ACL_COMPOSE_USABLE=1
   fi
 fi
+ACL_NOTE="had an ACL with named entries, and it was not carried over to the rewritten file"
 
 if ((ACL_COMPOSE_USABLE)); then
-  # The body patch (TMPC): a fresh, old-shape compose file with two named
-  # grants, migrated for the first time. daemon and bin rather than the real
-  # dashboard/relay account names, so this runs on a bare CI image too.
+  # The body patch: an old-shape compose with two named grants, migrated for
+  # the first time. daemon and bin, so this runs on a bare CI image too.
   reset
   setfacl -m u:daemon:r-- -m u:bin:r-- "$COMPOSE"
-  ACL_BODY_BEFORE=$(getfacl -p "$COMPOSE")
+  ACL_MODE_BEFORE=$(stat -c '%u %g %a' "$COMPOSE")
   run_migrate --apply
-  ACL_BODY_AFTER=$(getfacl -p "$COMPOSE")
-  if [[ "$ACL_BODY_BEFORE" == "$ACL_BODY_AFTER" ]]; then
-    ok "the compose file's named entries and mask survive the body patch (user: and the /etc/xrpld mounts)"
+  if [[ $RC -eq 0 && "$OUT" == *"${COMPOSE} ${ACL_NOTE}"* && "$(stat -c '%u %g %a' "$COMPOSE")" == "$ACL_MODE_BEFORE" ]] \
+     && grep -qE '^[[:space:]]*user:[[:space:]]*"997:997"' "$COMPOSE" && ! getfacl -p "$COMPOSE" 2>/dev/null | grep -q '^user:daemon:'; then
+    ok "the body patch migrates a compose with named ACL entries, keeps its owner, group and mode, and says the ACL was not carried over"
   else
-    bad "the ACL survives the body patch" "$(diff <(printf '%s\n' "$ACL_BODY_BEFORE") <(printf '%s\n' "$ACL_BODY_AFTER"))"
+    bad "a compose with an ACL is migrated and the dropped ACL is named" "rc=$RC mode=$(stat -c '%u %g %a' "$COMPOSE") want $ACL_MODE_BEFORE: $(grep -i acl <<<"$OUT")"
   fi
 
-  # The header patch (TMPH): body already migrated above, header staled by
-  # hand exactly the way the #438 fixture above does it, then re-granted
-  # (the hand-edit is a plain mv, which replaces the inode and drops
-  # whatever ACL the row above proved survives a REAL migration step; this
-  # one is deliberately not going through this library, so the grant has to
-  # be redone on the file it actually left behind).
+  # The header patch: body already migrated, header staled by hand the way
+  # the #438 fixture does it, then granted again.
   BODY_FOR_HEADER_TEST=$(body_of "$COMPOSE")
   {
     printf '# An older release rendered this header.\n'
     printf '%s\n' "$BODY_FOR_HEADER_TEST"
   } > "$COMPOSE.tmp" && mv "$COMPOSE.tmp" "$COMPOSE"
   setfacl -m u:daemon:r-- -m u:bin:r-- "$COMPOSE"
-  ACL_HDR_BEFORE=$(getfacl -p "$COMPOSE")
+  ACL_MODE_BEFORE=$(stat -c '%u %g %a' "$COMPOSE")
   run_migrate --apply
-  ACL_HDR_AFTER=$(getfacl -p "$COMPOSE")
-  if [[ "$ACL_HDR_BEFORE" == "$ACL_HDR_AFTER" ]]; then
-    ok "the compose file's named entries and mask survive the header patch too"
+  if [[ $RC -eq 0 && "$OUT" == *"${COMPOSE} ${ACL_NOTE}"* && "$(stat -c '%u %g %a' "$COMPOSE")" == "$ACL_MODE_BEFORE" ]] \
+     && [[ "$(header_of "$COMPOSE")" == "$(fresh_header 997 997)" ]]; then
+    ok "  and so does the header patch"
   else
-    bad "the ACL survives the header patch" "$(diff <(printf '%s\n' "$ACL_HDR_BEFORE") <(printf '%s\n' "$ACL_HDR_AFTER"))"
+    bad "the header patch names the ACL it did not carry" "rc=$RC mode=$(stat -c '%u %g %a' "$COMPOSE") want $ACL_MODE_BEFORE: $(grep -i acl <<<"$OUT")"
   fi
-
-  # A forced ACL-carry failure on the body patch. Nothing has moved at that
-  # point. TMPC is still beside the compose file, not yet in its place.
-  # So the run refuses and the compose file is untouched: still the old
-  # shape, still the ACL it started with. The store has already been
-  # chowned by this point in a real run, which is why the refusal names
-  # that fact rather than implying nothing happened at all.
-  mkdir -p "$TMP/bin-nosetfacl"
-  printf '#!/usr/bin/env bash\nexit 1\n' > "$TMP/bin-nosetfacl/setfacl"
-  chmod +x "$TMP/bin-nosetfacl/setfacl"
+  # With a named entry, the mode's group bits are the ACL mask, not the
+  # owning group's own permission. Group read-only plus a named user at
+  # read-write reads as 664; the rewrite, which has no ACL, must land with
+  # the group still read-only (644), never writable by the owning group.
   reset
-  setfacl -m u:daemon:r-- -m u:bin:r-- "$COMPOSE"
-  ACL_CARRYFAIL_BEFORE=$(getfacl -p "$COMPOSE")
-  OUT=$(PATH="$TMP/bin-nosetfacl:$PATH" bash "$SUT" --apply 2>&1); RC=$?
-  ACL_CARRYFAIL_AFTER=$(getfacl -p "$COMPOSE")
-  if [[ $RC -ne 0 && "$ACL_CARRYFAIL_BEFORE" == "$ACL_CARRYFAIL_AFTER" \
-        && "$OUT" == *"is untouched"* ]] \
-     && ! grep -qE '^[[:space:]]*user:[[:space:]]*"997:997"' "$COMPOSE"; then
-    ok "a forced ACL-carry failure on the body patch refuses and leaves the compose file's shape and ACL exactly as they were"
+  chmod 0644 "$COMPOSE"
+  setfacl -m u:daemon:rw- "$COMPOSE"
+  ACL_MASKED=$(stat -c '%a' "$COMPOSE")
+  run_migrate --apply
+  if [[ $RC -eq 0 && "$ACL_MASKED" == 664 && "$(stat -c '%a' "$COMPOSE")" == 644 ]] \
+     && grep -qE '^[[:space:]]*user:[[:space:]]*"997:997"' "$COMPOSE"; then
+    ok "  a named user at read-write over a read-only group: the rewrite lands 644, the owning group's own bits, not the mask's"
   else
-    bad "a forced ACL-carry failure leaves the compose file untouched" "rc=$RC: $OUT"
+    bad "the rewrite takes the owning group's bits, not the ACL mask" "rc=$RC before=$ACL_MASKED after=$(stat -c '%a' "$COMPOSE"), want 644"
+  fi
+  # The other direction: the owning group's own entry is wider than the mask.
+  # Group rw-, mask r-- (set explicitly): the group could only read, so the
+  # rewrite must land group read-only, never the group entry's rw.
+  reset
+  chmod 0664 "$COMPOSE"
+  setfacl -m u:daemon:r-- -m m::r-- "$COMPOSE"
+  GOBJ=$(getfacl -p --omit-header "$COMPOSE" 2>/dev/null | awk -F: '$1=="group" && $2=="" {split($3, a, /[ \t#]/); print a[1]; exit}')
+  ACL_MASKED=$(stat -c '%a' "$COMPOSE")
+  run_migrate --apply
+  if [[ $RC -eq 0 && "$GOBJ" == rw- && "$ACL_MASKED" == 644 && "$(stat -c '%a' "$COMPOSE")" == 644 ]] \
+     && grep -qE '^[[:space:]]*user:[[:space:]]*"997:997"' "$COMPOSE"; then
+    ok "  an owning group at read-write under a read-only mask: the rewrite lands 644, the group's entry limited by the mask"
+  else
+    bad "the rewrite limits the owning group's entry by the ACL mask" "rc=$RC group_obj=$GOBJ before=$ACL_MASKED after=$(stat -c '%a' "$COMPOSE"), want 644"
   fi
 else
   echo "  skip  setfacl/getfacl are not usable on this runner, or this filesystem gave the fixture no mask:: line; the compose-file ACL rows cannot run here"
 fi
+# The control: a compose with no named entries gets no such line.
+reset
+run_migrate --apply
+if [[ $RC -eq 0 && "$OUT" != *"$ACL_NOTE"* ]]; then
+  ok "  and a compose with no named entries gets no such line"
+else
+  bad "no ACL line for a compose without one" "rc=$RC: $(grep -i acl <<<"$OUT")"
+fi
+
+# =====================================================================
+echo
+echo "The backup --apply keeps is made by descriptor, never through a link (#1295):"
+# The compose's directory is the login's. A `cp -a` by name there, as root,
+# writes through a link planted at the backup's name, and copies a link
+# planted at the compose's name instead of refusing it. The backup's name
+# carries the second it was made in; a date on PATH that answers one fixed
+# stamp lets a row plant the link at the exact name the run will use. The
+# real state helper answers read and plant (the stand-in passes them on).
+FIXED_STAMP=20990101-000000
+cat > "$TMP/bin/date" <<EOF
+#!/usr/bin/env bash
+[[ "\${1:-}" == +%Y%m%d-%H%M%S ]] && { echo $FIXED_STAMP; exit 0; }
+exec /usr/bin/date "\$@"
+EOF
+chmod +x "$TMP/bin/date"
+FIXED_BAK="${COMPOSE}.${FIXED_STAMP}.bak"
+
+# A link at the backup's name, on the body patch.
+reset
+printf 'not the compose\n' > "$TMP/outside-bak"; chmod 0600 "$TMP/outside-bak"
+outside_before="$(md5sum < "$TMP/outside-bak") $(stat -c %a "$TMP/outside-bak")"
+old_compose="$(md5sum < "$COMPOSE")"
+ln -s "$TMP/outside-bak" "$FIXED_BAK"
+run_migrate --apply
+if [[ $RC -eq 0 && "$(md5sum < "$TMP/outside-bak") $(stat -c %a "$TMP/outside-bak")" == "$outside_before" \
+      && -f "$FIXED_BAK" && ! -L "$FIXED_BAK" && "$(md5sum < "$FIXED_BAK")" == "$old_compose" ]]; then
+  ok "a link planted at the backup's name: its target keeps its content and mode, and the name gets the compose as it was"
+else
+  bad "a link at the backup's name is replaced, not written through" \
+      "rc=$RC outside=[$(cat "$TMP/outside-bak") $(stat -c %a "$TMP/outside-bak")] link=$([[ -L "$FIXED_BAK" ]] && echo yes || echo no): $OUT"
+fi
+
+# The same on the header-only rewrite: a compose already in the new shape
+# under an older release's header, where the backup is made further down.
+reset
+{
+  printf '# The hardened node compose, from an older release.\n'
+  render_template 997 997 | sed -n '/^name:/,$p'
+} > "$COMPOSE"
+printf 'not the compose\n' > "$TMP/outside-bak"; chmod 0600 "$TMP/outside-bak"
+outside_before="$(md5sum < "$TMP/outside-bak") $(stat -c %a "$TMP/outside-bak")"
+old_compose="$(md5sum < "$COMPOSE")"
+ln -s "$TMP/outside-bak" "$FIXED_BAK"
+run_migrate --apply
+if [[ $RC -eq 0 && "$OUT" == *"kept the previous deployment at ${FIXED_BAK}"* \
+      && "$(md5sum < "$TMP/outside-bak") $(stat -c %a "$TMP/outside-bak")" == "$outside_before" \
+      && -f "$FIXED_BAK" && ! -L "$FIXED_BAK" && "$(md5sum < "$FIXED_BAK")" == "$old_compose" ]]; then
+  ok "  and on the header-only rewrite: the target is left, and the name gets the compose as it was"
+else
+  bad "a link at the backup's name on the header rewrite is replaced, not written through or taken for a backup" \
+      "rc=$RC outside=[$(cat "$TMP/outside-bak") $(stat -c %a "$TMP/outside-bak")] link=$([[ -L "$FIXED_BAK" ]] && echo yes || echo no): $OUT"
+fi
+
+# A link at the compose's own name, to a copy of the old-shape compose, so the
+# run gets as far as the backup. It is refused there: no backup, the link and
+# its target as they were, and the store not handed over.
+reset
+mv "$COMPOSE" "$TMP/outside-compose"
+ln -s "$TMP/outside-compose" "$COMPOSE"
+outside_before="$(md5sum < "$TMP/outside-compose")"
+run_migrate --apply
+if [[ $RC -ne 0 && "$OUT" == *"could not be read safely"* && -L "$COMPOSE" \
+      && "$(md5sum < "$TMP/outside-compose")" == "$outside_before" \
+      && -z "$(find "$NODE_DIR" -maxdepth 1 -name 'docker-compose.yml.*.bak')" && ! -f "$TMP/state/chown-calls" ]]; then
+  ok "a link at the compose's name is refused at the backup: nothing kept, nothing rewritten, the store not handed over"
+else
+  bad "a link at the compose's name is refused, not copied as a link" \
+      "rc=$RC baks=[$(find "$NODE_DIR" -maxdepth 1 -name 'docker-compose.yml.*.bak' -printf '%y %p\n')] link=$([[ -L "$COMPOSE" ]] && echo yes || echo no): $OUT"
+fi
+
+# Everything the run reads out of the compose comes from one copy taken by
+# descriptor, so the report (no --apply) refuses a link at the compose's name
+# too, before it reads a line of what the link points at. The target here is
+# a copy of the compose, so a read by name would go on and report.
+reset
+mv "$COMPOSE" "$TMP/outside-compose"
+ln -s "$TMP/outside-compose" "$COMPOSE"
+run_migrate
+if [[ $RC -ne 0 && "$OUT" == *"could not be read safely"* && "$OUT" != *"What is already true"* ]]; then
+  ok "  and the report refuses it too, before it reads anything out of it"
+else
+  bad "the report reads the compose by descriptor, never through a link" "rc=$RC: $(tail -5 <<<"$OUT")"
+fi
+
+# The rewrite used to be built beside the compose, in a temporary file named
+# after it, and chowned, chmodded and setfacl'd by name before the rename: the
+# login owns that directory and can swap the name for a link in between. A
+# mktemp on PATH that answers such a template with a link it planted itself
+# stands for that swap. The new file is built in root's own temporary
+# directory now, so the link is never written or changed.
+reset
+printf 'not the compose\n' > "$TMP/outside-tmp"; chmod 0600 "$TMP/outside-tmp"
+outside_before="$(md5sum < "$TMP/outside-tmp") $(stat -c %a "$TMP/outside-tmp")"
+compose_mode_before="$(stat -c %a "$COMPOSE")"
+cat > "$TMP/bin/mktemp" <<MKTEMP
+#!/usr/bin/env bash
+for a in "\$@"; do
+  if [[ "\$a" == "$COMPOSE".XXXXXX ]]; then
+    ln -sfn "$TMP/outside-tmp" "$COMPOSE.planted"; echo "$COMPOSE.planted"; exit 0
+  fi
+done
+exec /usr/bin/mktemp "\$@"
+MKTEMP
+chmod +x "$TMP/bin/mktemp"
+run_migrate --apply
+rm -f "$TMP/bin/mktemp"
+if [[ $RC -eq 0 && "$(md5sum < "$TMP/outside-tmp") $(stat -c %a "$TMP/outside-tmp")" == "$outside_before" \
+      && ! -L "$COMPOSE" && "$(stat -c %a "$COMPOSE")" == "$compose_mode_before" ]] \
+   && grep -qE '^[[:space:]]*user:[[:space:]]*"997:997"' "$COMPOSE"; then
+  ok "a link at the old temporary name beside the compose is never written or chmodded, and the compose lands with its mode"
+else
+  bad "the rewrite is built in root's own directory, not beside the compose" \
+      "rc=$RC outside=[$(head -c 60 "$TMP/outside-tmp") $(stat -c %a "$TMP/outside-tmp")]: $(tail -5 <<<"$OUT")"
+fi
+
+# The read-back itself: the state helper lands the rewrite and the file then
+# gains a line before it is read back (the stand-in's plant-tamper). The run
+# must see that what landed is not what it wrote, put the compose back from
+# the bytes it read, and stop.
+reset
+compose_before="$(md5sum < "$COMPOSE") $(stat -c %a "$COMPOSE")"
+printf '%s\n' "$COMPOSE" > "$TMP/state/plant-tamper"
+run_migrate --apply
+rm -f "$TMP/state/plant-tamper"
+if [[ $RC -ne 0 && "$OUT" == *"did not read back as the rewrite wrote it"* && "$OUT" == *"put back from ${FIXED_BAK}: its bytes"* \
+      && "$(md5sum < "$COMPOSE") $(stat -c %a "$COMPOSE")" == "$compose_before" && ! -f "$TMP/state/chown-calls" ]]; then
+  ok "a rewrite that lands as anything but what was written is caught on the read-back, and the compose is put back"
+else
+  bad "the read-back compares what landed with what was written" "rc=$RC compose=[$(md5sum < "$COMPOSE") $(stat -c %a "$COMPOSE")] want [$compose_before]: $(tail -3 <<<"$OUT")"
+fi
+
+# A rewrite that does not read back as written is put back from the bytes root
+# read, never from the backup's name: by then the login can have swapped that
+# name for a link. No fixture makes a plant land something else, so a copy of
+# the run, beside the real one, forces the read-back check to fail and swaps
+# the backup's name for a link to an outside file just before. The refusal
+# says what came back and what did not. The compose must come back byte for byte, with its
+# mode, and the outside file must be left alone.
+reset
+printf 'not the compose\n' > "$TMP/outside-bak"; chmod 0600 "$TMP/outside-bak"
+outside_before="$(md5sum < "$TMP/outside-bak") $(stat -c %a "$TMP/outside-bak")"
+compose_before="$(md5sum < "$COMPOSE") $(stat -c %a "$COMPOSE")"
+SUT_RESTORE="$TMP/repo/scripts/migrate-node-forced-restore.sh"
+python3 - "$SUT" "$SUT_RESTORE" "$TMP/outside-bak" <<'PY'
+import shlex, sys
+src, dst, outside = sys.argv[1:4]
+s = open(src).read()
+old = '    ok=1\n  fi\n  rm -f "$back" "$1"\n'
+new = ('    ok=1\n  fi\n  ok=0; rm -f "$BACKUP"; ln -s %s "$BACKUP"\n'
+       '  rm -f "$back" "$1"\n') % shlex.quote(outside)
+if s.count(old) != 1:
+    sys.exit("land_compose's read-back check was not found once in the copy; the forced-restore row would prove nothing")
+open(dst, "w").write(s.replace(old, new))
+PY
+[[ -f "$SUT_RESTORE" ]] || { echo "the forced-restore copy was not made"; exit 1; }
+OUT="$(bash "$SUT_RESTORE" --apply 2>&1)"; RC=$?
+if [[ $RC -ne 0 && "$OUT" == *"put back from ${FIXED_BAK}: its bytes, owner, group and permission bits. Not put back: an ACL with named entries, and the file times"* \
+      && "$(md5sum < "$COMPOSE") $(stat -c %a "$COMPOSE")" == "$compose_before" && ! -L "$COMPOSE" \
+      && "$(md5sum < "$TMP/outside-bak") $(stat -c %a "$TMP/outside-bak")" == "$outside_before" ]]; then
+  ok "a failed rewrite is put back from what root read: the compose byte for byte with its mode, and a link at the backup's name is never read"
+else
+  bad "a failed rewrite is put back from root's own copy, not through the backup's name" \
+      "rc=$RC compose=[$(md5sum < "$COMPOSE") $(stat -c %a "$COMPOSE")] want [$compose_before] outside=[$(cat "$TMP/outside-bak")]: $OUT"
+fi
+rm -f "$SUT_RESTORE" "$TMP/bin/date"
 
 echo
 echo "$PASS passed, $FAIL failed"

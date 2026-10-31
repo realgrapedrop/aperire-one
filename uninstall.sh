@@ -927,11 +927,30 @@ if in_steps advisor; then
   while IFS= read -r line; do [[ -n "$line" ]] && SVC_KEPT+=("$line"); done < <(svc_kept_in_etc)
 fi
 
+# Root's pin of the fleet trust key (#1008) goes only with the checkout that
+# holds the key it pins. Purging /etc/aperire while dashboard/config/
+# fleet-trust.yaml stays (--purge-config, or a wipe whose checkout no unit
+# names) would leave the next update to pin that file on first sight again,
+# whatever it holds by then. So the pin stays unless the checkout goes too.
+KEEP_TRUST_PIN=0
+if [[ $RM_CONFIG -eq 1 && -f "$ETC_APERIRE/fleet-trust.pub" && ! -L "$ETC_APERIRE/fleet-trust.pub" ]] \
+   && ! [[ $RM_CHECKOUT -eq 1 && -n "$CHECKOUT" && -d "$CHECKOUT" ]]; then
+  KEEP_TRUST_PIN=1
+fi
+
 echo "  Then:"
 SCOPE_NOTE=""
 [[ $WIPE -eq 1 && $ROLE_SCOPED -eq 1 ]] && SCOPE_NOTE="  (--role=${ROLE} is one half of this install, and the other half reads it)"
 if [[ $RM_CONFIG -eq 1 ]]; then
   echo "    • DELETE ${ETC_APERIRE}/  (relay token, authn.yaml, relay.conf, any sealed key)"
+  if [[ $KEEP_TRUST_PIN -eq 1 ]]; then
+    echo "      except: keep ${ETC_APERIRE}/fleet-trust.pub, root's pin of the fleet trust key."
+    echo "      The checkout's fleet-trust.yaml stays, and the pin stays with it so nothing"
+    echo "      can pin a different key there on the next install or update."
+  elif [[ -e "$ETC_APERIRE/fleet-trust.pub" ]]; then
+    echo "      This includes fleet-trust.pub, root's pin of the fleet trust key; the"
+    echo "      checkout that holds the key goes in this run too."
+  fi
   if [[ -e "$ETC_APERIRE/fleet-arm.key" ]]; then
     echo "      This includes fleet-arm.key, the key every paired node pins for this"
     echo "      aggregator. Nothing makes a new one on its own while this host's fleet"
@@ -2081,8 +2100,13 @@ echo
 echo "═══ ${ANSWER} ═══"
 
 if [[ $RM_CONFIG -eq 1 && -d "$ETC_APERIRE" ]]; then
-  rm -rf "$ETC_APERIRE"
-  echo "  → DELETED ${ETC_APERIRE}/"
+  if [[ $KEEP_TRUST_PIN -eq 1 ]]; then
+    find "$ETC_APERIRE" -mindepth 1 -maxdepth 1 ! -name fleet-trust.pub -exec rm -rf -- {} +
+    echo "  → DELETED ${ETC_APERIRE}/, all but fleet-trust.pub (root's pin of the fleet trust key, kept with the checkout's fleet-trust.yaml)"
+  else
+    rm -rf "$ETC_APERIRE"
+    echo "  → DELETED ${ETC_APERIRE}/"
+  fi
 fi
 if [[ $RM_DATA -eq 1 && -d "$REPO_DIR/data" ]]; then
   rm -rf "$REPO_DIR/data"
@@ -2113,6 +2137,11 @@ if [[ $RM_CHECKOUT -eq 1 ]]; then
     echo "     No dashboard unit on this host named it, and this is not a directory"
     echo "     to take on a resemblance. Remove it yourself when you are sure:"
     echo "     rm -rf ${REPO_DIR}"
+    if [[ $KEEP_TRUST_PIN -eq 1 ]]; then
+      echo "     ${ETC_APERIRE}/fleet-trust.pub stays pinned. With the checkout gone, the next"
+      echo "     fleet broker grant stops (exit 4) until you restore from a backup set or"
+      echo "     pass --new-fleet-keys, which pairs every node again."
+    fi
     if [[ ${#SNAPS[@]} -gt 0 ]]; then
       echo
       echo "     Not removed either, for the same reason:"
@@ -2138,6 +2167,10 @@ if [[ $RM_TOOLCHAIN -ne 1 ]]; then
       echo "      for something else."
     fi
   fi
+fi
+if [[ $KEEP_TRUST_PIN -eq 1 ]]; then
+  echo "    • ${ETC_APERIRE}/fleet-trust.pub, root's pin of the fleet trust key, kept"
+  echo "      because the checkout and its fleet-trust.yaml are still here."
 fi
 if [[ $RM_CONFIG -ne 1 && -d "$ETC_APERIRE" ]]; then
   echo "    • ${ETC_APERIRE}/, the relay token, authn.yaml and relay.conf. A"
@@ -2240,7 +2273,7 @@ fi
 
 # The last line, and it is load-bearing outside this file. This script is
 # fetched over the network by scripts/get-aperire-uninstall.sh when the copy on
-# a host predates the keep/wipe question, and what that bootstrap checks before
-# it installs anything is that this line arrived. A flat script cut in the
+# a host predates the keep/wipe question or a newer release is on offer, and
+# what that bootstrap checks first is that this line arrived. A flat script cut in the
 # middle runs its top half, and the top half of this one removes things.
 # --- end of uninstall.sh ---

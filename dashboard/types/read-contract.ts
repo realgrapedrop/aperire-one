@@ -458,19 +458,18 @@ export interface NodeStatusResponse extends ReadEnvelope {
   pubkey_validator: string | null;       // raw string, may be "none" — see is_validator
   pubkey_node: string | null;
   /**
-   * This node's OS hostname (`os.hostname()`), so a fleet aggregator's
-   * Overview can name the host of the node it is displaying instead of its
-   * own serving host — the page's `location.hostname` is a fact about the
-   * BROWSER's origin, which under a peer view belongs to a different
-   * machine entirely.
+   * The machine this node runs on, so a fleet aggregator's Overview can
+   * name the host of the node it is displaying instead of its own serving
+   * host. The page's `location.hostname` is a fact about the BROWSER's
+   * origin, which under a peer view belongs to a different machine entirely.
    *
-   * Deliberately the OS hostname and not a configured public URL: a public
-   * URL can be shared across a fleet (or absent), while `system`'s
-   * `host.meta.hostname` already ships this same `os.hostname()` expression
-   * on a route the Overview peer poll already fetches. One expression means
-   * the two routes cannot disagree about what host this is; sourcing one of
-   * them from `APERIRE_PUBLIC_URL` or `APERIRE_HOSTNAME` would give one
-   * page two answers to the same question.
+   * `APERIRE_HOSTNAME` when set, then the host the node's relay reports, then
+   * the dashboard's `os.hostname()`: the order the alerts use (#1232). On a
+   * split install the relay's host is the validator's machine and the
+   * dashboard's is not (#1284). Never a configured public URL, which can be
+   * shared across a fleet (or absent). `system`'s `host.meta.hostname` ships
+   * the same expression on a route the Overview peer poll already fetches,
+   * so the two routes cannot disagree about what host this is.
    *
    * Pointer-typed in the Go mirror, and null rather than '' when the host
    * reports no name: absent is not empty (the Governance lesson — a `?? ''`
@@ -567,6 +566,61 @@ export interface NodeStatusResponse extends ReadEnvelope {
    * rest.
    */
   release?: ReleaseIdentityWire;
+  /**
+   * The relay's own build ref on that HOST, as the relay stamped it on its
+   * last push (`-X main.version=<commit>` at build time, relay/main.go; the
+   * `relay_version` member of relay-contract.ts's push frame), and run
+   * through the same commit-shaped check the System tab's own Relay row and
+   * the update table's drift note use (#593).
+   *
+   * Null is "not reported", and it is deliberately all of: no relay has ever
+   * pushed to that dashboard (a host with no split install), a relay no
+   * release has stamped (it reads the literal `dev`), and a value that is not
+   * shaped like a commit. An ABSENT key is a fourth cause, a node older than
+   * this field. A consumer prints "not reported" for every one of them and
+   * must never print a blank, and never reads null as "the same build as
+   * mine".
+   *
+   * It rides here and not on `system` for the reason `deploy_ref` and
+   * `release` ride here: this is the route every fleet poll already reads for
+   * every peer, so a roster that wants the relay build costs no extra read,
+   * and the System tab's peer view already fetches this route in the same
+   * tick as `system`. Carrying it on both would be two copies of one fact.
+   *
+   * No protocol_version bump, the rule `host_name`, `hostid`, `deploy_ref`
+   * and `release` above were added under: an additive member on an existing
+   * route, which an older client ignores and a newer client reads as absent.
+   * ADR 0010 reserves v2 for a response-SHAPE change to an existing member.
+   */
+  relay_version: string | null;
+  /**
+   * The directory that host's dashboard is installed in (#615), the same
+   * value its own Settings page prints as "Install directory". Lets an
+   * aggregator show what another box says about where it is installed.
+   *
+   * INFORMATION ONLY. A path a node reports is never put into a command that
+   * runs as root: the node chooses it, and root would be acting on that
+   * choice. A consumer prints it beside a command, as what the node said,
+   * and keeps the installer's default inside the command.
+   *
+   * Absolute, or null. Null means the node did not say (an older build, or
+   * a path this contract refuses to carry), and a consumer says nothing about
+   * it, never a guess. Node-authored, so a consumer validates it again off
+   * the wire (lib/peer-install-facts.ts) before it prints any of it.
+   *
+   * No protocol_version bump, same rule as `relay_version` above.
+   */
+  install_dir: string | null;
+  /**
+   * The account that host's dashboard process runs as (#615). A fact about
+   * the process, and NOT a claim about who installed Aperire or which group
+   * the Advisor shares with it: it is what lets a command name the account
+   * to look at when the shared group is wrong. Null when the node did not
+   * say. Validated again off the wire, like `install_dir`.
+   *
+   * No protocol_version bump, same rule as `relay_version` above.
+   */
+  run_as: string | null;
 }
 
 /** One row of the `peers` route. Carries the fields the ring, legend, and

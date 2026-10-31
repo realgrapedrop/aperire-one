@@ -50,6 +50,16 @@
 # Absent, it is created root:root 0755 first, because ReadWritePaths= on a
 # path that does not exist takes the unit down with 226/NAMESPACE.
 #
+# ---- the fleet corpus (#746) ----------------------------------------
+#
+# <tree>/advisor/knowledge-fleet, the tree read off the unit's ExecStart=,
+# is named too, so a knowledge push from an aggregator can land. It is the
+# Advisor's own directory, not root's, so it is held to a different bar: it
+# is named when lstat says it is a real directory, and never created here.
+# The update's node wrapper step makes it first, owned by the unit's User=
+# (trusted-path-lib.sh, _tp_ensure_corpus). A link or anything else at the
+# name is not named, and a unit that already names one is said, not edited.
+#
 # ---- how the unit is written ----------------------------------------
 #
 # In root's own shell, never through a file an unprivileged account made:
@@ -185,6 +195,28 @@ file_rw() {
   ' "$UNIT"
 }
 
+# The same entries as the unit sees them: the body, then each drop-in in name
+# order, an empty ReadWritePaths= clearing what came before it, as systemd
+# reads them. Used only to warn about a corpus a drop-in names (#1345): the
+# body is what file_rw answers for, because that is all this program edits.
+unit_rw_with_dropins() {
+  local f
+  local -a files=("$UNIT")
+  if [[ -d "${UNIT}.d" ]]; then
+    while IFS= read -r f; do files+=("$f"); done \
+      < <(find "${UNIT}.d" -maxdepth 1 -type f -name '*.conf' 2>/dev/null | sort)
+  fi
+  awk '
+    FNR == 1 { in_svc = 0 }
+    /^\[/ { in_svc = ($0 == "[Service]"); next }
+    in_svc && /^ReadWritePaths=/ {
+      v = $0; sub(/^ReadWritePaths=/, "", v)
+      if (v ~ /^[[:space:]]*$/) acc = ""; else acc = acc v " "
+    }
+    END { printf "%s", acc }
+  ' "${files[@]}"
+}
+
 # Refuse a directory that is not safe to name, per the header. Creates it
 # when absent. Reads the answer off lstat, so a symlink is never followed.
 # Every directory above the grant, up to /, has to be one nobody but root (or
@@ -306,6 +338,21 @@ add_to_unit() { # $1 = path
   return 0
 }
 
+# The fleet corpus, only when it is a real directory now (#746, #1310).
+CORPUS_GRANTS=()
+CORPUS="$(advisord_unit_corpus "$UNIT")"
+if [[ -n "$CORPUS" ]]; then
+  if [[ -d "$CORPUS" && ! -L "$CORPUS" ]]; then
+    CORPUS_GRANTS=("$CORPUS")
+  else
+    warn "$CORPUS is not a directory, so the unit is not given it; a knowledge push cannot land until it is"
+    if advisord_rw_names "$(unit_rw_with_dropins)" "$CORPUS"; then
+      warn "$UNIT (or a drop-in of it) already names it in ReadWritePaths=, which this program does not take out; the next restart may fail (226/NAMESPACE)"
+    fi
+  fi
+fi
+ALL_GRANTS+=("${CORPUS_GRANTS[@]}")
+
 if [[ "$MODE" == check ]]; then
   missing=0
   eff="$(effective_rw)"
@@ -324,8 +371,9 @@ rc=0
 changed=0
 for g in "${ALL_GRANTS[@]}"; do
   # The fixed grants are root's own directories and held to that. The
-  # node's are the node's or the operator's, named exactly as a fresh
-  # install names them: they exist, and that is the whole test.
+  # node's are the node's or the operator's, and the corpus is the
+  # Advisor's, named exactly as a fresh install names them: they exist, and
+  # that is the whole test.
   case " ${ADVISORD_RW_GRANTS[*]} " in
     *" $g "*) if ! ensure_grant_dir "$g"; then rc=3; continue; fi ;;
   esac

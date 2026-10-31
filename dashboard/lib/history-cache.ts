@@ -47,6 +47,10 @@ export interface HistoryCacheDeps<T> {
   sliceSpanS?: number;
   /** Lets the event loop run between slices. Defaults to setImmediate. */
   yieldToLoop?: () => Promise<void>;
+  /** A value that names which generation of a metric's series is current
+   *  (#1251). Part of the cache key, so an answer cached before the series
+   *  started over is never served after it. Absent means one generation. */
+  epoch?: (metric: string) => number | string;
 }
 
 export interface HistoryCache<T> {
@@ -109,7 +113,7 @@ export function createHistoryCache<T>(deps: HistoryCacheDeps<T>): HistoryCache<T
       // Keyed on the RANGE NAME as well as its ms width. They are 1:1 today,
       // and keying on both means a future range that shares a width with an
       // existing one cannot silently serve the other's answer.
-      const key = `${metric}|${range}|${agg}`;
+      const key = deps.epoch ? `${metric}|${range}|${agg}|${deps.epoch(metric)}` : `${metric}|${range}|${agg}`;
       const ttlMs = deps.bucketForRange(rangeMs) * 500;
       const hit = entries.get(key);
       if (hit && now() - hit.at < ttlMs) return hit.points;

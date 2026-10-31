@@ -194,6 +194,8 @@ APPLIES[fleet-arm-held-key]=0
 [[ -f "$ETC_APERIRE/fleet-arm.paired.pub" ]] && APPLIES[fleet-arm-held-key]=1
 APPLIES[fleet-tokens]=$HAS_FLEET_TOKENS
 APPLIES[fleet-arm-private-key]=$HAS_FLEET_ARM_PRIV
+APPLIES[fleet-trust-pin]=0
+[[ -e "$ETC_APERIRE/fleet-trust.pub" || -L "$ETC_APERIRE/fleet-trust.pub" ]] && APPLIES[fleet-trust-pin]=1
 
 say "plan"
 for k in $(bkset_keys); do
@@ -613,6 +615,30 @@ if [[ "${APPLIES[fleet-arm-private-key]}" -eq 1 ]]; then
 else
   info "skip  fleet-arm-private-key  not an aggregator, or no node paired yet"
   SKIPPED+=("fleet-arm-private-key")
+fi
+
+# ── root's pin of the fleet trust key (#1008) ─────────────────────────
+# Root's own record of the key every paired node trusts. A restore pins from
+# this copy, never from the set's fleet-trust.yaml, which is the dashboard
+# account's file. Carried only when it is a plain, single-linked file root
+# owns that nobody else can write, the shape the programs reading it accept.
+if [[ "${APPLIES[fleet-trust-pin]}" -eq 1 ]]; then
+  _pin="$ETC_APERIRE/fleet-trust.pub"
+  if [[ -f "$_pin" && ! -L "$_pin" && "$(stat -c '%h %u' "$_pin" 2>/dev/null)" == "1 $(id -u)" ]] \
+     && (( (8#$(stat -c '%a' "$_pin") & 8#022) == 0 )); then
+    cp -p "$_pin" "$STAGE/fleet-trust.pub"
+    record_owner "$_pin"
+    info "ok    fleet-trust-pin  -> $DEST/fleet-trust.pub"
+    TAKEN+=("fleet-trust-pin")
+  else
+    warn "fail  fleet-trust-pin  $_pin is not a plain, single-linked file
+            only root can write; refusing to carry it. Look at it by hand
+            before backing this host up again."
+    FAILED+=("fleet-trust-pin")
+  fi
+else
+  info "skip  fleet-trust-pin  not an aggregator, or its update has not pinned the key yet"
+  SKIPPED+=("fleet-trust-pin")
 fi
 
 # ── the two exclusions, in the operator's own words ───────────────────

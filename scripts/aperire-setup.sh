@@ -30,6 +30,10 @@ S="$REPO/scripts"
 # guided run captured to a file is byte-plain.
 # shellcheck source=scripts/term-style.sh
 . "$S/term-style.sh"
+# The one reader of authn.yaml's values, shared with install.sh and the pair
+# command, so a public_url written as a list is read the same way (#1358).
+# shellcheck source=scripts/authn-value.sh
+. "$S/authn-value.sh"
 
 # ── Voice ───────────────────────────────────────────────────────────
 bold()  { printf '%s%s%s\n' "$S_BOLD" "$1" "$S_OFF"; }
@@ -127,6 +131,49 @@ resolve_dash_unit() {
   found="$(systemctl list-unit-files 'aperire-server*.service' 2>/dev/null \
            | awk '/\.service/{print $1; exit}')"
   [[ -n "${found:-}" ]] && DASH_UNIT="$found"
+  resolve_dash_port
+}
+
+# The port the dashboard listens on, which is not the port in public_url
+# (#1277). public_url is the address a browser uses: behind a proxy it is 443
+# with no port written, or the proxy's own 8443, and nothing answers /healthz
+# there on loopback. Every step here that asks the dashboard something asks
+# this port.
+#
+# Read the way install.sh's fleet_dash_port reads it, in the same order: the
+# unit's own Environment=PORT, then the environment file the unit names, then
+# this instance's file in /etc/aperire, then 7800. A value that is not digits
+# is not a reading, so nothing but a number lands in a URL.
+# Run again with the unit name, because the unit only exists once the install
+# step has made it (resolve_dash_unit is called after it for the same reason).
+DASH_PORT=7800
+DASH_PORT_UNREAD=""   # an env file that may name the port and this account could not open
+resolve_dash_port() {
+  local dir="${APERIRE_UNIT_DIR:-/etc/systemd/system}" etc="${APERIRE_ETC:-/etc/aperire}"
+  local suffix="${DASH_UNIT#aperire-server}" unit_file="" env_file="" f p
+  suffix="${suffix%.service}"   # "" for the default instance, "-NAME" for a named one
+  DASH_PORT=7800 DASH_PORT_UNREAD=""
+  for f in "$DASH_UNIT" "aperire-read${suffix}.service"; do
+    if [[ -f "$dir/$f" ]]; then unit_file="$dir/$f"; break; fi
+  done
+  if [[ -n "$unit_file" ]]; then
+    p="$(awk -F= '/^Environment=PORT=/{print $3; exit}' "$unit_file" 2>/dev/null | tr -d "\"' " || true)"
+    if [[ "$p" =~ ^[0-9]+$ ]]; then DASH_PORT="$p"; return 0; fi
+    env_file="$(awk -F= '/^EnvironmentFile=/{sub(/^-/,"",$2); print $2; exit}' "$unit_file" 2>/dev/null || true)"
+  fi
+  for f in "$env_file" "$etc/aperire${suffix}.env"; do
+    [[ -n "$f" && -e "$f" ]] || continue
+    # A --port install records the port here, and the file is 0640 root:<the
+    # dashboard's group>, so an operator who is not in that group cannot open
+    # it. An unreadable file is not an empty one, and this step never asks root
+    # to open it: the file also holds the ingest tokens. So the port stays a
+    # guess, the failure path says so, and prints the command that reads it.
+    # Only the PORT line is read, never the whole file.
+    if [[ ! -r "$f" ]]; then DASH_PORT_UNREAD="$f"; continue; fi
+    p="$(grep -m1 '^PORT=' -- "$f" 2>/dev/null | sed 's/^PORT=//' | tr -d "\"' " || true)"
+    if [[ "$p" =~ ^[0-9]+$ ]]; then DASH_PORT="$p"; DASH_PORT_UNREAD=""; return 0; fi
+  done
+  return 0
 }
 
 # The count, or "unknown" — never a confident zero from a database that is
@@ -151,21 +198,18 @@ operator_count() {
 }
 
 authn_value() {   # authn_value <key> -> the value, or empty
-  [[ -f "$AUTHN" ]] || return 0
-  sed -n "s/^${1}:[[:space:]]*//p" "$AUTHN" | head -1 | tr -d '"'
+  authn_file_value "$AUTHN" "$1"
 }
 
 # The starter config points at localhost. That is right for a laptop and
 # wrong for every other host, and it is not a detail: the enrollment link is
 # built from public_url, and WebAuthn binds the passkey to rp_id. Enroll
 # against the wrong one and the passkey has to be thrown away.
-authn_is_localhost() {
-  local u; u="$(authn_value public_url)"
-  [[ -z "$u" || "$u" == *localhost* || "$u" == *127.0.0.1* ]]
-}
+authn_is_localhost() { authn_public_url_is_local "$AUTHN"; }
 
-DASH_PORT="$(authn_value public_url | sed -n 's#.*:\([0-9]\{2,5\}\).*#\1#p')"
-[[ -n "${DASH_PORT:-}" ]] || DASH_PORT=7800
+# The port the dashboard listens on, as far as this host says before the
+# install step has run; resolve_dash_unit reads it again after.
+resolve_dash_unit
 
 # ── State ───────────────────────────────────────────────────────────
 ROLE=""
@@ -328,7 +372,7 @@ step2_operator() {
   echo
   bold "  First: where do operators reach this dashboard?"
   local pub rp
-  pub="$(authn_value public_url)"; rp="$(authn_value rp_id)"
+  pub="$(authn_public_url "$AUTHN")"; rp="$(authn_value rp_id)"
   note "config: $AUTHN"
   note "public_url: ${pub:-<unset>}      rp_id: ${rp:-<unset>}"
   why "The enrollment link is built from public_url, and the passkey is bound"
@@ -345,7 +389,7 @@ step2_operator() {
       echo
       if confirm "Open it in an editor now?" Y; then
         as_operator "${EDITOR:-nano}" "$AUTHN"
-        pub="$(authn_value public_url)"; rp="$(authn_value rp_id)"
+        pub="$(authn_public_url "$AUTHN")"; rp="$(authn_value rp_id)"
         note "public_url: ${pub:-<unset>}      rp_id: ${rp:-<unset>}"
       fi
       if authn_is_localhost; then
@@ -546,6 +590,62 @@ relay_conf_state() {
 # ════════════════════════════════════════════════════════════════════
 # STEP 4 — verify
 # ════════════════════════════════════════════════════════════════════
+# Ask the dashboard's /healthz and say which answer it gave (#1204). Not
+# `curl -f`: the handler answers 503, with a JSON body, until the node it reads
+# has closed a ledger in the last 30 seconds, and -f swapped that body for
+# curl's own "error: 503" on every node still syncing. -w adds the status on
+# a line of its own under the body, so the command shown is the one that ran,
+# and what is said is read off the answer: the dashboard's own 503 carries
+# "ok":false and a role, and anything else on the port does not.
+show_healthz() {
+  local url="http://127.0.0.1:${DASH_PORT}/healthz" fmt='\nHTTP %{http_code}\n' out code body age next
+  printf '\n%s$ curl -sS -w %s %s%s\n\n' "$S_CYAN" "'$fmt'" "$url" "$S_OFF"
+  out="$(curl -sS -w "$fmt" "$url" 2>&1)"
+  printf '%s\n\n' "$out"
+  code="$(sed -n 's/^HTTP \([1-9][0-9][0-9]\)$/\1/p' <<<"$out" | tail -1)"
+  body="$(sed '/^HTTP [0-9][0-9][0-9]$/d' <<<"$out")"
+  if [[ "$code" == 200 ]]; then
+    # A dashboard-role host answers 200 with no node at all, so "current" is
+    # said only of a node's answer.
+    if grep -Eq '"role"[[:space:]]*:[[:space:]]*"node"' <<<"$body"; then
+      ok "the dashboard answered, and the node it reads is current"
+    else
+      ok "the dashboard answered"
+    fi
+    next="$(sed -nE 's/.*"next_step"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/p' <<<"$body")"
+    [[ -n "$next" ]] && note "$next"
+    return 0
+  fi
+  if [[ "$code" == 503 ]] && grep -Eq '"ok"[[:space:]]*:[[:space:]]*false' <<<"$body" \
+     && grep -q '"role"' <<<"$body"; then
+    note "503 is the dashboard's own answer: it is up, and the node it reads is not ready."
+    if grep -Eq '"rippled_connected"[[:space:]]*:[[:space:]]*true' <<<"$body"; then
+      age="$(sed -nE 's/.*"ledger_age_ms"[[:space:]]*:[[:space:]]*([0-9]+).*/\1/p' <<<"$body")"
+      if [[ -n "$age" ]]; then
+        note "It is connected to the node, and the last ledger it saw closed $(( age / 1000 ))s ago: the node is syncing."
+      else
+        note "It is connected to the node, and no ledger has closed there yet: the node is syncing."
+      fi
+    else
+      note "It is not connected to the node yet."
+    fi
+    note "That is expected right after an install: a new node syncs for hours, not"
+    note "minutes. /healthz answers 200 with \"ok\":true once it is current. Ask again any time."
+    return 0
+  fi
+  if [[ -n "$code" ]]; then
+    bad "something answered on $url with HTTP $code, and it was not the dashboard's own answer"
+  else
+    bad "the dashboard did not answer on $url"
+  fi
+  if [[ -n "${DASH_PORT_UNREAD:-}" ]]; then
+    note "This account cannot read $DASH_PORT_UNREAD, where the dashboard's port is recorded, so 7800 was a guess."
+    note "Read it with: sudo grep '^PORT=' $DASH_PORT_UNREAD"
+  fi
+  note "read: systemctl status $DASH_UNIT --no-pager"
+  return 1
+}
+
 step4_verify() {
   step 4 "prove it works"
   why "Reads only, changes nothing, and needs no root."
@@ -557,12 +657,14 @@ step4_verify() {
       # loses, and a command an operator cannot copy teaches nothing.
       resolve_dash_unit
       run systemctl is-active "$DASH_UNIT"
-      run curl -fsS "http://127.0.0.1:${DASH_PORT}/healthz"
-      echo
-      why "In that JSON: 'ok' is the whole host's verdict, 'rippled_connected'"
-      why "says whether the node answered, and a small 'relay_last_push_ms'"
-      why "means the relay is feeding. A node that has no ledgers yet reports"
-      why "ok:false honestly — that is the node syncing, not a broken install."
+      # The keys are explained only where there was JSON to read them in.
+      if show_healthz; then
+        echo
+        why "In that JSON: 'ok' is the whole host's verdict, 'rippled_connected'"
+        why "says whether the node answered, and a small 'relay_last_push_ms'"
+        why "means the relay is feeding. A node that has no ledgers yet reports"
+        why "ok:false honestly — that is the node syncing, not a broken install."
+      fi
       ;;
     validator)
       run "${ROOTCMD[@]}" systemctl status --no-pager aperire-relay
@@ -659,7 +761,7 @@ main() {
   step3_role
   step4_verify
 
-  pub_final="$(authn_value public_url)"
+  pub_final="$(authn_public_url "$AUTHN")"
   show_link
   closing
 }

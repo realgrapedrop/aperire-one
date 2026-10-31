@@ -97,6 +97,17 @@
 
 set -euo pipefail
 
+# The instance names units and paths, so it is held to the rule
+# advisor-owner-lib.sh holds it to, and anything else is refused (#1206).
+instance_name_ok() { # $1 = a name; [a-z] is held to ASCII, whatever the locale
+  local LC_ALL=C
+  [[ "$1" =~ ^[a-z0-9][a-z0-9-]{0,30}$ && "$1" != credcheck && "$1" != credcheck-* ]]
+}
+if [[ -n "${APERIRE_INSTANCE:-}" ]] && ! instance_name_ok "$APERIRE_INSTANCE"; then
+  printf 'refused: APERIRE_INSTANCE=%q is not an instance name (a-z, 0-9 and -, at most 31, not credcheck)\n' "$APERIRE_INSTANCE" >&2
+  exit 2
+fi
+
 STACK_SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="${APERIRE_INSTALL_TREE:-$(cd "$STACK_SELF/.." && pwd)}"
 [[ -r "$STACK_SELF/term-style.sh" ]] \
@@ -504,6 +515,10 @@ main() {
     esac
   done
 
+  # --instance as well as APERIRE_INSTANCE: the name becomes the Advisor's unit,
+  # and credcheck would be the recovery unit's own (#1206 review).
+  [[ -z "$INSTANCE" ]] || instance_name_ok "$INSTANCE" \
+    || { printf 'refused: --instance %q is not an instance name (a-z, 0-9 and -, at most 31, not credcheck)\n' "$INSTANCE" >&2; exit 2; }
   [[ "$PORT" =~ ^[0-9]+$ && $PORT -ge 1 && $PORT -le 65535 ]] \
     || die "--port takes a number from 1 to 65535, not '$PORT'."
   [[ "$HEALTH_TRIES" =~ ^[0-9]+$ && $HEALTH_TRIES -ge 1 ]] \

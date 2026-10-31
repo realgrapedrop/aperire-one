@@ -1120,6 +1120,27 @@ if [[ $rc -eq 0 ]] && grep -q 'could not be staged' <<<"$out" && grep -q 'no roo
 then ok "a refused stage inside the wrapper repair is named, and the run still ends cleanly"
 else bad "a refused stage is not fatal here" "exit $rc: $(tail -6 <<<"$out")"; fi
 
+# #1355: the same repair on a host with no python3. The stage says so once, and
+# the line after it says no file was judged, not that one changed. _tp_python's
+# two fixed paths are pointed at nothing in root's copy of the library: that is
+# the one way to make a host with no python3 here.
+healthy
+printf 'aperire-advisord.service enabled\n' > "$TMP/state/units"
+: > "$TMP/state/has-model"
+rm -f "$TMP/wrapper/node-wrapper.conf"
+mv "$TMP/op/aperire-one/scripts/state-file.py" "$TMP/state-file.away"
+cp -p "$TMP/rootlib/trusted-path-lib.sh" "$TMP/rootlib/trusted-path-lib.keep"
+sed -i 's#^  for p in /usr/bin/python3 /bin/python3; do$#  for p in /nonexistent/python3; do#' "$TMP/rootlib/trusted-path-lib.sh"
+out="$(run_sut --yes)"; rc=$?
+mv "$TMP/rootlib/trusted-path-lib.keep" "$TMP/rootlib/trusted-path-lib.sh"
+mv "$TMP/state-file.away" "$TMP/op/aperire-one/scripts/state-file.py"
+if [[ $rc -eq 0 ]] && grep -q 'could not be staged' <<<"$out" \
+   && grep -q 'refused: this host has no python3 at /usr/bin or /bin' <<<"$out" \
+   && grep -q 'root would not run the installers in .*: this host has no python3' <<<"$out" \
+   && ! grep -q 'is not the file this release shipped\|a service account can change it' <<<"$out"
+then ok "no python3: the stage is refused once, in those words, and no file is blamed (#1355)"
+else bad "a missing python3 is named, not a changed file" "exit $rc: $(tail -8 <<<"$out")"; fi
+
 # L4, the branch with no replant: a model, no state-file.py, no wrapper
 # configuration. It still exits 0 and still repairs.
 healthy

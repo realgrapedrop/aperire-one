@@ -11,6 +11,9 @@
  * server_info) and hands them here, so every branch is testable without a
  * server or a fleet.
  *
+ * The host is the node's, not necessarily the dashboard's: on a split install
+ * it is the machine the node's relay reports (#1232).
+ *
  * There is no host address in the block. The dashboard's unit does not allow
  * the netlink socket Node reads the interface list through, so under it the
  * address could never be read, and the hostname already says which machine.
@@ -48,7 +51,17 @@ export interface NodeSources {
   /** This host's row in the fleet registry, absent on a single-node install.
    *  An aggregator's own name lives here, and wins over any pairing. */
   fleetLabel?: string | null;
+  /** This process's own `os.hostname()`. The last resort for the Host line:
+   *  see `resolveNodeHostname` for what outranks it. */
   hostname: string;
+  /** `APERIRE_HOSTNAME`. The operator's own word for the host, above every
+   *  other source. */
+  hostnameOverride?: string | null;
+  /** The hostname the node's relay reported in its last `system` frame, null
+   *  when no relay has pushed or an older one named none. On a split install
+   *  (Shape B) this is the validator's machine and `hostname` is the
+   *  dashboard's. #1232. */
+  relayHostname?: string | null;
   /** This dashboard has no local node (a fleet aggregator). */
   aggregator: boolean;
   /** The last `server_info` this dashboard read from its node. Absent until
@@ -93,6 +106,49 @@ export function safeRead<T>(read: () => T, fallback: T): T {
   try { return read(); } catch { return fallback; }
 }
 
+/**
+ * Which machine the node runs on, as a name. The operator's override first,
+ * then the host the node's relay reports, then this process's own.
+ *
+ * The relay outranks the process because the relay sits on the node's host by
+ * construction and the dashboard may not. On a co-located install the two
+ * name the same machine, so nothing changes. On a split install the
+ * dashboard's own name is a different machine, and an alert about the
+ * validator's CPU must not name it (#1232). The relay's word is a plain
+ * hostname or it is ignored: it reaches an email subject, a push title and
+ * a webhook body, so a frame carrying anything else must cost its own
+ * source, never put odd characters in an alert.
+ */
+export function resolveNodeHostname(s: Pick<NodeSources, 'hostname' | 'hostnameOverride' | 'relayHostname'>): string {
+  const override = String(s.hostnameOverride ?? '').trim();
+  if (override) return override;
+  const relay = String(s.relayHostname ?? '').trim();
+  if (RELAY_HOSTNAME.test(relay)) return relay;
+  return s.hostname;
+}
+
+const RELAY_HOSTNAME = /^[A-Za-z0-9]([A-Za-z0-9._-]{0,251}[A-Za-z0-9])?$/;
+
+/**
+ * The label a node goes by, before any hostname fallback. One order for
+ * every surface that names this node: the alerts (`buildNodeIdentity`), the
+ * node's own pages and the roster it hands the Advisor (`selfDisplayLabel`
+ * in server.ts). An aggregator names itself in its own fleet.yaml. A node is
+ * named by its pairing, which can be newer than its fleet.yaml entry (#1240).
+ * '' when neither source has a word to say.
+ */
+export function resolveNodeLabel(s: Pick<NodeSources, 'pairedLabel' | 'fleetLabel' | 'aggregator'>): string {
+  const paired = String(s.pairedLabel ?? '').trim();
+  const fleet = String(s.fleetLabel ?? '').trim();
+  return s.aggregator ? fleet || paired : paired || fleet;
+}
+
+/** The node's name: its label, else the short form of its host. '' when the
+ *  host will not say its own name either. */
+export function resolveNodeName(s: Pick<NodeSources, 'pairedLabel' | 'fleetLabel' | 'aggregator'> & { host: string }): string {
+  return deriveSelfLabel(resolveNodeLabel(s), s.host);
+}
+
 export function buildNodeIdentity(s: NodeSources): NodeIdentity {
   let url: string | null = null;
   for (const c of [s.envPublicUrl, s.authnPublicUrl, s.fleetDashboardUrl]) {
@@ -101,18 +157,14 @@ export function buildNodeIdentity(s: NodeSources): NodeIdentity {
     // reach the ntfy `click` header as ASCII, or the whole push is refused.
     if (ok) { url = new URL(ok).href; break; }
   }
-  // An aggregator names itself in its own fleet.yaml. A node is named by its
-  // pairing, which can be newer than its fleet.yaml entry.
-  const paired = String(s.pairedLabel ?? '').trim();
-  const fleet = String(s.fleetLabel ?? '').trim();
-  const label = s.aggregator ? fleet || paired : paired || fleet;
+  const hostname = resolveNodeHostname(s);
   const info = s.serverInfo;
   const validatorKey = info?.pubkey_validator;
   const nodeKey = info?.pubkey_node;
   return {
-    name: deriveSelfLabel(label, s.hostname) || s.hostname || 'unnamed node',
+    name: resolveNodeName({ ...s, host: hostname }) || hostname || 'unnamed node',
     role: deriveRole(s.aggregator, info === undefined || validatorKey === undefined ? null : s.isValidatorKey(validatorKey)),
-    hostname: s.hostname,
+    hostname,
     node_key: typeof nodeKey === 'string' && nodeKey ? nodeKey : null,
     url,
   };

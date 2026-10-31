@@ -10,11 +10,14 @@
 # in atomically.
 #
 #   aperire-knowledge-push [--node <label>] [--dry-run] [--replace-fleet-corpus]
+#                          [--withdraw-all]
 #
 #   --node <label>          push to one node instead of every registered one
 #   --dry-run               lint, build and archive the bundle; push nothing
 #   --replace-fleet-corpus  push even though it would delete notes this host has
 #                           no record of (see below)
+#   --withdraw-all          push an EMPTY corpus, which removes every fleet note
+#                           from every node that applies it (see below)
 #
 # The sequence number is reserved BEFORE the push, not after. A number that
 # reached one node and was then reused for different content would be refused
@@ -36,6 +39,19 @@
 # --replace-fleet-corpus is the operator saying the replacement is meant. A node
 # whose status cannot be read is not pushed to; the rest are.
 #
+# An empty corpus is pushed only with --withdraw-all (#1219). It is how a fleet
+# takes back the last note it promoted, and it is also exactly what a host that
+# lost its corpus looks like, so the two are told apart by the operator saying
+# so and by nothing else: without the flag an empty corpus is refused before a
+# sequence is spent, and with it a corpus that still has files is refused too,
+# so the flag is never a general override. --withdraw-all confirms the drops
+# this host's delivery record accounts for, and only those: a node it has no
+# record of delivering to, or a record it cannot read (a restore leaves both,
+# with an empty corpus), still refuses, exit 5, unless --replace-fleet-corpus
+# is given too. That one alone does not push an empty corpus. A node on a
+# release from before this one refuses an empty bundle and keeps its notes
+# until its Advisor is updated.
+#
 # It is a separate command from aperire-auth on purpose. That one is about who
 # may approve — accounts, passkeys, roles — and this one changes nothing about
 # authority at all. Knowledge shapes advice and grants nothing: no bundle can
@@ -55,14 +71,22 @@ BUNDLE_DIR="${APERIRE_KNOWLEDGE_BUNDLES:-${ADVISOR_DIR}/knowledge-bundles}"
 ONLY=""
 DRY=0
 REPLACE=0
+WITHDRAW=0
 # Kept whole, for the line that tells an operator how to run this same push
 # as another account.
 ORIG_ARGS=("$@")
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --node) ONLY="${2:-}"; shift 2 || true ;;
+    # A missing label is refused, and so is an empty one (#1225). `shift 2`
+    # with one argument left consumed nothing, so the loop read --node again
+    # forever; and an empty label reads as no filter at all, so a variable that
+    # expanded to nothing turned a push to one node into a push to every node.
+    --node)
+      [[ $# -ge 2 && -n "$2" ]] || { echo "error: --node needs a node label" >&2; exit 2; }
+      ONLY="$2"; shift 2 ;;
     --dry-run) DRY=1; shift ;;
     --replace-fleet-corpus) REPLACE=1; shift ;;
+    --withdraw-all) WITHDRAW=1; shift ;;
     -h|--help) awk 'NR>=2 { if ($0 !~ /^#/) exit; sub(/^# ?/, ""); print }' "$0"; exit 0 ;;
     *) echo "error: unknown argument: $1" >&2; exit 2 ;;
   esac
@@ -193,6 +217,50 @@ fi
 echo "Linting $KNOW_DIR:"
 "$LINT" -fleet "$KNOW_DIR"
 
+# ── An empty corpus is said out loud (#1219) ───────────────────────────────
+# Counted by the same walk that builds the bundle, so what counts as a file is
+# decided in one place, and counted before the reservation below, so a refusal
+# here spends no sequence.
+# The second line says whether this host's delivery record names every node
+# the push would reach. Without it this host cannot tell a withdrawal from a
+# restore (which leaves the corpus and the record both empty), so the copy-back
+# leads and --withdraw-all is not offered.
+COUNTED="$(KNOW_DIR="$KNOW_DIR" COUNT_ONLY=1 RECORD_DIR="$BUNDLE_DIR" FLEET_FILE="$FLEET_FILE" ONLY="$ONLY" \
+  python3 -I "${DASHBOARD_DIR}/lib/knowledge-bundle-job.py")" || exit 3
+NFILES="$(sed -n 1p <<<"$COUNTED")"
+ON_RECORD="$(sed -n 2p <<<"$COUNTED")"
+[[ "$NFILES" =~ ^[0-9]+$ ]] || { echo "error: the corpus could not be counted" >&2; exit 3; }
+if [[ "$NFILES" -eq 0 && $WITHDRAW -eq 0 ]]; then
+  {
+    echo "Not pushing: there is no markdown under $KNOW_DIR/base or $KNOW_DIR/local. Nothing was built"
+    echo "and no sequence was spent. Every node keeps the notes it holds, the ones removed here included, until"
+    echo "a push reaches it."
+    echo "A push replaces each node's whole corpus, so pushing this would remove every fleet note from every node."
+    if [[ "$ON_RECORD" == recorded ]]; then
+      echo "If you removed the last promoted note on purpose, withdraw them all with:"
+      printf '  aperire-knowledge-push'
+      [[ ${#ORIG_ARGS[@]} -eq 0 ]] || printf ' %q' "${ORIG_ARGS[@]}"
+      printf ' --withdraw-all\n'
+      echo "If this host lost its corpus (a restore, a move, a wipe), copy it back from a node that has it first."
+    else
+      echo "This host has no record of delivering to every node, which is what a restore, a move or a wipe leaves."
+      echo "If it lost its corpus, copy it back from a node that has it first. Promote writes there as the dashboard's"
+      echo "account, so run the copy as that account:"
+      echo "  sudo -u <dashboard account> rsync -rt <node>:<install dir>/advisor/knowledge-fleet/ <this install dir>/advisor/knowledge-fleet/"
+      echo "Then push again. Withdrawing every note from nodes this host has no record of needs both confirmations:"
+      printf '  aperire-knowledge-push'
+      [[ ${#ORIG_ARGS[@]} -eq 0 ]] || printf ' %q' "${ORIG_ARGS[@]}"
+      printf ' --withdraw-all --replace-fleet-corpus\n'
+    fi
+  } >&2
+  exit 3
+fi
+if [[ "$NFILES" -gt 0 && $WITHDRAW -eq 1 ]]; then
+  echo "error: --withdraw-all pushes an empty corpus, and $KNOW_DIR holds $NFILES file(s). Nothing was built." >&2
+  echo "       Remove them first, or push without --withdraw-all." >&2
+  exit 2
+fi
+
 # ── Reserve the sequence ───────────────────────────────────────────────────
 # In lib/knowledge-push.ts, not in awk here: the previous number is read out
 # of a JSON file, and a hand-rolled parse of one is a thing nobody can test
@@ -208,7 +276,7 @@ OUT_MANIFEST="${BUNDLE_DIR}/manifest-${SEQ}.json"
 # ── Build the archive and the manifest, in one pass ────────────────────────
 echo "Building bundle ${SEQ}..."
 JOB="$(KNOW_DIR="$KNOW_DIR" OUT_TAR="$OUT_TAR" SEQ="$SEQ" ISSUER="aggregator" \
-  PUSHED_BY="${SUDO_USER:-${USER:-unknown}}" ONLY="$ONLY" FLEET_FILE="$FLEET_FILE" \
+  PUSHED_BY="${SUDO_USER:-${USER:-unknown}}" ONLY="$ONLY" FLEET_FILE="$FLEET_FILE" WITHDRAW_ALL="$WITHDRAW" \
   python3 -I "${DASHBOARD_DIR}/lib/knowledge-bundle-job.py")" || exit 3
 
 # The manifest is archived beside the archive it describes: together they are
@@ -236,13 +304,14 @@ echo "Pushing to fleet nodes (issuer 'aggregator', sequence ${SEQ}):"
 # account for as long as the process lives). The pusher signs with it and
 # forwards only the signature.
 rc=0
-printf '%s' "$PRIV" | JOB="$JOB" REPLACE="$REPLACE" "$NODE_BIN" -e '
+printf '%s' "$PRIV" | JOB="$JOB" REPLACE="$REPLACE" WITHDRAW="$WITHDRAW" "$NODE_BIN" -e '
   let k = ""; process.stdin.setEncoding("utf8");
   process.stdin.on("data", (c) => (k += c));
   process.stdin.on("end", () => {
     const j = JSON.parse(process.env.JOB);
     j.private_key = k.trim();
     j.replace_fleet_corpus = process.env.REPLACE === "1";
+    j.withdraw_all = process.env.WITHDRAW === "1";
     process.stdout.write(JSON.stringify(j));
   });
 ' | ( cd "$DASHBOARD_DIR" && "$NODE_BIN" --import tsx lib/knowledge-push.mjs ) || rc=$?

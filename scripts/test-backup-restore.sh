@@ -39,6 +39,7 @@ ok()  { printf '  ok    %s\n' "$1"; PASS=$((PASS + 1)); }
 bad() { printf '  FAIL  %s\n     %s\n' "$1" "${2:-}"; FAIL=$((FAIL + 1)); }
 has()  { if [[ "$2" == *"$3"* ]]; then ok "$1"; else bad "$1" "got: $2 | want substring: $3"; fi; }
 hasnt(){ if [[ "$2" != *"$3"* ]]; then ok "$1"; else bad "$1" "got: $2 | did not want substring: $3"; fi; }
+has_q() { [[ "$1" == *"$2"* ]]; }  # a quiet substring test, for compound rows
 is()   { if [[ "$2" == "$3" ]]; then ok "$1"; else bad "$1" "got: [$2] | want: [$3]"; fi; }
 
 CALLER_USER="$(id -un)"
@@ -2418,6 +2419,20 @@ if command -v fakeroot >/dev/null 2>&1; then
     cp "$REPO_DIR/scripts/$f" "$REPO/scripts/$f"
   done
   rm -rf "$TMP/sbin851" "$TMP/run851"; mkdir -p "$TMP/sbin851"
+  # As root the grant drops every APERIRE_* variable but the install tree
+  # (#1206), so the copy has the paths it used to take from the environment
+  # rewritten to this rig's, each asserted, or it would read this host's /etc.
+  # shellcheck disable=SC2016  # the program's own text, matched as text
+  sed -i -e 's#^DEST="\${APERIRE_FLEET_BROKER_PATH:-/usr/local/sbin/aperire-fleet-broker}"$#DEST='"$TMP/sbin851/aperire-fleet-broker"'#' \
+         -e 's#^SOCK="\${APERIRE_FLEET_BROKER_SOCKET:-/run/aperire/fleet-broker.sock}"$#SOCK='"$TMP/run851/fb.sock"'#' \
+         -e 's#^ETC="\${APERIRE_ETC:-/etc/aperire}"$#ETC='"$ETC/aperire"'#' \
+         -e 's#^UNIT_DIR="\${APERIRE_UNIT_DIR:-/etc/systemd/system}"$#UNIT_DIR='"$UNITS"'#' \
+         -e 's#^INSTALL_DIR="\${APERIRE_DIR:-\$REPO}"$#INSTALL_DIR='"$REPO"'#' \
+    "$REPO/scripts/install-fleet-broker-grant.sh"
+  for _pin in "DEST=$TMP/sbin851/aperire-fleet-broker" "SOCK=$TMP/run851/fb.sock" "ETC=$ETC/aperire" "UNIT_DIR=$UNITS" "INSTALL_DIR=$REPO"; do
+    grep -qxF -e "$_pin" "$REPO/scripts/install-fleet-broker-grant.sh" \
+      || { echo "the grant's copy was not pinned to this rig ($_pin); 68b would act on this host's paths"; exit 1; }
+  done
   # An installed dashboard (#964): its unit names the node it runs, and the
   # tree has tsx. The grant refuses before any write without both, so this
   # row never depends on whether the runner has node on its PATH.
@@ -2429,10 +2444,7 @@ if command -v fakeroot >/dev/null 2>&1; then
   # the grant's dirsafe refuses a root directory any wider.
   chmod 755 "$TMP/sbin851" "$ETC" "$ETC/aperire" "$TMP/etc/systemd" "$UNITS" "$REPO" "$REPO/dashboard" "$REPO/dashboard/config"
   grant_851() {
-    ( cd "$REPO" && env APERIRE_ETC="$ETC/aperire" APERIRE_UNIT_DIR="$UNITS" APERIRE_DIR="$REPO" \
-        APERIRE_FLEET_BROKER_PATH="$TMP/sbin851/aperire-fleet-broker" APERIRE_FLEET_BROKER_SOCKET="$TMP/run851/fb.sock" \
-        APERIRE_RELEASE_DIGESTS="$TMP/no-digests/release.sha256" \
-        timeout 120 fakeroot bash "$REPO/scripts/install-fleet-broker-grant.sh" 2>&1 )
+    ( cd "$REPO" && timeout 120 fakeroot bash "$REPO/scripts/install-fleet-broker-grant.sh" 2>&1 )
   }
   out="$(grant_851)"; rc=$?
   is "the grant refuses with exit 4" "$rc" "4"
@@ -2571,9 +2583,15 @@ mk_aggregator
 SEED72="$(openssl genpkey -algorithm ed25519 -outform DER 2>/dev/null | tail -c 32 | base64 -w0 | tr '+/' '-_' | tr -d '=')"
 printf 'private_key: %s\npeers:\n  aggregator: AAAA\n' "$SEED72" > "$REPO/dashboard/config/fleet-trust.yaml"
 chmod 640 "$REPO/dashboard/config/fleet-trust.yaml"
+WANT72="$(python3 -c 'import base64,sys; s=sys.argv[1]; sys.stdout.buffer.write(bytes.fromhex("302e020100300506032b657004220420")+base64.urlsafe_b64decode(s+"="*(-len(s)%4)))' "$SEED72" \
+  | openssl pkey -inform DER -pubout -outform DER 2>/dev/null | tail -c 32 | base64 -w0 | tr '+/' '-_' | tr -d '=')"
+# Root's pin of that key (#1008), which the set carries as its own row.
+PIN72="$ETC/aperire/fleet-trust.pub"
+printf '%s\n' "$WANT72" > "$PIN72"; chmod 644 "$PIN72"
 build_sut
 DEST="$TMP/set-868"
 run_backup >/dev/null 2>&1
+is "the set carries root's pin as its own row (#1008)" "$(cat "$DEST/fleet-trust.pub" 2>/dev/null)" "$WANT72"
 is "the set does not carry a public file (it is remade, never restored)" \
   "$(find "$DEST" -name '*.pub.yaml' 2>/dev/null | wc -l)" "0"
 wipe_aggregator
@@ -2587,7 +2605,18 @@ unit aperire-advisord "" "$CALLER_USER" "$TMP/advisord-868 --addr=127.0.0.1:7810
 build_sut
 FROM="$DEST"
 : > "$FAKE_PLANT_LOG"
+# Root's pin (#1008) already holds some other key, as on a host this set is
+# restored onto. The restore refuses before anything stops, and takes the
+# set's pin only when --replace-trust-pin says so.
+OTHER72="$(openssl genpkey -algorithm ed25519 2>/dev/null | openssl pkey -pubout -outform DER 2>/dev/null | tail -c 32 | base64 -w0 | tr '+/' '-_' | tr -d '=')"
+printf '%s\n' "$OTHER72" > "$PIN72"; chmod 644 "$PIN72"
 out=$(run_restore 2>&1); rc=$?
+if [[ $rc -eq 9 && "$(cat "$PIN72")" == "$OTHER72" && ! -e "$REPO/dashboard/config/fleet-trust.yaml" ]] \
+   && has_q "$out" "already pins a fleet trust key" && has_q "$out" "--replace-trust-pin"; then
+  ok "a set whose pin differs from the one here is refused (exit 9), nothing touched, and the flag is named (#1008)"
+else
+  bad "a differing pin is refused on restore" "rc=$rc pin $(cat "$PIN72") out: $(tail -5 <<<"$out")"; fi
+out=$(run_restore --replace-trust-pin 2>&1); rc=$?
 is "restore exits 0" "$rc" "0"
 TF72="$REPO/dashboard/config/fleet-trust.yaml"
 PF72="$REPO/dashboard/config/fleet-trust.pub.yaml"
@@ -2603,6 +2632,47 @@ is "  and it carries the public key the seed derives" \
   "$(python3 -c 'import base64,sys; s=sys.argv[1]; sys.stdout.buffer.write(bytes.fromhex("302e020100300506032b657004220420")+base64.urlsafe_b64decode(s+"="*(-len(s)%4)))' "$SEED72" \
      | openssl pkey -inform DER -pubout -outform DER 2>/dev/null | tail -c 32 | base64 -w0 | tr '+/' '-_' | tr -d '=')"
 has "  and the restore says so" "$out" "fleet-trust.pub.yaml ->"
+is "  and with --replace-trust-pin, root's pin is the set's pin now (#1008)" \
+  "$(cat "$PIN72" 2>/dev/null)" "${WANT72:-no key derived}"
+# The set's fleet-trust.yaml is the dashboard account's file: a key planted
+# there before the backup is not what the restore pins. The set's pin row is.
+printf 'private_key: %s\npeers: {}\n' "$(openssl genpkey -algorithm ed25519 -outform DER 2>/dev/null | tail -c 32 | base64 -w0 | tr '+/' '-_' | tr -d '=')" \
+  > "$REPO/dashboard/config/fleet-trust.yaml"
+DEST="$TMP/set-1008-planted"
+run_backup >/dev/null 2>&1
+wipe_aggregator
+rm -f "$PIN72" "$REPO/dashboard/config/fleet-trust.pub.yaml"
+build_sut
+FROM="$DEST"
+out=$(run_restore 2>&1); rc=$?
+if [[ $rc -eq 3 && ! -e "$PIN72" && ! -e "$REPO/dashboard/config/fleet-trust.yaml" ]] \
+   && has_q "$out" "root's pin in the set:" && has_q "$out" "$WANT72"; then
+  ok "a set whose key is not its own root pin is refused before anything stops (exit 3); root's pin is what it compares with"
+else
+  bad "a restore takes root's pin, not the dashboard's" "rc=$rc pin '$(cat "$PIN72" 2>/dev/null)' out: $(tail -6 <<<"$out")"; fi
+# A set taken before root pinned anything carries no pin row: onto a host with
+# no pin, the restore says out loud that it will pin the set's key on first
+# sight; onto a host that pins a different key, it refuses (exit 9).
+mk_aggregator
+SEED1008="$(openssl genpkey -algorithm ed25519 -outform DER 2>/dev/null | tail -c 32 | base64 -w0 | tr '+/' '-_' | tr -d '=')"
+printf 'private_key: %s\npeers: {}\n' "$SEED1008" > "$REPO/dashboard/config/fleet-trust.yaml"; chmod 640 "$REPO/dashboard/config/fleet-trust.yaml"
+rm -f "$PIN72"
+DEST="$TMP/set-1008-nopin"
+build_sut
+run_backup >/dev/null 2>&1
+is "  a set taken with no pin on the host carries no pin row" "$([[ -e "$DEST/fleet-trust.pub" ]] && echo yes || echo no)" "no"
+wipe_aggregator
+rm -f "$REPO/dashboard/config/fleet-trust.pub.yaml"
+FROM="$DEST"
+out=$(run_restore --dry-run 2>&1); rc=$?
+has "  onto a host with no pin, it says the set's key will be pinned on first sight" "$out" "taken before root pinned the fleet trust key"
+printf '%s\n' "$OTHER72" > "$PIN72"; chmod 644 "$PIN72"
+out=$(run_restore 2>&1); rc=$?
+if [[ $rc -eq 9 && "$(cat "$PIN72")" == "$OTHER72" ]] && has_q "$out" "carries a different key and no pin of its own"; then
+  ok "  onto a host that pins a different key, a set with no pin is refused (exit 9), nothing touched"
+else
+  bad "a pinless set onto a differently pinned host is refused" "rc=$rc out: $(tail -6 <<<"$out")"; fi
+rm -f "$PIN72"
 # A node: peers only. The table's 0600 would leave the Advisor unable to read
 # it (#821); the split puts it on the shared group at 0640.
 mk_full

@@ -69,6 +69,17 @@
 
 set -euo pipefail
 
+# The instance names units and paths, so it is held to the rule
+# advisor-owner-lib.sh holds it to, and anything else is refused (#1206).
+instance_name_ok() { # $1 = a name; [a-z] is held to ASCII, whatever the locale
+  local LC_ALL=C
+  [[ "$1" =~ ^[a-z0-9][a-z0-9-]{0,30}$ && "$1" != credcheck && "$1" != credcheck-* ]]
+}
+if [[ -n "${APERIRE_INSTANCE:-}" ]] && ! instance_name_ok "$APERIRE_INSTANCE"; then
+  printf 'refused: APERIRE_INSTANCE=%q is not an instance name (a-z, 0-9 and -, at most 31, not credcheck)\n' "$APERIRE_INSTANCE" >&2
+  exit 2
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # The install tree: this program's parent from a checkout, and the tree
 # APERIRE_INSTALL_TREE names when install.sh runs a copy root staged out of
@@ -1143,6 +1154,44 @@ EOF
     echo "${E_AMBER}         Expected ws:// or wss:// with a host.${E_OFF}" >&2 ;;
 esac
 
+# ── 7d. Path check (non-fatal) ───────────────────────────────────────
+# #586. A relay on another network that never shows up leaves the operator one
+# fact, "no frame arrived". The relay can try its own dashboard_url once,
+# with its own handshake and its own root store, and say which of these it
+# is: the name does not resolve, the connection is refused or times out, the
+# TLS handshake fails, the token is refused, or it was accepted. That is
+# `aperire-relay --check-dashboard`; this runs it here and prints the answer.
+#
+# Never fatal. A path that is not open yet is the operator's next step, not a
+# failed install, and the relay keeps retrying on its own whatever this says.
+#
+# The URL is read by the relay from $RELAY_CONF, never built from anything
+# here, and the token is not printed by either side.
+#
+# Not run when the dashboard is on this host (a co-located install has
+# nothing between the two, and the dashboard may still be coming up), nor
+# when there is no dashboard_url to try.
+RELAY_CHECK_CMD="sudo aperire-relay --check-dashboard${INSTANCE:+ --config ${RELAY_CONF}}"
+if [[ -n "$DASHBOARD_URL" && "${APERIRE_COLOCATED:-0}" != "1" && -x "$RELAY_BIN_PATH" ]]; then
+  CHECK_RC=0
+  CHECK_OUT="$(timeout 20 "$RELAY_BIN_PATH" --check-dashboard --config "$RELAY_CONF" 2>&1 </dev/null)" || CHECK_RC=$?
+  CHECK_SAYS="$(printf '%s\n' "$CHECK_OUT" | sed -n 2p)"
+  case "$CHECK_RC" in
+    0)
+      echo "${S_GREEN}→ dashboard check: ${CHECK_SAYS}${S_OFF}" ;;
+    2)
+      # An unknown flag. A relay binary from before this check, which the
+      # "already in place" path can leave here. Not a verdict on the link.
+      echo "${S_AMBER}→ dashboard check skipped: ${RELAY_BIN_PATH} predates --check-dashboard${S_OFF}" ;;
+    124)
+      echo "${E_AMBER}warning: the dashboard check did not finish in 20 seconds. Run it again: ${RELAY_CHECK_CMD}${E_OFF}" >&2 ;;
+    *)
+      echo "${E_AMBER}warning: the relay cannot reach its dashboard yet.${E_OFF}" >&2
+      echo "${E_AMBER}         ${CHECK_SAYS:-$CHECK_OUT}${E_OFF}" >&2
+      echo "${E_AMBER}         After the fix, test the same path again: ${RELAY_CHECK_CMD}${E_OFF}" >&2 ;;
+  esac
+fi
+
 # ── 7b. Firewall check (non-fatal) ───────────────────────────────────
 # The validator host's inbound surface (rippled peer :51235, admin :6006)
 # must be filtered. A fresh Ubuntu host ships UFW inactive. We do NOT
@@ -1263,7 +1312,9 @@ EOF
        process keeps the config it started with.
          sudo systemctl restart ${RELAY_UNIT_NAME}
 
-    3. Verify:
+    3. Verify. The first line tries the dashboard once and names what is in
+       the way if it is not reachable: the name, a firewall, TLS, or the token.
+         ${RELAY_CHECK_CMD}
          systemctl status ${RELAY_UNIT_NAME}
          journalctl -u ${RELAY_UNIT_NAME} -n 30 --no-pager
          curl -sS http://127.0.0.1:7800/healthz   (run on the dashboard host;

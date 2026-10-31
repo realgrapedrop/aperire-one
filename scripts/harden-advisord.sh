@@ -93,10 +93,8 @@ RW_PATHS=$(grep -E '^ReadWritePaths=' "$UNIT" | head -1 || true)
 # accepted knowledge bundle is applied by swapping that directory, and under
 # ProtectSystem=strict a unit without it refuses every push with a read-only
 # filesystem error that reads as a broken aggregator. Appended rather than
-# rebuilt, so everything else the installer worked out is kept.
-if [[ "$RW_PATHS" != *"/advisor/knowledge-fleet"* ]]; then
-  RW_PATHS="$RW_PATHS $REPO/advisor/knowledge-fleet"
-fi
+# rebuilt, so everything else the installer worked out is kept. Decided below,
+# after the corpus is made, because it is named only when it is there.
 # /var/lib/aperire, for the same reason and with the same history. The
 # WRAPPER writes there as root, through sudo, as a child of this unit, and a
 # namespace applies to children: the record that a container image was
@@ -125,6 +123,23 @@ for _d in "$REPO/advisor/knowledge-fleet" "$REPO/advisor/knowledge-fleet/base" \
   python3 -I "$SELF/state-file.py" mkdir "$_d" "" "" 0750 --root "$REPO/advisor" --mode-if-new \
     || echo "   !! $_d was not made or confirmed (named above); it was left as it was" >&2
 done
+# Named only when it is a real directory now (#1310). The helper above
+# refuses a link at the name and leaves it, and ReadWritePaths= on a path
+# that is not there fails the unit with 226/NAMESPACE: an Advisor that cannot
+# take a knowledge push yet is better than one that does not start. An entry
+# the unit already had goes too when the directory is not there.
+KF="$REPO/advisor/knowledge-fleet"
+if [[ -d "$KF" && ! -L "$KF" ]]; then
+  [[ "$RW_PATHS" == *"/advisor/knowledge-fleet"* ]] || RW_PATHS="$RW_PATHS $KF"
+else
+  read -ra _rw <<<"${RW_PATHS#ReadWritePaths=}"
+  _keep=()
+  for _e in "${_rw[@]}"; do
+    [[ "${_e#-}" == */advisor/knowledge-fleet ]] || _keep+=("$_e")
+  done
+  RW_PATHS="ReadWritePaths=${_keep[*]}"
+  echo "   !! $KF is not a directory, so the unit does not name it; a knowledge push cannot land until it is" >&2
+fi
 # By descriptor, not `chown -R` by name (#1048): both services write this
 # corpus, and chown -R changes a hard link to a file outside it like any other
 # entry, so either account could have handed root a second name for a file and

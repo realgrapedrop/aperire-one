@@ -117,7 +117,8 @@ usage: aperire-fleet-add.sh --read-origin <url> --token-path <path> \
                   read this host's own read.token through, mode 0640, and the
                   registries record that path. Your copy is removed once the
                   join has been verified. Needs the Advisor's state folder
-                  here and the root-held state helper, and asks sudo once.
+                  here and the root-held state helper, and asks sudo once,
+                  for the bootstrap's `--run peer-token` step.
   --replace-token a node already joined with --place-token has had its token
                   rotated. Places your new copy over the old one the same way
                   and changes nothing else. Takes only --label and
@@ -578,6 +579,26 @@ PY
 # broken file) that this function must not paper over. It dies on one: a
 # key missing on a host whose records already name a paired node (#851
 # review L3), before this script has written anything.
+# fleet_add_trust_pin : 0 with FLEET_ADD_PIN set to root's pin of this
+# aggregator's fleet trust key (#1008), or empty when root has pinned none
+# yet. Dies when a pin is there that nobody should trust: not a plain file,
+# owned by an account that is neither root nor this one, writable by another
+# account, or not one 32-byte key.
+FLEET_ADD_PIN=""
+fleet_add_trust_pin() {
+  local pin="${APERIRE_ETC:-/etc/aperire}/fleet-trust.pub" st line
+  FLEET_ADD_PIN=""
+  [[ -e "$pin" || -L "$pin" ]] || return 0
+  [[ -f "$pin" && ! -L "$pin" ]] || die "$pin is not a plain file, so root's pin of the fleet trust key can't be read. Look at it by hand. Nothing was written."
+  st="$(stat -c '%u %a' -- "$pin")"
+  if ! [[ "${st%% *}" == 0 || "${st%% *}" == "$(id -u)" ]] || (( (8#${st##* } & 8#022) != 0 )); then
+    die "$pin is not root's alone, so it is not a pin this join will trust. Look at it by hand. Nothing was written."
+  fi
+  line="$(head -c 128 -- "$pin")"
+  [[ "$line" =~ ^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$ ]] || die "$pin does not hold one 32-byte public key. Look at it by hand. Nothing was written."
+  FLEET_ADD_PIN="$line"
+}
+
 ensure_own_trust_key() {
   local existing existing_file current_priv
   existing="$(read_trust_file_raw "$HOME_TRUST")"
@@ -599,7 +620,21 @@ PY
     HOME_PRIV="$current_priv"
     HOME_PUB="$(pubkey_from_priv_b64 "$HOME_PRIV")"
     [[ -n "$HOME_PUB" ]] || { info "could not derive this node's trust public key from its stored private key — skipping the trust-key step"; return 1; }
+    # #1008: the key handed to a peer is the one root pinned. The dashboard's
+    # account can write $HOME_TRUST, so a key there that is not the pin is
+    # refused before anything is written, never placed in a peer's file.
+    fleet_add_trust_pin
+    if [[ -n "$FLEET_ADD_PIN" && "$FLEET_ADD_PIN" != "$HOME_PUB" ]]; then
+      die "the key in $HOME_TRUST is not the fleet trust key root pinned (${APERIRE_ETC:-/etc/aperire}/fleet-trust.pub), so this join hands it to no peer. Every paired node trusts the pinned key. Put it back from a backup set: curl -fsSL https://get.aperire.one | bash -s -- --restore --from <backup set>. Nothing was written."
+    fi
     return 0
+  fi
+
+  # #1008: root pins a key this host no longer holds. A new one would not be
+  # the pinned key, and every paired node trusts that one.
+  fleet_add_trust_pin
+  if [[ -n "$FLEET_ADD_PIN" ]]; then
+    die "$HOME_TRUST holds no key, and root pins one for this host (${APERIRE_ETC:-/etc/aperire}/fleet-trust.pub). Put it back from a backup set: curl -fsSL https://get.aperire.one | bash -s -- --restore --from <backup set>, or start a new fleet key with the pairing grant's --new-fleet-keys. Nothing was written."
   fi
 
   # #851 review L3: no key here, and this host already has a fleet. Those
@@ -704,12 +739,14 @@ print_trust_exchange_instructions() {
 # on each start (tightenFleet), which would lock the dashboard out of a copy
 # it owned, and leaves a file it does not own alone.
 #
-# Root's part is the root-held copy of scripts/state-file.py, the helper this
-# script already writes advisor/state/fleet.json through: the token crosses on
-# its standard input (never argv, never a path root opens in a folder the
-# operator controls), and the folder, the owner, the group and the mode are
-# set on one descriptor. `sudo cp`/`install` would resolve the name twice
-# (state-file.py's header has the trace).
+# Root's part is a named bootstrap step, `--run peer-token --label <label>`
+# (#1144, the 2026-10-02 ruling on #812): the release's checked copy of
+# scripts/place-peer-token.sh, run as root. The token crosses on its standard
+# input (opened here, as you: never argv, never a path root opens in a folder
+# the operator controls), and the step sets the folder, the owner, the group
+# and the mode on one descriptor through state-file.py. `sudo cp`/`install`
+# would resolve the name twice (state-file.py's header has the trace). The
+# label is its one argument, held to a whitelist before any root call.
 
 # Who owns what this account could not get through, for the refusal: the first
 # thing on the way up that can be stat'ed is the closed folder itself, or the
@@ -745,43 +782,49 @@ refuse_unreadable_token() {
   die "--token-path '$TOKEN_PATH' is not readable by $(id -un)${why:+: $why}. ${note}Bring the peer's token to a file of your own (step 2 of Add a node in Settings: a sudo read on the peer into its home, then an scp from there into yours), then run this with --token-path set to that copy and --place-token: root then puts the copy where the dashboard and the Advisor read it"
 }
 
-# The numeric group this host's own read.token is read through. stat first, and
-# sudo only when the folder it sits in is closed to this account.
-read_token_gid() {
-  local ref="$STATE_DIR/read.token" g=""
-  if g="$(stat -c '%g' -- "$ref" 2>/dev/null)" && [[ "$g" =~ ^[0-9]+$ ]]; then printf '%s' "$g"; return 0; fi
-  if (( EUID != 0 )) && command -v sudo >/dev/null 2>&1 \
-     && g="$(sudo stat -c '%g' -- "$ref" 2>/dev/null)" && [[ "$g" =~ ^[0-9]+$ ]]; then printf '%s' "$g"; return 0; fi
-  return 1
+# A placed token's file is named after the label, and the step that places it
+# takes a label starting with a letter or digit. The registries' own charset
+# allows a leading hyphen, so this is asked here, before anything is written.
+check_label_for_token() {
+  [[ -z "$LABEL" || "$LABEL" =~ ^[a-z0-9] ]] \
+    || die "label '$LABEL' starts with a hyphen, and the placed token's file is named after it. Start it with a letter or digit"
 }
 
-# Everything placing the token needs, asked before anything is written.
-# Sets TOKEN_GID, the group the copy is placed in.
-TOKEN_GID=""
+# Everything placing the token needs, asked before anything is written. The
+# root-held state helper is not what places it (the step stages its own), but
+# it is what takes the token back out if the join does not finish.
 check_place_token() {
   [[ -d "$STATE_DIR" ]] || die "--place-token puts the token in $STATE_DIR, and the Advisor's state folder is not on this host. A host with no Advisor has no use for the Advisor's copy: point --token-path at your own copy and leave --place-token off"
   root_tool_ok \
-    || die "placing the token needs the root-held state helper, and it cannot be used: $ROOT_TOOL_WHY. curl -fsSL https://get.aperire.one | bash -s -- --update --force places it; run this again after"
-  TOKEN_GID="$(read_token_gid)" \
-    || die "could not read which group $STATE_DIR/read.token is read through, and the token is placed in that group so the dashboard and the Advisor can read it. Is the Advisor installed here?"
+    || die "a join that places the token needs the root-held state helper to take it back out if the join does not finish, and it cannot be used: $ROOT_TOOL_WHY. curl -fsSL https://get.aperire.one | bash -s -- --update --force places it; run this again after"
+  check_label_for_token
 }
 
 # Puts $1 (the operator's copy) at $PEER_TOKEN_DIR/$LABEL.token. Sets
-# PLACED_TOKEN once it has.
+# PLACED_TOKEN once it has. Root runs one named step of the release, through
+# this checkout's bootstrap, the way fleet_add_split does: `--run peer-token`,
+# which stages the release against this host's record and runs its checked
+# copy of place-peer-token.sh. The token is the step's standard input.
 place_peer_token() {
-  local src="$1" dest="$PEER_TOKEN_DIR/$LABEL.token" gid
+  local src="$1" dest="$PEER_TOKEN_DIR/$LABEL.token" out="" rc=0
   check_place_token
-  gid="$TOKEN_GID"
   info "root is needed once, to put the token where the dashboard and the Advisor read it:"
-  info "  $dest, owned by root, group id $gid, mode 0640"
-  info "Nothing else here runs as root."
+  info "  $dest, owned by root, in the group of this host's own read.token, mode 0640"
+  info "The step is --run peer-token. It writes that one file and its folder and takes the token on standard input."
+  # The bootstrap asks sudo only on a terminal, and here its output is
+  # captured to be indented, so a password is asked for first, on the
+  # terminal. sudo -v runs nothing.
   if (( EUID != 0 )) && ! sudo -n true 2>/dev/null; then
     sudo -v || die "sudo did not give this account root, so the token was not placed and nothing was written"
   fi
-  "${ROOT_RUN[@]}" python3 -I "$ROOT_STATE_TOOL" mkdir "$PEER_TOKEN_DIR" 0 "$gid" 750 --root "$STATE_DIR" \
-    || die "could not make $PEER_TOKEN_DIR (the helper's reason is above). Nothing was written"
-  "${ROOT_RUN[@]}" python3 -I "$ROOT_STATE_TOOL" plant "$dest" 0 "$gid" 640 --root "$STATE_DIR" --stdin < "$src" \
-    || die "could not place the token at $dest (the helper's reason is above). Nothing else was written"
+  [[ -r "$REPO/scripts/get-aperire.sh" ]] \
+    || die "$REPO/scripts/get-aperire.sh is missing from this checkout, and it is what runs the step that places the token. Nothing was written"
+  out="$(bash "$REPO/scripts/get-aperire.sh" --dir "$REPO" --run peer-token --label "$LABEL" < "$src" 2>&1)" || rc=$?
+  while IFS= read -r _l; do [[ -n "$_l" ]] && info "$_l"; done <<<"$out"
+  # The step's exit status is the answer. This account cannot look at the file
+  # to check: where the Advisor has its own account advisor/state is closed to
+  # it, so a test of $dest from here would call a placed token missing.
+  (( rc == 0 )) || die "could not place the token at $dest (the lines above say why). If the step ran and then failed, a file may be left at that path: it is root's, and running this again replaces it"
   PLACED_TOKEN="$dest"
   info "placed $dest"
 }
@@ -805,6 +848,7 @@ if (( REPLACE_TOKEN )); then
   [[ -e "$TOKEN_PATH" ]] || token_path_blocked || die "--token-path '$TOKEN_PATH' does not exist"
   [[ -r "$TOKEN_PATH" ]] || refuse_unreadable_token
   [[ -s "$TOKEN_PATH" ]] || die "$TOKEN_PATH is empty, so there is nothing to place"
+  check_label_for_token
   [[ -f "$DASH_FLEET" ]] || die "$DASH_FLEET does not exist, so no node has joined this host yet. Join it first, with --place-token"
   # The row's own token_path, from the shape this script writes: a list item
   # starting at "- label:" and the keys beneath it. Only a node joined with
@@ -1187,7 +1231,7 @@ fi
 if (( DRY_RUN )); then
   say "Dry run complete — no files were written, no service was reloaded, no DNS was changed"
   if (( PLACE_TOKEN )); then
-    info "would place:     $REG_TOKEN_PATH (root:group $TOKEN_GID, mode 0640), from your copy $TOKEN_PATH"
+    info "would place:     $REG_TOKEN_PATH (root, the group of this host's own read.token, mode 0640), from your copy $TOKEN_PATH"
   fi
   info "would append to: $DASH_FLEET"
   if (( HAVE_ADVISOR )); then

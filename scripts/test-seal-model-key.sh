@@ -2768,7 +2768,6 @@ run_fleet_arm() {
       APERIRE_ETC="$AGGETC" \
       APERIRE_UNIT_DIR="$UNITS" \
       APERIRE_FLEET_FILE="${FLEETYAML:-$TMP/no-such-fleet.yaml}" \
-      APERIRE_FLEET_TRUST_FILE="${FLEETTRUST:-$TMP/no-such-fleet-trust.yaml}" \
       bash "$FLEETARM" "$@" 2>&1
 }
 
@@ -2873,12 +2872,13 @@ else
 # A real trust key for this aggregator, the way fleet-trust.yaml holds one:
 # the private half is the last 32 bytes of its PKCS8 DER, base64url.
 openssl genpkey -algorithm ed25519 -out "$TMP/trust741.pem" 2>/dev/null
-FLEETTRUST="$TMP/fleet-trust741.yaml"
-printf 'private_key: %s\n' "$(openssl pkey -in "$TMP/trust741.pem" -outform DER | tail -c 32 | base64 -w0 | tr '+/' '-_' | tr -d '=')" > "$FLEETTRUST"
 TRUST741_PUB="$(openssl pkey -in "$TMP/trust741.pem" -pubout -outform DER | tail -c 32 | base64 -w0 | tr '+/' '-_' | tr -d '=')"
+# Root's pin of it (#1008), in root's directory: the only place this program
+# takes the trust key from.
+PIN741="$AGGETC/fleet-trust.pub"
+printf '%s\n' "$TRUST741_PUB" > "$PIN741"; chmod 644 "$PIN741"
 ARM741_PUB="$(openssl pkey -in "$AGGETC/fleet-arm.key" -pubout -outform DER | tail -c 32 | base64 -w0)"
 WANT741="$(bash -c '. "$1"; fleet_pairing_fingerprint "$2" "$3"' _ "$TMP/pairfp.sh" "$TRUST741_PUB" "$ARM741_PUB")"
-export FLEETTRUST
 rm -f "$AGGETC/model-key.arm"
 # T8 (pairing v2): stdout carries the value and nothing else, one line of 64
 # lowercase hex, so FP=$(sudo aperire-fleet-arm --fingerprint) is the value.
@@ -2890,7 +2890,6 @@ run_fleet_arm_split() { # stdout -> $TMP/fp.out, stderr -> $TMP/fp.err; returns 
       APERIRE_ETC="$AGGETC" \
       APERIRE_UNIT_DIR="$UNITS" \
       APERIRE_FLEET_FILE="${FLEETYAML:-$TMP/no-such-fleet.yaml}" \
-      APERIRE_FLEET_TRUST_FILE="${FLEETTRUST:-$TMP/no-such-fleet-trust.yaml}" \
       bash "$FLEETARM" "$@" >"$TMP/fp.out" 2>"$TMP/fp.err"
 }
 rc=0; run_fleet_arm_split --fingerprint || rc=$?
@@ -2925,23 +2924,51 @@ if [[ $rc -eq 3 && ! -e "$AGGETC/fleet-arm.key" && ! -s "$TMP/fp.out" ]] \
 else
   bad "--fingerprint makes no key" "exit $rc, stdout '$(cat "$TMP/fp.out")', stderr: $(cat "$TMP/fp.err"), etc now: $(find "$AGGETC" -mindepth 1 -maxdepth 1 -printf '%f ') (was $before_etc)"; fi
 mv "$TMP/fleet-arm.key.741" "$AGGETC/fleet-arm.key"
-# Exit 2, no trust key: nothing on stdout either, and the same grant named.
-rc=0; FLEETTRUST="$TMP/no-such-741.yaml" run_fleet_arm_split --fingerprint || rc=$?
-if [[ $rc -eq 2 && ! -s "$TMP/fp.out" ]] && has741 "$(cat "$TMP/fp.err")" 'no fleet trust key' \
-   && has741 "$(cat "$TMP/fp.err")" '--run fleet-broker-grant'; then
-  ok "  with no fleet trust key it exits 2, nothing on stdout, and names the grant that makes it"
+# #1008: the trust key comes from root's pin and from nowhere else. The
+# install the conf names holds a DIFFERENT key at the default path, where the
+# dashboard account writes, and the fingerprint is still the pinned key's.
+TREE741="$TMP/tree741"
+mkdir -p "$TREE741/dashboard/config"
+openssl genpkey -algorithm ed25519 -out "$TMP/plant741.pem" 2>/dev/null
+printf 'private_key: %s\n' "$(openssl pkey -in "$TMP/plant741.pem" -outform DER | tail -c 32 | base64 -w0 | tr '+/' '-_' | tr -d '=')" \
+  > "$TREE741/dashboard/config/fleet-trust.yaml"
+PLANT741_PUB="$(openssl pkey -in "$TMP/plant741.pem" -pubout -outform DER | tail -c 32 | base64 -w0 | tr '+/' '-_' | tr -d '=')"
+PLANTFP741="$(bash -c '. "$1"; fleet_pairing_fingerprint "$2" "$3"' _ "$TMP/pairfp.sh" "$PLANT741_PUB" "$ARM741_PUB")"
+cp "$AGGETC/fleet-broker.conf" "$TMP/fbc741.keep"
+printf 'INSTALL_DIR=%s\n' "$TREE741" > "$AGGETC/fleet-broker.conf"; chmod 644 "$AGGETC/fleet-broker.conf"
+rc=0; run_fleet_arm_split --fingerprint || rc=$?
+if [[ $rc -eq 0 && "$(cat "$TMP/fp.out")" == "$WANT741" && "$WANT741" != "$PLANTFP741" ]]; then
+  ok "  a key planted in the install's fleet-trust.yaml is ignored: the fingerprint is root's pinned key's"
 else
-  bad "--fingerprint with no trust key" "exit $rc, stdout '$(cat "$TMP/fp.out")', stderr: $(cat "$TMP/fp.err")"; fi
-# The trust file is the dashboard account's, so root never follows a link at
-# its name: a symlink there gives no fingerprint rather than one over
-# whatever it points at.
-mv "$FLEETTRUST" "$TMP/fleet-trust741.real"; ln -s "$TMP/fleet-trust741.real" "$FLEETTRUST"
+  bad "root ignores a key planted in the dashboard's file" "exit $rc, got '$(cat "$TMP/fp.out")', pinned '$WANT741', planted '$PLANTFP741'"; fi
+# Exit 2, no pin: nothing on stdout, never a fingerprint over the planted
+# key, and the update that pins it named, with the grant for a host with none.
+mv "$PIN741" "$TMP/pin741.aside"
+rc=0; run_fleet_arm_split --fingerprint || rc=$?
+if [[ $rc -eq 2 && ! -s "$TMP/fp.out" ]] && has741 "$(cat "$TMP/fp.err")" 'root holds no fleet trust key pin it will read' \
+   && has741 "$(cat "$TMP/fp.err")" '--update --force' && has741 "$(cat "$TMP/fp.err")" '--run fleet-broker-grant'; then
+  ok "  with no pin it exits 2, nothing on stdout, and names the update that pins it and the grant that makes a key"
+else
+  bad "--fingerprint with no pin" "exit $rc, stdout '$(cat "$TMP/fp.out")', stderr: $(cat "$TMP/fp.err")"; fi
+mv "$TMP/pin741.aside" "$PIN741"
+cp "$TMP/fbc741.keep" "$AGGETC/fleet-broker.conf"; chmod 644 "$AGGETC/fleet-broker.conf"
+# A pin root will not read is no pin: a link (not followed, whatever it
+# points at) and one another account could write.
+mv "$PIN741" "$TMP/pin741.real"; ln -s "$TMP/pin741.real" "$PIN741"
 out="$(run_fleet_arm --fingerprint)"; rc=$?
-if [[ $rc -ne 0 ]] && has741 "$out" 'no pairing fingerprint' && ! has741 "$out" "$WANT741"; then
-  ok "  a fleet-trust.yaml that is a symlink is not followed: no fingerprint"
+rm -f "$PIN741"; mv "$TMP/pin741.real" "$PIN741"
+if [[ $rc -eq 2 ]] && has741 "$out" 'no pairing fingerprint' && ! has741 "$out" "$WANT741"; then
+  ok "  a pin that is a symlink is not followed: no fingerprint"
 else
-  bad "the trust file is never read through a link" "exit $rc: $out"; fi
-rm -f "$FLEETTRUST"; mv "$TMP/fleet-trust741.real" "$FLEETTRUST"
+  bad "the pin is never read through a link" "exit $rc: $out"; fi
+chmod 664 "$PIN741"
+out="$(run_fleet_arm --fingerprint)"; rc=$?
+chmod 644 "$PIN741"
+if [[ $rc -eq 2 ]] && has741 "$out" 'can be written by another account' && ! has741 "$out" "$WANT741" \
+   && has741 "$out" "never replaces a pin that is there" && ! has741 "$out" "the update pins it"; then
+  ok "  and neither is one another account could write, and it names the file, not an update that would not replace it"
+else
+  bad "a group-writable pin is no pin" "exit $rc: $out"; fi
 out="$(run_fleet_arm --fingerprint --node stock-node1)"; rc=$?
 if [[ $rc -ne 0 ]] && has741 "$out" 'arms nothing'; then
   ok "  --fingerprint with --node is refused: it only prints"
@@ -2963,7 +2990,6 @@ if [[ $rc -ne 0 ]] && has741 "$out" '--run fleet-broker-grant'; then
 else
   bad "no conf is refused by name" "exit $rc: $out"; fi
 cp "$TMP/fbc.keep" "$AGGETC/fleet-broker.conf"; chmod 644 "$AGGETC/fleet-broker.conf"
-unset FLEETTRUST
 
 # The fallback port, which decides which fleet.yaml row is this host when the
 # dashboard's unit does not say. It has to be the port the installer gives a

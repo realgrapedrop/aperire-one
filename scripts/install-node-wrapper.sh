@@ -43,6 +43,17 @@
 
 set -euo pipefail
 
+# The instance names units and paths, so it is held to the rule
+# advisor-owner-lib.sh holds it to, and anything else is refused (#1206).
+instance_name_ok() { # $1 = a name; [a-z] is held to ASCII, whatever the locale
+  local LC_ALL=C
+  [[ "$1" =~ ^[a-z0-9][a-z0-9-]{0,30}$ && "$1" != credcheck && "$1" != credcheck-* ]]
+}
+if [[ -n "${APERIRE_INSTANCE:-}" ]] && ! instance_name_ok "$APERIRE_INSTANCE"; then
+  printf 'refused: APERIRE_INSTANCE=%q is not an instance name (a-z, 0-9 and -, at most 31, not credcheck)\n' "$APERIRE_INSTANCE" >&2
+  exit 2
+fi
+
 # Where this program and its siblings are (NW_SELF), and the install tree it acts
 # on (REPO_DIR): a directory and its parent from a checkout, two when it is a copy
 # root staged out of the release and APERIRE_INSTALL_TREE names the tree
@@ -186,6 +197,9 @@ if [[ "${1:-}" == --refresh ]]; then
   command -v python3 >/dev/null || die "missing: python3"
   carry_legacy_conf
   rc=0
+  # The state helper beside this program: the staged copy when it runs from
+  # one, the one thing the Advisor's fleet corpus is made with (#1345).
+  TP_STATE_TOOL="$NW_SELF/state-file.py"
   trusted_update_node_wrapper "$REPO_DIR" "$DEFAULT_CONF" || rc=$?
   case "$rc" in
     0) info "every instance on this host runs the root-owned copy, and no Advisor holds a sudo rule" ;;

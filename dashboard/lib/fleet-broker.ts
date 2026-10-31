@@ -540,6 +540,40 @@ export function trustKeyLostDetail(installDir: string, paired: readonly string[]
     + 'here is this host, mark its fleet.yaml row role: aggregator.';
 }
 
+/** What a head that is not `held` means to the two catch-up routes.
+ *
+ *  Here rather than in settings-api.ts so the page's rows (#1195) and the
+ *  settings walk build their bodies with it, not with a copy.
+ *
+ *  Five states in, four refusals out, and none of them says "there is no
+ *  store" unless the broker positively said so. A busy socket answered as
+ *  `none` would tell an operator to paste a live provider key over a store
+ *  that was fine. */
+export function storeHeadRefusal(
+  head: BrokerStoreHeadOutcome,
+): { status: number; body: Record<string, unknown> } | null {
+  switch (head.state) {
+    case 'held': return null;
+    case 'none': return {
+      status: 409,
+      body: {
+        error: 'no_sealed_model',
+        detail: 'this aggregator holds no sealed fleet model, so there is nothing to send. Seal the '
+          + 'fleet model from here with the key.',
+      },
+    };
+    case 'unreadable': return {
+      status: 409,
+      body: {
+        error: 'store_unreadable',
+        detail: `${head.detail} Seal the fleet model from here again with the key.`,
+      },
+    };
+    case 'predates': return { status: 501, body: { error: 'broker_predates_store', detail: head.detail } };
+    default: return { status: 503, body: { error: 'broker_busy', detail: head.detail } };
+  }
+}
+
 /**
  * The one sentence for `fleet_arm_key_lost` (#851), from either arm-key
  * verb: this aggregator's fleet arm key is gone and it already has paired

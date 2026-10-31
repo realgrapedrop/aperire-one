@@ -291,6 +291,10 @@
     // network path is fine (#268). The word is short and the fix is in the
     // row's own tip, which is where there is room for a sentence.
     if (node.verdict === 'refused') return 'REFUSED \u00b7 read token rejected';
+    // This dashboard could not read its own token for the node (#1305): nothing
+    // was asked of it, so UNREACHABLE would be untrue. Keyed on the row's flag,
+    // never on the detail's words.
+    if (node.token_unreadable === true) return 'TOKEN UNREADABLE · last known ' + fmtAgo(node.last_seen_ms);
     if (node.verdict === 'unreachable') return 'UNREACHABLE · last known ' + fmtAgo(node.last_seen_ms);
     if (node.verdict === 'warn') return (node.detail || 'degraded').toUpperCase();
     return node.self ? 'this node' : 'healthy';
@@ -307,6 +311,13 @@
       '&at=' + encodeURIComponent(Date.now());
   }
 
+  // The name a row is printed under. This host's own row carries
+  // display_name, the one name every page gives it (its pairing label on a
+  // paired node, #1284); `label` stays the key every link and match uses.
+  function shownName(node) {
+    return (node && node.self && node.display_name) || (node && node.label) || '';
+  }
+
   function rowHTML(node, activeLabel) {
     // 'refused' takes the same red band 'critical' does: it still needs
     // attention. Only the WORD differs, because only the work differs.
@@ -314,7 +325,7 @@
     var rowClass = isCrit ? ' crit' : node.verdict === 'warn' ? ' warn' : node.verdict === 'unreachable' ? ' unreach' : '';
     var dotClass = node.verdict === 'ok' ? ' ok' : node.verdict === 'warn' ? ' warn' : isCrit ? ' crit' : '';
     var stateClass = isCrit ? ' crit' : node.verdict === 'warn' ? ' warn' : node.verdict === 'unreachable' ? ' unreach' : '';
-    var nameHTML = esc(node.label) + (node.self ? '<span class="ndd-cur-tag">this dashboard</span>' : '');
+    var nameHTML = esc(shownName(node)) + (node.self ? '<span class="ndd-cur-tag">this dashboard</span>' : '');
     // A peer's slot is always rendered, empty while its role is unknown, so
     // the peers' names line up. This node's own row never gets a letter (nor
     // does it on the FLEET panel), so it has no slot, and its name and "this
@@ -496,8 +507,15 @@
     var activeNode = (activeLabel && roster.filter(function (n) { return n.label === activeLabel; })[0])
       || (fallbackLabel && roster.filter(function (n) { return n.label === fallbackLabel; })[0])
       || (aggregatorMode ? roster[0] : self) || roster[0];
-    dotEl.className = 'chip-dot' + (activeNode && activeNode.verdict === 'ok' ? ' ok' : activeNode && activeNode.verdict === 'warn' ? ' warn' : '');
-    nameEl.textContent = activeNode ? activeNode.label : '—';
+    // The same three verdicts the picker's rows colour, and the same red for
+    // 'refused' as for 'critical' (rowHTML above). Only unreachable or an
+    // unread node stays the base grey: a critical node drew grey here once
+    // and read as unknown, which is the wrong way to be wrong (#1283).
+    dotEl.className = 'chip-dot' + (!activeNode ? ''
+      : activeNode.verdict === 'ok' ? ' ok'
+      : activeNode.verdict === 'warn' ? ' warn'
+      : (activeNode.verdict === 'critical' || activeNode.verdict === 'refused') ? ' crit' : '');
+    nameEl.textContent = activeNode ? shownName(activeNode) : '—';
     // The crit clause only appears when it's non-zero, so a fleet with no
     // integrity failures keeps the exact three-part label this already had.
     rollEl.setAttribute('aria-label', 'Fleet: ' + c.ok + ' healthy, ' + c.warn + ' warning, ' + c.unreach + ' unreachable' +

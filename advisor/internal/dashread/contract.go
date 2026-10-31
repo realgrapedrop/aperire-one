@@ -256,7 +256,9 @@ type nodeStatusResponse struct {
 	Network              *int     `json:"network"`
 	PubkeyValidator      *string  `json:"pubkey_validator"`
 	PubkeyNode           *string  `json:"pubkey_node"`
-	// HostName is the node's own os.hostname(). Pointer-typed, like every
+	// HostName is the node's machine: APERIRE_HOSTNAME, else the host the
+	// node's relay reports (on a split install, the validator's machine), else
+	// the dashboard's os.hostname(). Pointer-typed, like every
 	// other nullable here: a server older than this field omits the key
 	// entirely, and a *string keeps that absence distinguishable from a
 	// host that reports an empty name. A bare string would render both as
@@ -282,6 +284,22 @@ type nodeStatusResponse struct {
 	// null, and neither may be read as "the same ref as mine". Compared for
 	// equality only; never parsed, never ordered.
 	DeployRef *string `json:"deploy_ref"`
+	// RelayVersion is the relay's own build ref on the HOST (#593), already
+	// commit-shaped by the server or null: no relay has pushed, an unstamped
+	// relay (`dev`), or a node older than this member. Pointer-typed because
+	// a server older than the field omits the key and null is "not reported",
+	// which a bare string would render as an empty build. No ProtocolVersion
+	// bump: an additive member on an existing route, the rule HostName and
+	// DeployRef were added under.
+	RelayVersion *string `json:"relay_version"`
+	// InstallDir is the directory the HOST's dashboard is installed in
+	// (#615), absolute or null. A fact about the install, never joined into a
+	// command by this side; the dashboard's own pages validate it again before
+	// they print it. Same additive rule as RelayVersion.
+	InstallDir *string `json:"install_dir"`
+	// RunAs is the account the HOST's dashboard process runs as (#615), or
+	// null. A fact about the process, not about who installed Aperire.
+	RunAs *string `json:"run_as"`
 }
 
 // ReadPeerRow mirrors ReadPeerRow in read-contract.ts — one row of the

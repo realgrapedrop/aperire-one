@@ -103,6 +103,7 @@ make_tree() {
   # install.sh also sources the aggregator-origin rule, and refuses a tree
   # without it by name, so it sits beside term-style.sh here as it does there.
   cp "$REPO_DIR/scripts/fleet-origin.sh" "$TREE/scripts/"
+  cp "$REPO_DIR/scripts/authn-value.sh" "$TREE/scripts/"
   # Run as root from its own checkout, install.sh stages every script before
   # it runs one (#955), with these two. The record is pointed at nothing, the
   # way a fakeroot fixture has to: as root the library takes no variable.
@@ -410,6 +411,23 @@ else bad "a bad --sleep is refused" "exit $rc: $out"; fi
 if [[ -z "$(sequence)" ]]
 then ok "neither of those installs anything on the way to refusing"
 else bad "a refused argument installs nothing" "$(sequence)"; fi
+# --instance names the Advisor's unit, and credcheck is the recovery unit's
+# own name (#1206 review). Checked after the flags are read, under the C
+# locale, so en_US.UTF-8 does not let é through [a-z].
+for bad_inst in credcheck --instance=credcheck-x; do
+  if [[ "$bad_inst" == --instance=* ]]; then set -- "$bad_inst"; else set -- --instance "$bad_inst"; fi
+  out="$(as_root bash "$TREE/scripts/install-advisor-stack.sh" --dir "$TREE" "$@")"; rc=$?
+  if [[ $rc -eq 2 ]] && grep -q 'is not an instance name' <<<"$out"
+  then ok "$* is refused"
+  else bad "$* is refused" "exit $rc: $out"; fi
+done
+out="$(as_root env LC_ALL=en_US.UTF-8 bash "$TREE/scripts/install-advisor-stack.sh" --dir "$TREE" --instance 'nodé')"; rc=$?
+if [[ $rc -eq 2 ]] && grep -q 'is not an instance name' <<<"$out"
+then ok "--instance nodé is refused under en_US.UTF-8 too"
+else bad "--instance nodé is refused under en_US.UTF-8" "exit $rc: $out"; fi
+if [[ -z "$(sequence)" ]]
+then ok "and none of those installs anything on the way to refusing"
+else bad "a refused instance installs nothing" "$(sequence)"; fi
 
 echo
 # install.sh runs the host checklist as step zero (scripts/preflight.sh) and

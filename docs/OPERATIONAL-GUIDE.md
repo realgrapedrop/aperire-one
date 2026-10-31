@@ -293,6 +293,7 @@ Most of the dashboard comes back on its own. It rebuilds the live picture from t
 | The trusted fleet arm key, if this host is fleet-joined | `/etc/aperire/fleet-arm.pub` | optional | root : root | 0644 | The public key this host checks a pushed model seal against |
 | The tokens an aggregator presents to its nodes, if this host is one | `/etc/aperire/fleet-tokens/` | optional | root, group the dashboard and the Advisor share | 0750 dir / 0640 files | A read token per paired node, and an approve token per node with an Advisor, each handed over by that node at pairing and kept nowhere else on this host; without them every node refuses this aggregator's reads |
 | The aggregator's private fleet arm key, if this host is one | `/etc/aperire/fleet-arm.key` | optional | root : root | 0600 | Every node paired to this aggregator trusts its public half; a new key means pairing every one of them again |
+| Root's pin of the aggregator's fleet trust key, if this host is one | `/etc/aperire/fleet-trust.pub` | optional | root : root | 0644 | The one place root takes the fleet trust key from (#1008); a restore puts it back from here, never from the dashboard's copy of the key |
 | The held fleet arm key, if this host was paired before it had an Advisor | `/etc/aperire/fleet-arm.paired.pub` | optional | root : root | 0644 | The key a pairing handed this node (#720), kept until the Advisor install places it; without it, adding the Advisor after a rebuild is the same dead end again, a re-pair or a root line on the node |
 | The node's own config | Your node's own `rippled.cfg` and its compose file or unit | yours to place | (yours) | (yours) | Not Aperire's, but a rebuild needs it, and nothing here writes it |
 
@@ -329,6 +330,7 @@ It discovers what this host has (a dashboard, a co-located relay, an Advisor, a 
   skip  fleet-arm-key  not present on this host
   take  fleet-tokens  (/etc/aperire/fleet-tokens)
   take  fleet-arm-private-key  (/etc/aperire/fleet-arm.key)
+  take  fleet-trust-pin  (/etc/aperire/fleet-trust.pub)
   skip  fleet-arm-held-key  not present on this host
   skip  node-config  (yours to place; see the README)
 
@@ -343,11 +345,12 @@ It discovers what this host has (a dashboard, a co-located relay, an Advisor, a 
   skip  fleet-arm-held-key  not fleet-joined, or no key held for a later Advisor
   ok    fleet-tokens  -> .../fleet-tokens (4 files)
   ok    fleet-arm-private-key  -> .../fleet-arm.key  (owner-only; keep this set where only you can reach it)
+  ok    fleet-trust-pin  -> .../fleet-trust.pub
 
 == verifying
   MANIFEST.sha256 verifies, read back as aperire
 
-== done: 8 taken, 2 skipped, 0 failed
+== done: 9 taken, 2 skipped, 0 failed
 == set:  ~/aperire-backups/20260919-131144  (41M, owned by aperire, mode 700)
 ```
 
@@ -382,7 +385,7 @@ This is not the path for an update that went wrong. An update leaves the previou
 curl -fsSL https://get.aperire.one | bash -s -- --restore --from ~/aperire-backups/20260919-131144
 ```
 
-The restore runs the same way: the release's checked copy, and the state helper it writes every file with is that copy's too. `--yes`, `--overwrite`, `--dry-run`, `--instance <name>` and `--db-path <file>` go after `--restore`. Paths are absolute (a leading `~` is fine, your shell expands it), made of letters, digits and `_ . @ + , : = -`, with no `..`.
+The restore runs the same way: the release's checked copy, and the state helper it writes every file with is that copy's too. `--yes`, `--overwrite`, `--dry-run`, `--instance <name>`, `--db-path <file>` and `--replace-trust-pin` go after `--restore`. Paths are absolute (a leading `~` is fine, your shell expands it), made of letters, digits and `_ . @ + , : = -`, with no `..`.
 
 Before it touches anything, the whole set is copied into a private, root-owned staging area and validated there: every member is a plain file or a directory nobody else can write, the manifest names everything the set holds and nothing more, and the content matches. `MANIFEST.sha256` verifying only proves the set is complete and unchanged since `aperire-backup.sh` wrote it; it does not prove who wrote it. A set is as trusted as the place it was kept, so keep it somewhere only you can reach, the same as any other file holding your tokens; the directory it sits in is refused if another account on the box could write to it.
 
@@ -402,7 +405,7 @@ sudo openssl pkey -pubin -in /etc/aperire/fleet-arm.pub -outform DER | tail -c 3
 
 They must match exactly. If they don't, the set held a different key from the one this fleet was paired with: stop, and don't approve a pairing or arm a node until you've found out why.
 
-An aggregator's restore then closes on the thing itself: one of its nodes answering a read. For each node row in the restored `fleet.yaml`, it reads that node's token as the dashboard's account and asks the node's loopback read port for one reading, waiting up to 90 seconds (`APERIRE_RESTORE_NODE_WAIT`) for nodes to redial. One `200` is the PASS, naming the node. None answering is a FAIL with each node's reason, never a PASS. An aggregator with no node but itself gets a SKIP that says so. A node only answers once it has linked again, and a node that dialled this host while it held a links file with no row for that node waits up to an hour before asking again. Restart that node's dashboard and it redials at once.
+An aggregator's restore then closes on the thing itself: one of its nodes answering a read. For each node row in the restored `fleet.yaml`, it reads that node's token as the dashboard's account and asks the node's loopback read port for one reading, waiting up to 90 seconds for nodes to redial. One `200` is the PASS, naming the node. None answering is a FAIL with each node's reason, never a PASS. An aggregator with no node but itself gets a SKIP that says so. A node only answers once it has linked again, and a node that dialled this host while it held a links file with no row for that node waits up to an hour before asking again. Restart that node's dashboard and it redials at once.
 
 The fleet arm key comes back in two names when the set carries `fleet-arm.pub`: that content lands at `fleet-arm.paired.pub` too, so the copy an Advisor install would later place cannot be an older, held-over key (#724). A host paired but not yet running an Advisor only ever had the held name to begin with, and that alone comes back; installing the Advisor afterwards places it as `fleet-arm.pub`, the same as it would on a host paired that way for the first time.
 
@@ -495,13 +498,14 @@ curl -fsSL https://get.aperire.one | bash -s -- --restore --from ~/aperire-backu
 | Exit | Meaning | Remedy |
 |---|---|---|
 | 2 | Usage error, or the set's `OWNERSHIP` file is not the six-column shape a set from this tool always is | Fix the command line, or take a new set: this one may be hand-edited or from something else |
-| 3 | The set itself is the problem: no such directory, no `MANIFEST.sha256`, it does not verify, it holds something other than a plain file or a directory, a path escapes the set, a node token has a name no token has, its `fleet-arm.key` is not an Ed25519 private key, the set is writable by anyone but root and you, or the directory it is kept in is writable by anyone and has no sticky bit | Point `--from` at a real set kept somewhere safe, or take a new one; nothing is touched |
+| 3 | The set itself is the problem: no such directory, no `MANIFEST.sha256`, it does not verify, it holds something other than a plain file or a directory, a path escapes the set, a node token has a name no token has, its `fleet-arm.key` is not an Ed25519 private key, the key in its `fleet-trust.yaml` is not the set's own pin of it, the set is writable by anyone but root and you, or the directory it is kept in is writable by anyone and has no sticky bit | Point `--from` at a real set kept somewhere safe, or take a new one; nothing is touched |
 | 4 | This host's own Advisor unit names an account or group that doesn't resolve here; or the Advisor moved to its own account and its unit names no group shared with the dashboard, or names one the dashboard is not actually a member of; or the Advisor's state directory (or something above it) is a symlink, a plain file, or a directory writable by an account that is not its owner; or `/etc/aperire/fleet-tokens` is a symlink or not a directory; or the Advisor and the dashboard share no group to put a node token on; or the database's destination is a symlink, sits in a directory that is a symlink, or is somewhere the dashboard's account can't write; or, on a host where the dashboard runs as its own account, `dashboard/config` belongs to that account or is writable by group or other | Re-run the installer that creates the missing account (the update command printed); re-run `install-advisor-account.sh` if the shared group is missing or wrong; remove or rename a planted symlink; hand the database's directory to the dashboard's account with the `install -d` command printed; re-run `install-aperire-service.sh` to put `dashboard/config` back to the operator; or, if a directory in the chain is too permissive, run the update (`curl -fsSL https://get.aperire.one | bash -s -- --update --force`), which takes group and other write off it from a copy checked against the release, then run this again. Nothing is changed and no service is stopped by any of these |
 | 5 | The Advisor cannot be mapped: the set carries one and this host has none, the reverse, or more than one installed Advisor claims the same state directory | Install the Advisor first (the command is printed), remove it if the set was never meant to carry one, or restore each instance from its own set with `--instance` |
 | 6 | Aperire is not installed on this host yet | Run the one-liner printed, with the port the set recorded, then run this again |
 | 7 | This host's database has content the set does not, and `--yes` was given without `--overwrite` | Read what it printed about what would be overwritten, then re-run with `--overwrite` if that is what you mean, or restore onto a host whose database has not moved on |
 | 8 | The set's own env file names a database path that resolves outside this install's own root. A backup set names content, never a destination, and this is refused rather than trusted | Type the destination yourself: `--db-path <abs path>`, checked as any operator input to a privileged script is (absolute, no parent this script would have to invent outside the install, not an existing file that fails to look like a SQLite database) |
 | 9 | The set carries an aggregator's private fleet arm key, and this host already holds a fleet arm key the restore can't prove is the same: a different key, something other than a plain file, one `openssl` can't read, or no `openssl` to compare with. Nothing is touched | Compare the two public halves it prints. If the key on this host is the wrong one, move it aside yourself (`sudo mv /etc/aperire/fleet-arm.key /root/fleet-arm.key.replaced`) and run the restore again; any node paired to that key needs pairing again. Install `openssl` if it's missing |
+| 9 | The set carries root's pin of the fleet trust key, and this host already pins a different one, or its pin is not a plain file; or the set predates the pin and its key differs from the one pinned here. Nothing is touched | Compare the two keys it prints. Every node paired to this host trusts the key pinned here. If the set carries its own pin and that key is the one you mean this aggregator to use, run the restore again with `--replace-trust-pin`; any node paired to the old key needs pairing again. A set taken before the pin is refused whatever the flag says, because its key came from a file the dashboard account could write: restore from a set taken after this host pinned its key |
 | 1 | The restore ran and one or more closing checks FAILed | Read the FAIL line; it names what to check (the database it actually opened, the token pair, the relay's log, the Advisor's unit, or why no linked node answered) |
 
 **What the restore costs you.** Everything written between the backup and the loss. On a host backed up nightly that is a day of history, no operators and no passkeys. The gap shows in the History panel as a flat stretch and nowhere else.

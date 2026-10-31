@@ -2,6 +2,7 @@ package runbook
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -137,10 +138,14 @@ func RB005Normalise() Runbook {
 									"a container reporting healthy. Mount the config there first",
 								EtcConfigPathName)}
 						}
-						if sh.ArgsWrittenDown {
-							return Verdict{Name: n, Passed: false, Detail: fmt.Sprintf(
-								"this deployment already names the arguments it runs with (%s)",
-								strings.Join(sh.CommandOverride, " "))}
+						// The wrapper's set-node-args refuses a service that
+						// names an entrypoint: OR a command:, so this refuses
+						// the same, ahead of the approval and not after it.
+						// Keyed on what the deployment names, not on the
+						// both-named flag (#1311).
+						if NodeArgsNamed(sh.EntrypointOverride, sh.CommandOverride) {
+							return Verdict{Name: n, Passed: false, Detail: NodeArgsHandEdit(
+								sh.EntrypointOverride, sh.CommandOverride)}
 						}
 						return Verdict{Name: n, Passed: true, Detail: fmt.Sprintf(
 							"the config is mounted at %s, so the arguments can be written down without "+
@@ -200,6 +205,76 @@ const (
 	NormaliseConfigMount = "config-mount"
 	NormaliseNodeArgs    = "node-args"
 )
+
+// NodeArgsNamed is true when the deployment already names an entrypoint: or
+// a command:. The wrapper's set-node-args (scripts/aperire-node-wrapper.sh)
+// writes one fixed pair and refuses a service that names either, so the
+// Advisor offers node-args only where this is false (#1311).
+func NodeArgsNamed(entrypoint, command []string) bool {
+	return len(entrypoint) > 0 || len(command) > 0
+}
+
+// NodeArgsHandEdit says, for a deployment that names an entrypoint: or a
+// command:, what it names, that the Advisor will not overwrite it, and the
+// line the operator adds by hand. Empty when it names neither. The wrapper's
+// own refusal reads the same: "already names an entrypoint or a command".
+func NodeArgsHandEdit(entrypoint, command []string) string {
+	switch {
+	case len(entrypoint) > 0 && len(command) > 0:
+		return fmt.Sprintf("this deployment already names the arguments it runs with (%s); the Advisor "+
+			"will not overwrite what you chose, so change them in the file by hand",
+			strings.Join(command, " "))
+	case NodeArgsProgramFirst(entrypoint, command):
+		// The first word is a program, not an argument. Docker would run
+		// the image's entrypoint with it as its first argument, so the
+		// operator's program moves to entrypoint: and the rest stays.
+		return fmt.Sprintf("this deployment already names a command: (%s) and no entrypoint:, and its "+
+			"first word, %s, is a program, not an argument. The Advisor writes one fixed entrypoint and "+
+			"command pair and will not overwrite what you chose, so move %s to an entrypoint: line in "+
+			"the file by hand and keep the arguments in command: (%s). Adding an entrypoint: beside it "+
+			"would run the image's own program with yours as its first argument, and the node would "+
+			"not start", strings.Join(command, " "), command[0], command[0], strings.Join(NodeArgsHandLines(entrypoint, command), "; "))
+	case len(command) > 0:
+		return fmt.Sprintf("this deployment already names a command: (%s) and no entrypoint:. The "+
+			"Advisor writes one fixed entrypoint and command pair and will not overwrite what you "+
+			"chose, so add the entrypoint: line beside your command: in the file by hand: "+
+			"entrypoint: [\"/usr/bin/xrpld\"]", strings.Join(command, " "))
+	case len(entrypoint) > 0:
+		return fmt.Sprintf("this deployment already names an entrypoint: (%s) and no command:. The "+
+			"Advisor writes one fixed entrypoint and command pair and will not overwrite what you "+
+			"chose, so add the command: line beside your entrypoint: in the file by hand: "+
+			"command: [\"--conf\", \"%s\"]", strings.Join(entrypoint, " "), EtcConfigPathName)
+	}
+	return ""
+}
+
+// NodeArgsProgramFirst is true for a command: with no entrypoint: whose first
+// word is a program (it does not start with a dash), such as
+// ["/opt/ripple/bin/rippled", "--conf", "..."]. An entrypoint: written beside
+// that would run the image's program with this one as an argument.
+func NodeArgsProgramFirst(entrypoint, command []string) bool {
+	return len(entrypoint) == 0 && len(command) > 0 && !strings.HasPrefix(command[0], "-")
+}
+
+// NodeArgsHandLines is the pair of lines for a program-first command: their
+// own program as the entrypoint, their own arguments kept in command:. It is
+// theirs, never /usr/bin/xrpld: rewriting an operator's program is a ruling
+// (#1199), not something this offers. The command: line is left out when the
+// command was only the program.
+func NodeArgsHandLines(entrypoint, command []string) []string {
+	if !NodeArgsProgramFirst(entrypoint, command) {
+		return nil
+	}
+	lines := []string{"entrypoint: [" + strconv.Quote(command[0]) + "]"}
+	if len(command) > 1 {
+		q := make([]string, 0, len(command)-1)
+		for _, a := range command[1:] {
+			q = append(q, strconv.Quote(a))
+		}
+		lines = append(lines, "command: ["+strings.Join(q, ", ")+"]")
+	}
+	return lines
+}
 
 // userSpec is the same shape the wrapper's require_userspec enforces.
 // Numeric, because a name resolves differently inside the container than

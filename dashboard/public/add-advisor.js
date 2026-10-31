@@ -107,7 +107,9 @@
   // fleet (settings.html keeps that set in window.ApRevoking).
   function leaving(n) { return !n.is_self && Boolean(window.ApRevoking && window.ApRevoking[n.label]); }
   function candidates() { return nodes().filter(function (n) { return noAdvisor(n) && !leaving(n); }); }
-  function displayLabel(n) { return n.is_self ? (n.label || 'this dashboard') : n.label; }
+  // This host's own row prints display_name, the one name every page gives
+  // it (#1284). `label` stays the key: openAndScroll matches a deep link by it.
+  function displayLabel(n) { return n.is_self ? (n.display_name || n.label || 'this dashboard') : n.label; }
 
   // ── Step state ─────────────────────────────────────────────────────
   var PICKED = null;      // target id ('self' or a peer label), or null
@@ -510,7 +512,7 @@
     // own sentence, and a window line would promise a road that is shut.
     if (!cmd) { box.hidden = true; box.textContent = ''; WINDOW_KEY = null; return; }
     var arm = ov.self && ov.self.arm;
-    var host = (ov.self && ov.self.label) || 'this aggregator';
+    var host = (ov.self && (ov.self.display_name || ov.self.label)) || 'this aggregator';
     var other = n.is_self ? ''
       : ' This is a different window from the one on ' + displayLabel(n) + ', and that one does not stand in for it.';
     var key, html, readHtml;

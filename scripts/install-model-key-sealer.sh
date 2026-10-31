@@ -112,8 +112,8 @@
 # host whose arm tokens a dashboard could re-address.
 #
 # The address is loopback only and comes from /etc/aperire/node-wrapper.conf,
-# where the Advisor's wrapper install records it, or from
-# APERIRE_NODE_ADMIN_RPC. A node that is down at install time is not a reason
+# where the Advisor's wrapper install records it (APERIRE_NODE_ADMIN_RPC
+# moves it for an account that is not root, never for root). A node that is down at install time is not a reason
 # to guess: `--node-key <pubkey_node>` states it, and `--refresh-node-key`
 # reads it again later. A key that changed is stamped again the same way, and
 # every token cut for the old one is refused from that moment.
@@ -137,6 +137,32 @@
 # while nothing else that can write it was a service account.
 
 set -euo pipefail
+
+# As root the environment chooses no path or program (#1206): every
+# APERIRE_* variable is dropped except the ones a root caller passes on
+# purpose:
+#   APERIRE_INSTALL_TREE  get-aperire.sh and the pairing name the tree a staged copy serves (#764)
+#   APERIRE_INSTANCE      get-aperire.sh and install-advisor-stack.sh pass it; checked below
+# APERIRE_NODE_ADMIN_RPC is dropped with the rest: no root caller sets it,
+# and --node-key is how an operator states the node's key. An account id(1)
+# says is not root keeps them all, which is what every suite is. id(1) at a
+# fixed path, never bash's $EUID (#1109).
+if ! [[ "$(/usr/bin/id -u 2>/dev/null)" =~ ^[1-9][0-9]*$ ]]; then
+  for _v in $(compgen -e); do
+    case "$_v" in APERIRE_INSTALL_TREE|APERIRE_INSTANCE) ;; APERIRE_*) unset "$_v" ;; esac
+  done
+fi
+
+# The instance names units and paths, so it is held to the rule
+# advisor-owner-lib.sh holds it to, and anything else is refused (#1206).
+instance_name_ok() { # $1 = a name; [a-z] is held to ASCII, whatever the locale
+  local LC_ALL=C
+  [[ "$1" =~ ^[a-z0-9][a-z0-9-]{0,30}$ && "$1" != credcheck && "$1" != credcheck-* ]]
+}
+if [[ -n "${APERIRE_INSTANCE:-}" ]] && ! instance_name_ok "$APERIRE_INSTANCE"; then
+  printf 'refused: APERIRE_INSTANCE=%q is not an instance name (a-z, 0-9 and -, at most 31, not credcheck)\n' "$APERIRE_INSTANCE" >&2
+  exit 2
+fi
 
 # Where this program and its siblings are (SEALER_SELF), and the install tree it acts
 # on (REPO): a directory and its parent from a checkout, two when it is a copy

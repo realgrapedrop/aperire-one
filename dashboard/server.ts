@@ -2,7 +2,7 @@ import { createServer } from 'node:http';
 import { readFile, readdir, statfs, writeFile } from 'node:fs/promises';
 import { accessSync, constants as fsConstants, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, extname, join, resolve } from 'node:path';
-import { cpus, hostname as osHostname, arch as osArch, release as osRelease, type as osType, homedir as osHomedir } from 'node:os';
+import { cpus, hostname as osHostname, arch as osArch, release as osRelease, type as osType, homedir as osHomedir, userInfo as osUserInfo } from 'node:os';
 import { promises as dns } from 'node:dns';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -28,6 +28,7 @@ import {
   addMonthlyBandwidthDelta, getMonthlyBandwidth, getLastSnapshot, setLastSnapshot,
   queryBandwidthMonths,
   type MetricName,
+  peakMetricSince, loadStoreSeries, saveStoreSeries,
   addMetricObserver, writeAlertEvent, queryAlertHistory, updateAlertDelivery,
   upsertFiringState, clearFiringState, queryFiringState, type FiringStateRow,
   queryDigestRuns, writeDigestRun,
@@ -48,6 +49,7 @@ import {
   AdvisorNotesMirror,
   type NotesMirrorTarget, type FetchMemory, type FetchInbox,
 } from './lib/advisor-notes-mirror.js';
+import { buildDigestText, formatDigestTs, type DigestSummary } from './lib/mail-text.js';
 import { sendAlertEmail, sendDigestEmail, buildSubject, type EmailChannelConfig, type AlertEmailContext } from './email.js';
 import {
   parseRuleActionField, RULE_ACTION_MAX, RULE_ACTION_COMMAND_MAX,
@@ -86,6 +88,7 @@ import {
   checkAdvisorRevealJob, decideAdvisorReveal, buildAdvisorStateResponse,
   readAdvisorRevealWindowFacts, type AdvisorRevealWindowFacts,
 } from './lib/fleet-write-api.js';
+import { nodeStatusForRole } from './lib/peer-install-facts.js';
 import { buildNodeStatusFields, buildPeersFields, buildValidationSummaryFields, buildConsensusSnapshotFields, buildAmendmentBallotFields, buildGovernanceFields, buildSystemFields, buildNetStatsFields, buildValidationsTickFields, buildFleetRosterFields, buildNodeConfigFields, type LastCloseSummary } from './lib/read-payloads.js';
 import { parseRippledCfg } from './lib/rippled-cfg.js';
 import { advisorForwardQuery, advisorRunbookError } from './lib/advisor-proxy-query.js';
@@ -103,7 +106,8 @@ import { ReadStreamRegistry, formatSseEvent, type StreamSink } from './lib/read-
 import { loadFleetRegistry, type FleetNodeConfig } from './lib/fleet-registry.js';
 import { pushFailedLine } from './lib/trust-push-rows.js';
 import {
-  createFleetLinkHub, planLinkReload,
+  createFleetLinkHub, planLinkReload, createIssuedTombstoneFileStore, FLEET_LINK_ISSUED_TOMBSTONES_BASENAME,
+  pruneIssuedTombstones,
   type FleetLinkHub, type LinkRegistryRow, type WithheldLinkRow, type LinkRegistryFile,
 } from './lib/fleet-link-hub.js';
 import {
@@ -115,8 +119,7 @@ import {
   FLEET_LINK_PATH, FLEET_LINK_CONFIG_BASENAME, FLEET_LINK_REGISTRY_BASENAME, FLEET_LINK_TOMBSTONE_BASENAME,
   FLEET_LINK_HELLO_TIMEOUT_MS, FLEET_LINK_MAX_FRAME_BYTES, FLEET_PAIR_MAX_FRAME_BYTES,
 } from './types/fleet-link-contract.js';
-import { deriveSelfLabel } from './lib/self-label.js';
-import { buildNodeIdentity, safeRead } from './lib/alert-identity.js';
+import { buildNodeIdentity, resolveNodeHostname, resolveNodeLabel, resolveNodeName, safeRead } from './lib/alert-identity.js';
 import { logoutCancelTargets } from './lib/logout-targets.js';
 import { createHistoryCache } from './lib/history-cache.js';
 import { readVerifyReport, verifyReportMissing } from './lib/verify-report.js';
@@ -138,8 +141,8 @@ import { FleetFetchThrough, parseNodeOverviewLabel, resolvePeerByLabel } from '.
 import { readTokenFresh } from './lib/fleet-health.js';
 import { PeerReadProxy, PeerPinCache, parseNodeReadPath, isAllowedRoute, forwardableParams, parseNodeStreamLabel, parseStreamChannels } from './lib/peer-read-proxy.js';
 import { openPeerStream, relayPeerStream } from './lib/peer-stream-proxy.js';
-import { parseNodeAdvisorPath, fetchPeerAdvisor, fetchPeerAdvisorAsk, fetchPeerAdvisorAskProgress, attachActor, type PeerAdvisorResult } from './lib/peer-advisor-proxy.js';
-import { peerAdvisorFailureAnswer, peerFailureStatus, edgeSafeRelay } from './lib/peer-advisor-answer.js';
+import { parseNodeAdvisorPath, fetchPeerAdvisor, fetchPeerAdvisorAsk, fetchPeerAdvisorAskProgress, attachActor, readPeerAdvisorToken, type PeerAdvisorResult } from './lib/peer-advisor-proxy.js';
+import { peerAdvisorFailureAnswer, peerFailureStatus, peerReadFailureAnswer, edgeSafeRelay, type Viewer } from './lib/peer-advisor-answer.js';
 import { notesMirrorAnswer, type RegistryLabels } from './lib/notes-mirror-answer.js';
 
 /** The peer advisor reads that stay admin-only on this dashboard: a queue of
@@ -173,6 +176,7 @@ import { BINARY_NAMES, resolveAllCounters, findMissingRequired, createMissWarner
 import type { RelayPush } from './types/relay-contract.js';
 import { hostMetricsSource, type LastRelaySystem } from './lib/host-metrics-source.js';
 import { type NudbGrowth } from './lib/nudb-growth.js';
+import { SeriesStart } from './lib/store-series.js';
 import {
   parseAdvisorCheckInstallable, peerReleasePostureBody, type ReleaseFact,
 } from './lib/release-posture.js';
@@ -801,6 +805,27 @@ async function witnessAdvisorLedger(): Promise<void> {
 setTimeout(() => { void witnessAdvisorLedger(); }, 20_000);
 setInterval(() => { void witnessAdvisorLedger(); }, 60 * 60 * 1000);
 
+// Where the current store's size series begins (#1251). A store replaced
+// under the series (a different path at start, or a size that collapsed) starts
+// it over: the peaks, the growth fit, the free-days estimate and the chart read
+// from there, so nothing is fitted across two stores. Built before the first
+// walk below so the first sample of a new path lands after the cut. Absent
+// where no store is configured.
+const storeSeries: SeriesStart | null = RIPPLED_DATA_PATH
+  ? new SeriesStart(loadStoreSeries(), RIPPLED_DATA_PATH, Math.floor(Date.now() / 1000), {
+      save: (m) => saveStoreSeries(m.path, m.cut_s),
+      peakSince: (fromS) => peakMetricSince('nudb_size', fromS),
+      log: (line) => console.warn(line),
+    })
+  : null;
+/** The one place a store size is recorded into the series: the cut is decided
+ *  against what is already on record, then the reading is written. */
+function recordStoreSize(bytes: number, ts: number, alsoAdvisor: boolean): void {
+  storeSeries?.observe(bytes, Math.floor(ts / 1000));
+  writeMetric('nudb_size', bytes, ts);
+  if (alsoAdvisor) writeMetric('nudb_size_advisor', bytes, ts);
+}
+
 async function sampleNudbSize(): Promise<void> {
   if (!RIPPLED_DATA_PATH) return;
   const reading = await measureStore(RIPPLED_DATA_PATH);
@@ -817,7 +842,7 @@ async function sampleNudbSize(): Promise<void> {
     console.warn('[nudb] walk failed:', reading.error);
     return;
   }
-  if (reading.bytes !== null) writeMetric('nudb_size', reading.bytes);
+  if (reading.bytes !== null) recordStoreSize(reading.bytes, Date.now(), false);
 }
 // The store as this host's own Advisor measured it, when this process could
 // not measure it itself. Null the rest of the time, which is every host
@@ -890,10 +915,7 @@ function noteAdvisorStorePath(r: AdvisorStoreReading | null): void {
 // nudb_size_advisor, which is all a derivation from the Advisor's readings
 // reads, so the sizes of a store that used to be here never enter the fit.
 const recordAdvisorStoreSample = makeAdvisorSampleRecorder(
-  (bytes, ts) => {
-    writeMetric('nudb_size', bytes, ts);
-    writeMetric('nudb_size_advisor', bytes, ts);
-  },
+  (bytes, ts) => recordStoreSize(bytes, ts, true),
   RIPPLED_DATA_PATH,
 );
 
@@ -1943,6 +1965,11 @@ const FLEET_LINK_CONFIG_PATH = join(INSIGHTS_CONFIG_DIR, FLEET_LINK_CONFIG_BASEN
 // the dashboard's unit runs ProtectSystem=strict with dashboard/config
 // read-only, and data/ is the one directory of the install it may write.
 const FLEET_LINK_TOMBSTONE_PATH = join(DB_DIR, FLEET_LINK_TOMBSTONE_BASENAME);
+// #738: the revocations this host signed as an aggregator, so a node revoked
+// while its link was down is handed its tombstone in the 401 when it dials
+// again. In data/ for the same reason as the node's own copy above. Read once
+// here; a node install that never revoked anything has no such file.
+const fleetLinkIssuedTombstones = createIssuedTombstoneFileStore(join(DB_DIR, FLEET_LINK_ISSUED_TOMBSTONES_BASENAME));
 let fleetLinkRows: LinkRegistryRow[] = [];
 /**
  * Rows this aggregator holds and will not serve (#687).
@@ -1998,6 +2025,21 @@ function loadFleetLinks(): void {
   fleetLinkWithheldRows = plan.withheld;
   fleetLinkRegistryJudgeable = plan.judgeable;
   for (const line of plan.warnings) console.warn(line);
+  // #738 review, L1: a row back in the registry (a restore, say) is never
+  // answered with the tombstone this host kept for its credential. Only on a
+  // reload that read the file: an unreadable one says nothing about rows.
+  if (plan.judgeable) {
+    try {
+      const dropped = pruneIssuedTombstones(fleetLinkIssuedTombstones, plan.serving, plan.withheld);
+      if (dropped.length) {
+        console.log(`[fleet-link] ${dropped.join(', ')}: back in fleet-links.json, so the revocation kept for `
+          + 'that credential was dropped');
+      }
+    } catch (err) {
+      console.warn(`[fleet-link] a kept revocation for a row back in fleet-links.json could not be dropped from `
+        + `its file (${(err as Error).message}); it is dropped here until this dashboard restarts`);
+    }
+  }
   if (fleetLinkRows.length) {
     console.log(`[fleet-link] ${fleetLinkRows.length} node(s) may link to this aggregator`);
   }
@@ -2042,6 +2084,8 @@ function ensureFleetLinkHub(): FleetLinkHub {
       withheldRows: () => fleetLinkWithheldRows,
       // #688: a dial this host cannot judge is held, never refused 401.
       registryJudgeable: () => fleetLinkRegistryJudgeable,
+      // #738: what this host signed, for the 401 a revoked node meets.
+      issuedTombstones: fleetLinkIssuedTombstones,
       // Guarded like lib/fleet-seal.ts's copy of this call (#281):
       // readOwnPrivateKey validates nothing about the line it read, and
       // signWithSeed throws on a seed that is not 32 bytes. A null is a
@@ -2915,16 +2959,23 @@ function selfFleetPeer(node: FleetNodeConfig): FleetPeerPublic {
   const ownPubkeyNode = reach.ok && typeof info?.pubkey_node === 'string' && info.pubkey_node
     ? info.pubkey_node
     : null;
-  return buildSelfPeer(node, dot.verdict, dot.detail, {
+  // The host is the node's (#1284): on a split install that is the machine
+  // the relay reports, the same answer node-status gives a peer for its row.
+  const row = buildSelfPeer(node, dot.verdict, dot.detail, {
     buildVersion: running,
     latestRelease: latestInstallableRelease(),
     // Only meaningful when this node answered at all, an unreachable rippled
     // reports nothing, and a stale snapshot's last-known flag is not a fact
     // about now.
     amendmentBlocked: reach.ok && info ? Boolean(info.amendment_blocked) : null,
-  }, deployRefReader.current(), osHostname() || null, identityForWire(releaseReader.current()),
+  }, deployRefReader.current(), hostnameForAlerts() || null, identityForWire(releaseReader.current()),
   selfPinFacts(node.expected_pubkey_node, ownPubkeyNode),
   { state: stateV, health: healthV, alerts: alertsV });
+  // #1284. `label` stays the registry's: the Inbox, Settings and the Advisor
+  // deep links match this host by it. What the pages print is display_name,
+  // the one name every surface gives this host.
+  row.display_name = selfDisplayLabel(node) || node.label;
+  return row;
 }
 
 // ─── Fleet deploy divergence, issue #128 rung 2 ───────────────────────────
@@ -2988,11 +3039,13 @@ if (typeof fleetDeployTimer.unref === 'function') fleetDeployTimer.unref();
 const concernFirstSeen = new Map<string, number>();
 
 /** What this dashboard calls ITSELF, on every surface that renders a self
- *  label. The registry row wins when there is one; with no registry (a fresh
- *  install, which is the ordinary state of a single-node box) it is this
- *  machine's own name, short form, from the same os.hostname() the System tab
- *  and the NODE card's HOST row render. Never the browser's address: see
- *  lib/self-label.ts for why that was the bug (#145).
+ *  label. The order is the alert identity's, from one helper (lib/
+ *  alert-identity.ts), so a node has one name: the name its aggregator knows
+ *  it by (fleet-link.json), then the registry row, an aggregator's own row
+ *  first; with neither (a fresh install, which is the ordinary state of a
+ *  single-node box) it is the node's host name, short form, the same host the
+ *  alerts name (#1240). Never the browser's address: see lib/self-label.ts
+ *  for why that was the bug (#145).
  *
  *  '' when the host will not say its own name, which each caller renders as
  *  its own kind of absent rather than being handed an invented one.
@@ -3003,8 +3056,13 @@ const concernFirstSeen = new Map<string, number>();
  *  second call inside a browser-polled handler would do all of it twice per
  *  request, on an endpoint whose own comment says it is built from state that
  *  already exists. */
-function selfDisplayLabel(selfRow: FleetPeerPublic | null): string {
-  return deriveSelfLabel(selfRow?.label ?? null, osHostname());
+function selfDisplayLabel(selfRow: { label: string } | null): string {
+  return resolveNodeName({
+    pairedLabel: fleetLinkSlot.agent?.state().label,
+    fleetLabel: selfRow?.label,
+    aggregator: selfIsFleetAggregator(),
+    host: hostnameForAlerts(),
+  });
 }
 
 /** null means single-node, no registry, or the registry could not identify
@@ -3200,12 +3258,22 @@ function clearLocalNodeOnlyFiringState(): void {
   }
 }
 
-// Identify the dashboard host for alert email subjects + bodies.
-// `APERIRE_HOSTNAME` overrides; otherwise we use the OS hostname so the
-// emails read e.g. `cpu_busy_pct on aperire-prod` instead of the bare
-// localhost / Docker container ID.
+// The host an alert names. `APERIRE_HOSTNAME` overrides; then the host the
+// node's relay reports, which on a split install (Shape B) is the validator's
+// machine and not the one this process runs on (#1232); otherwise the OS
+// hostname, so the emails read e.g. `cpu_busy_pct on aperire-prod` instead of
+// the bare localhost / Docker container ID. The relay's hostname is kept from
+// its last frame whether or not that frame is still fresh: a quiet relay has
+// not moved house.
+function hostnameSourcesForAlerts(): { hostname: string; hostnameOverride: string | undefined; relayHostname: string | null } {
+  return {
+    hostname: osHostname(),
+    hostnameOverride: process.env.APERIRE_HOSTNAME,
+    relayHostname: lastRelaySystem?.payload.hostname ?? null,
+  };
+}
 function hostnameForAlerts(): string {
-  return process.env.APERIRE_HOSTNAME || osHostname();
+  return resolveNodeHostname(hostnameSourcesForAlerts());
 }
 
 // #1229. Which node an alert is about, for every channel, built in this one
@@ -3224,11 +3292,10 @@ function hostnameForAlerts(): string {
 // metric-write path, and a read that fails (a malformed authn.yaml) must cost
 // its own row, not the alert.
 function alertNodeFields(): Pick<AlertEmailContext, 'hostname' | 'dashboard_url' | 'identity'> {
-  const hostname = hostnameForAlerts();
   const identity = buildNodeIdentity({
     pairedLabel: fleetLinkSlot.agent?.state().label,
     fleetLabel: fleetSelfNode?.label,
-    hostname,
+    ...hostnameSourcesForAlerts(),
     aggregator: selfIsFleetAggregator(),
     serverInfo: snapshot.server_info as AnyObj | undefined,
     isValidatorKey: isRealValidatorKey,
@@ -3236,7 +3303,7 @@ function alertNodeFields(): Pick<AlertEmailContext, 'hostname' | 'dashboard_url'
     authnPublicUrl: safeRead(() => dashboardIdentity().public_url, null),
     fleetDashboardUrl: fleetSelfNode?.dashboard_url,
   });
-  return { hostname, dashboard_url: identity.url ?? '', identity };
+  return { hostname: identity.hostname, dashboard_url: identity.url ?? '', identity };
 }
 
 // Fan-out to configured delivery channels. Phase 4 implements only
@@ -3493,19 +3560,6 @@ addMetricObserver((metric, value, ts) => {
 // the cron seeds digestLastFiredDateUtc from the most recent 'sent'
 // row at startup so a 13:01 reboot doesn't re-fire the day's digest.
 
-interface DigestSummary {
-  ts: number;                       // epoch ms when gathered
-  windowHours: number;
-  hostname: string;
-  pubkey: string | null;
-  serverState: string | null;
-  ledgerIndex: number | null;
-  agreement: { pct: number | null; total: number; missed: number };
-  alerts: { total: number; byTier: { page: number; critical: number; warn: number }; top: Array<{ metric: string; severity: string; ts: number; value: number | null }> };
-  network: { peerCount: number | null; trustedUnl: number };
-  amendments: Array<{ name: string; eta?: string }>;
-}
-
 function gatherDigestSummary(cfg: DigestSendConfig): DigestSummary {
   const now = Date.now();
   const windowMs = cfg.include.digest_window_hours * 3_600_000;
@@ -3594,7 +3648,7 @@ function buildDigestHtml(summary: DigestSummary, cfg: DigestSendConfig): string 
     const lbl = sev === 'page' ? 'PAGE' : sev === 'critical' ? 'CRIT' : 'WARN';
     return `<span style="display:inline-block;padding:1px 7px;border-radius:10px;background:${col};color:#fff;font-size:10px;font-weight:700;letter-spacing:0.04em;">${lbl}</span>`;
   };
-  const formatTs = (tsMs: number) => new Date(tsMs).toISOString().replace('T', ' ').replace(/\.\d+Z$/, ' UTC');
+  const formatTs = formatDigestTs;
   const ag = summary.agreement;
   const agPctStr = esc(digestValue(ag.pct != null ? ag.pct.toFixed(2) + '%' : null));
 
@@ -3711,13 +3765,14 @@ async function fireDigestNow(reason = 'scheduled'): Promise<void> {
   const summary = gatherDigestSummary(digestSendConfig);
   const subject = buildDigestSubject(summary, digestSendConfig);
   const html    = buildDigestHtml(summary, digestSendConfig);
+  const text    = buildDigestText(summary, digestSendConfig);
   const cfgWithRecips: EmailChannelConfig = {
     apiKey: emailSendConfig.apiKey,
     sender: emailSendConfig.sender,
     recipients: digestSendConfig.recipients,
   };
 
-  const result = await sendDigestEmail(cfgWithRecips, subject, html);
+  const result = await sendDigestEmail(cfgWithRecips, subject, html, text);
   writeDigestRun({
     ts: Math.floor(Date.now() / 1000),
     channel: 'email',
@@ -5170,6 +5225,15 @@ function kickFeaturePoll(): void {
     .finally(() => { featurePollInFlight = false; });
 }
 
+/** Who is asking, for the one peer answer that names a file on this host
+ *  (lib/peer-advisor-answer.ts, tokenUnreadableFor): an administrator gets the
+ *  path, owner and mode, everyone else a general sentence. Read from the
+ *  session, never from the request. */
+function peerViewer(req: Parameters<typeof readSession>[0], label: string): Viewer {
+  const sess = readSession(req);
+  return { admin: !!sess && isAdmin(sess.role), label };
+}
+
 function sampleGovernance() {
   const info = (snapshot.server_info as AnyObj | undefined) ?? {};
   const features = snapshot.feature as Record<string, AnyObj> | undefined;
@@ -5394,18 +5458,22 @@ let lastFreeDaysWrite = 0;
 // One cache per series: the dashboard's own walks (`nudb_size`) and the
 // Advisor's readings of this store (`nudb_size_advisor`, #1245), which a
 // host is derived from one at a time and never both.
-type NudbSampleSet = { at: number; peak24h: number | null; window30d: HistoryPoint[] };
+type NudbSampleSet = { at: number; cutS: number; peak24h: number | null; window30d: HistoryPoint[] };
 const nudbSampleCache: Record<StoreSeries, NudbSampleSet | null> = { own: null, advisor: null };
 const NUDB_SAMPLE_METRIC: Record<StoreSeries, MetricName> = { own: 'nudb_size', advisor: 'nudb_size_advisor' };
 const NUDB_SAMPLE_TTL_MS = 60_000;
 function nudbSamples(series: StoreSeries, now: number): { peak24h: number | null; window30d: HistoryPoint[] } {
+  // Both series start at the store's cut (#1251), read in the SQL so a bucket
+  // that straddles it holds only the rows after it. A cache from before a cut
+  // is not served after one.
+  const cutS = storeSeries?.cutS() ?? 0;
   const cached = nudbSampleCache[series];
-  if (cached && now - cached.at < NUDB_SAMPLE_TTL_MS) return cached;
+  if (cached && cached.cutS === cutS && now - cached.at < NUDB_SAMPLE_TTL_MS) return cached;
   const metric = NUDB_SAMPLE_METRIC[series];
-  const day = queryHistory(metric, 24 * 3600_000);
-  const month = queryHistory(metric, 30 * 86_400_000, 'max');
+  const day = queryHistory(metric, 24 * 3600_000, 'avg', cutS);
+  const month = queryHistory(metric, 30 * 86_400_000, 'max', cutS);
   const peak24h = day.length ? day.reduce((m, p) => (p.value > m ? p.value : m), day[0].value) : null;
-  const fresh = { at: now, peak24h, window30d: month };
+  const fresh = { at: now, cutS, peak24h, window30d: month };
   nudbSampleCache[series] = fresh;
   return fresh;
 }
@@ -5701,6 +5769,13 @@ async function initHostMeta(): Promise<void> {
   };
 }
 initHostMeta();
+// The host block as the `system` broadcast carries it. The hostname is read
+// when the frame is built, not once at start: the relay's first frame comes
+// after startup, and on a split install it is what names the node's machine
+// (#1284). Same resolver as the alerts and node-status.
+function hostMetaNow(): HostMeta | null {
+  return hostMeta ? { ...hostMeta, hostname: hostnameForAlerts() } : null;
+}
 
 async function readHostUptime(): Promise<number | null> {
   try {
@@ -5903,9 +5978,11 @@ async function pushSystem() {
       // superset read-payloads.ts's buildSystemFields names fields from one
       // at a time rather than spreading (see that file's own header
       // comment). This field is deliberately NOT one of the ones it names,
-      // so it never reaches SystemResponse, the versioned read contract a
-      // peer or the Advisor reads. Local page only, off the WS `system`
-      // broadcast this object also feeds.
+      // so it never reaches SystemResponse. A peer's page reads it off the
+      // `node-status` route instead (#593), the one every fleet poll already
+      // fetches, where it is carried as `relay_version`; carrying it on both
+      // routes would be two copies of one fact. This copy feeds the local
+      // page, off the WS `system` broadcast this object also feeds.
       relay_version: sanitizeComponents({ relay: lastRelayVersion ?? '' }).relay ?? null,
       // #198. Node-store activity over the last get_counts interval, or null
       // when no usable pair exists yet (first poll after a start, or a pair
@@ -5936,7 +6013,7 @@ async function pushSystem() {
         entropy_avail: entropy,
         inode_usage_pct: inodeUsage,
         rippled_uptime_s: rippledUptime,
-        meta: hostMeta,
+        meta: hostMetaNow(),
       },
       // Raw rippled get_counts response, client picks out the fields it
       // renders. Poll cadence is 5 min (cache sizes change slowly).
@@ -7031,6 +7108,20 @@ let lastRelayVersion: string | null = null;
 // version, reads as not measured (empty), which sanitizeComponents drops.
 let lastAdvisordVersion: string | null = null;
 let lastAdvisordVersionAt = 0;
+/** The account this process runs as, or null when the OS cannot say (a
+ *  container run with a uid that has no passwd entry makes userInfo() throw).
+ *  Null is "not reported" to every reader, never a guessed name. */
+function dashboardAccountName(): string | null {
+  try { return osUserInfo().username || null; } catch { return null; }
+}
+
+/** Whether this request carries an administrator's session. Never throws and
+ *  never trusts the browser: the role is the session row's own. */
+function adminSession(req: Parameters<typeof readSession>[0]): boolean {
+  const sess = readSession(req);
+  return !!sess && isAdmin(sess.role);
+}
+
 function componentsNow(): Record<string, string> {
   const now = Date.now();
   if (now - lastAdvisordVersionAt > 60_000) {
@@ -7242,9 +7333,14 @@ const VALID_RANGES: Record<string, number> = {
 // a bucket. Wired here with the real query and the real bucket function, so
 // the cache and the aggregation can never disagree about bucket width.
 const historyCache = createHistoryCache<HistoryPoint>({
+  // The store's size series starts where the current store's does (#1251):
+  // the chart draws nothing from a store that was replaced, and a cut made
+  // while an answer was cached cannot be served from it.
   queryRange: (metric, fromS, toS, bucketS, agg) =>
-    queryHistoryRange(metric as MetricName, fromS, toS, bucketS, agg as 'avg' | 'max' | 'min'),
+    queryHistoryRange(metric as MetricName, metric === 'nudb_size' ? Math.max(fromS, storeSeries?.cutS() ?? 0) : fromS,
+      toS, bucketS, agg as 'avg' | 'max' | 'min'),
   bucketForRange,
+  epoch: (metric) => (metric === 'nudb_size' ? storeSeries?.cutS() ?? 0 : 0),
 });
 
 const httpServer = createServer(async (req, res) => {
@@ -7554,12 +7650,12 @@ const httpServer = createServer(async (req, res) => {
           const clockRaw = (lastSystemBroadcast as AnyObj | null)?.clock as AnyObj | undefined;
           okBody(buildNodeStatusFields({
             info,
-            // Plain osHostname(), NOT hostnameForAlerts(): the `system`
-            // route's host.meta.hostname (initHostMeta, ~3497) is the same
-            // bare expression, and a fleet Overview cross-checks the two.
-            // Routing this one through APERIRE_HOSTNAME would let one page
-            // give two answers to "what host is this node on".
-            hostName: osHostname() || null,
+            // hostnameForAlerts(), the same as the `system` broadcast's
+            // host.meta.hostname (hostMetaNow): a fleet Overview cross-checks
+            // the two, so they change together or one page gives two answers
+            // to "what host is this node on". On a split install both name
+            // the machine the relay reports, the one the alerts name (#1284).
+            hostName: hostnameForAlerts() || null,
             domain: snapshot.domain_status?.domain ?? null,
             unlTotal: snapshot.trusted_unl?.size ?? 0,
             isValidator: isValidatorNode(),
@@ -7576,6 +7672,17 @@ const httpServer = createServer(async (req, res) => {
             // can grade a fleet against one release.json rather than asking
             // each host what it thinks of itself (ADR 0022 decision 6).
             release: identityForWire(releaseReader.current()),
+            // This host's relay build (#593), read the way the local System
+            // tab's Relay row reads it: the last relay push's own
+            // `relay_version`, through the commit-shape check that turns an
+            // unstamped `dev` into "not measured". Null before any push.
+            relayVersion: sanitizeComponents({ relay: lastRelayVersion ?? '' }).relay ?? null,
+            // Where this dashboard is installed and who it runs as (#615),
+            // so an aggregator's Settings prints this box's real path in
+            // the commands it hands an operator. Both are facts about this
+            // process, nothing a request carries.
+            installDir: resolve(import.meta.dirname, '..'),
+            runAs: dashboardAccountName(),
           }));
           return;
         }
@@ -7908,6 +8015,18 @@ const httpServer = createServer(async (req, res) => {
           // is this host's own measurement and says nothing about any unit
           // but the one answering this request (#323).
           last_run: lastRunForWire(),
+          // The release key root's updater here checks against (#784), the
+          // same root-owned read this host's own card makes, and never a test
+          // key this process was pointed at. `lab` only when this host's own
+          // updater said so, as on that card.
+          release_key: (() => {
+            const own = releaseKeyWire(undefined, RELEASE_SIGNERS_PATH);
+            return {
+              state: own.state,
+              fingerprints: own.fingerprints,
+              ...(probe.facts?.signers === 'lab' ? { lab: true as const } : {}),
+            };
+          })(),
         };
         sendFleet(200, state);
         return;
@@ -8361,7 +8480,7 @@ const httpServer = createServer(async (req, res) => {
         memory: memoryMirrorFleet(rawLimit),
         memory_state: notesMirrorStateAll('memory'),
         inbox: inboxMirrorSummary(),
-      }, { localNode: LOCAL_NODE, selfLabel: fleetSelfNode?.label ?? null, registry: fleetRegistryLabels, polled: notesMirrorPolled })));
+      }, { localNode: LOCAL_NODE, selfLabel: selfDisplayLabel(fleetSelfNode) || null, registry: fleetRegistryLabels, polled: notesMirrorPolled })));
       return;
     }
 
@@ -8634,6 +8753,9 @@ const httpServer = createServer(async (req, res) => {
           older: graded.release.older,
           nodes: graded.nodes.map((n) => ({
             label: n.label, self: Boolean(n.self),
+            // #1284. The name the table prints for this host; `label` is the
+            // key its Apply and Restart buttons address.
+            ...(n.self && n.display_name ? { display_name: n.display_name } : {}),
             state: n.aperire_release_state ?? 'unknown',
             release: n.aperire_release ?? { kind: 'unknown' },
             // Why an ungraded row is ungraded, when the reason is one the
@@ -8666,6 +8788,22 @@ const httpServer = createServer(async (req, res) => {
             ...(n.self ? {} : {
               can_address: Boolean(resolvePeerByLabel(fleetPeerNodes, n.label)?.expected_pubkey_node),
             }),
+            // Where that node's dashboard is installed and who it runs as
+            // (#615), off the node-status read the fleet poll already makes,
+            // validated when it came off the wire and null behind the same
+            // gate as every graded field (an unreachable or mismatched node
+            // says nothing). Peers only: this host's own row reads its own
+            // directory. Read through installFactsFor and not off the fleet
+            // row, which /api/fleet serves to every signed-in role; this
+            // route is admin only. The page shows these beside the commands it
+            // hands an operator, as what the node said, and never inside one.
+            ...(n.self ? {} : (() => {
+              const facts = fleetPoller?.installFactsFor(n.label);
+              return {
+                ...(facts?.installDir ? { install_dir: facts.installDir } : {}),
+                ...(facts?.runAs ? { run_as: facts.runAs } : {}),
+              };
+            })()),
             // What THAT node last said it holds (#331): its update grant, the
             // endpoint root installs from, and whether it pins this
             // aggregator's key. Every member is that node's own answer, and a
@@ -9272,13 +9410,19 @@ const httpServer = createServer(async (req, res) => {
       if (!result.ok) {
         // Never a 502 or a 504 (#1134): the edge in front of an aggregator
         // replaces both with its own page. One mapping for every peer route.
-        send(peerFailureStatus(result.error), { error: result.error });
+        // `detail` rides only on token_unreadable (#1305): this host's own
+        // sentence about its own file, never an upstream's words.
+        const failed = peerReadFailureAnswer(result, peerViewer(req, node.label));
+        send(failed.status, failed.body);
         return;
       }
       send(200, {
         label: result.label,
         fetched_at_ms: result.fetched_at_ms,
-        node_status: result.node_status,
+        // The same two members come out for a monitor here as on the
+        // node-status read route below (#615): this bundle carries the
+        // peer's node-status body as it arrived.
+        node_status: nodeStatusForRole(result.node_status, adminSession(req)),
         peers: result.peers,
         validation_summary: result.validation_summary,
       });
@@ -9348,7 +9492,10 @@ const httpServer = createServer(async (req, res) => {
       if (!opened.ok) {
         // A response only if the browser is still there, an aborted request
         // has no one to tell. Same mapping as the other peer routes (#1134).
-        if (!res.writableEnded) sendJson(peerFailureStatus(opened.error), { error: opened.error, upstream_status: opened.upstreamStatus });
+        if (!res.writableEnded) {
+          const failed = peerReadFailureAnswer(opened, peerViewer(req, streamNode.label));
+          sendJson(failed.status, failed.body);
+        }
         return;
       }
       res.writeHead(200, {
@@ -9397,10 +9544,16 @@ const httpServer = createServer(async (req, res) => {
       if (!result.ok) {
         // Never a 502 or a 504 (#1134): the edge in front of an aggregator
         // replaces both with its own page. One mapping for every peer route.
-        send(peerFailureStatus(result.error), { error: result.error });
+        // `detail` rides only on token_unreadable (#1305).
+        const failed = peerReadFailureAnswer(result, peerViewer(req, node.label));
+        send(failed.status, failed.body);
         return;
       }
-      send(200, result.body);
+      // A peer's node-status says where its dashboard is installed and who it
+      // runs as (#615). That is for an administrator's commands, so every
+      // other role gets the body without those two members. The route name is
+      // the allowlisted one (isAllowedRoute above), never browser text.
+      send(200, nodeReadPath.route === 'node-status' ? nodeStatusForRole(result.body, adminSession(req)) : result.body);
       return;
     }
 
@@ -9505,7 +9658,7 @@ const httpServer = createServer(async (req, res) => {
         // keeps the peer's status (#560), and a node's own 5xx sentence
         // (#1117) travels on a 4xx, because the edge in front of this
         // dashboard replaces an origin 502 or 504 with its own page.
-        const answer = peerAdvisorFailureAnswer(result);
+        const answer = peerAdvisorFailureAnswer(result, peerViewer(req, nodeAdvisorPath.label));
         send(answer.status, answer.body);
         return;
       }
@@ -9615,8 +9768,16 @@ const httpServer = createServer(async (req, res) => {
         const peer = resolvePeerByLabel(fleetPeerNodes, label);
         if (!peer) { send(404, { error: 'peer_unknown' }); return; }
         if (!peer.advisor_origin || !peer.advisor_token_path) { send(409, { error: 'advisor_not_configured' }); return; }
-        const peerToken = readTokenFresh(peer.advisor_token_path);
-        if (!peerToken) { send(503, { error: 'peer advisor token unreadable on this host' }); return; }
+        // A token this host cannot read is its own answer (#1209, #1305): the
+        // code, the sentence naming the file and its owner, and the no-answer
+        // status the edge leaves alone. It was a 503 with the sentence in `error`.
+        const advisorTok = readPeerAdvisorToken(peer);
+        if (!advisorTok.ok) {
+          const refused = peerAdvisorFailureAnswer(advisorTok, peerViewer(req, peer.label));
+          send(refused.status, refused.body);
+          return;
+        }
+        const peerToken = advisorTok.token;
         // The resolved peer's origin + fresh token, the only values these
         // handlers ever see for this request. handleAdvisorApprove* already
         // take (advisorUrl, advisorToken) as parameters and use them for the
@@ -9679,7 +9840,12 @@ const httpServer = createServer(async (req, res) => {
           } catch (err) {
             // Edge-safe like every peer failure (#1134): a 502 here never
             // reached the page, which read the edge's HTML in its place.
-            send(peerFailureStatus('advisor_unreachable'), { error: 'peer advisor unreachable', detail: (err as Error).message });
+            // The code is `error`, the words are `detail`: a sentence in the
+            // code field is a key the page can never decide by (#1305).
+            send(peerFailureStatus('advisor_unreachable'), {
+              ok: false, error: 'advisor_unreachable',
+              detail: `This dashboard could not reach ${peer.label}\u2019s Advisor: ${(err as Error).message}.`,
+            });
           }
           return;
         }
@@ -9847,9 +10013,12 @@ const httpServer = createServer(async (req, res) => {
             headers: { authorization: `Bearer ${advisorApproveToken() ?? ''}` },
             signal: AbortSignal.timeout(30_000),
           });
-        const body = await r.text();
-        res.writeHead(r.status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
-        res.end(body);
+        // A 404 is the answer for a run that is not there, so it travels as
+        // one; a 5xx the edge would replace with a page goes on a status it
+        // leaves alone, with the Advisor's own beside the body (#1134, #1305).
+        const relayed = edgeSafeRelay(r.status, await r.text());
+        res.writeHead(relayed.status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+        res.end(relayed.body);
       } catch (err) {
         res.writeHead(503, { 'content-type': 'application/json', 'cache-control': 'no-store' });
         res.end(JSON.stringify({ error: 'advisor_unreachable', detail: (err as Error).message }));
@@ -9874,6 +10043,7 @@ const httpServer = createServer(async (req, res) => {
       repoDir: resolve(import.meta.dirname, '..'),
       peers: () => fleetPeerNodes,
       selfNode: () => fleetSelfNode,
+      selfDisplayName: () => selfDisplayLabel(fleetSelfNode),
       held: () => ({ nodes: fleetHeldNodes, reason: fleetHeldReason }),
       fleetView,
       selfAdvisorStatus: fetchSelfAdvisorStatus,
@@ -9882,6 +10052,7 @@ const httpServer = createServer(async (req, res) => {
         return typeof info.pubkey_node === 'string' && info.pubkey_node ? info.pubkey_node : null;
       },
       selfHostName: () => osHostname() || null,
+      selfRelayVersion: () => sanitizeComponents({ relay: lastRelayVersion ?? '' }).relay ?? null,
       selfArmState: () => {
         const state = armState(() => {
           try { return statSync(ARM_MARKER).mtimeMs; } catch { return null; }
@@ -9893,6 +10064,14 @@ const httpServer = createServer(async (req, res) => {
         host_name: osHostname() || null,
         install_dir: resolve(import.meta.dirname, '..'),
         label: fleetSelfNode?.label ?? null,
+        // #1284. The label this host goes by (pairing, then fleet.yaml), with
+        // no host fallback: Settings' Label fact prints only a real label.
+        // `label` above stays the registry's, the key.
+        display_label: resolveNodeLabel({
+          pairedLabel: fleetLinkSlot.agent?.state().label,
+          fleetLabel: fleetSelfNode?.label,
+          aggregator: selfIsFleetAggregator(),
+        }) || null,
         role: fleetSelfNode?.role ?? null,
         // The node's own view of its outbound link, one sentence. Absent on
         // a host that has no fleet-link.json, so the page prints no row for
@@ -10016,6 +10195,7 @@ const httpServer = createServer(async (req, res) => {
       advisorToken: advisorApproveToken,
       peerByLabel: (label) => resolvePeerByLabel(fleetPeerNodes, label) ?? null,
       selfLabel: () => fleetSelfNode?.label ?? null,
+      selfName: () => selfDisplayLabel(fleetSelfNode) || null,
     })) return;
 
     if (pathname.startsWith('/api/advisor/')) {
@@ -10282,8 +10462,12 @@ const httpServer = createServer(async (req, res) => {
             // upstream response into a dashboard error.
           }
         }
-        res.writeHead(r.status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
-        res.end(out);
+        // The Advisor's answer as it came, except a 5xx the edge would replace
+        // with a page: that goes on a status it leaves alone, with the
+        // Advisor's own beside the body (#1134, #1305).
+        const relayed = edgeSafeRelay(r.status, out);
+        res.writeHead(relayed.status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+        res.end(relayed.body);
       } catch (err) {
         console.warn(`[advisor] ${req.method} ${pathname} -> ${upstream} FAILED ` +
           `after ${Date.now() - startedAt}ms: ${(err as Error).message}`);
@@ -10841,7 +11025,12 @@ httpServer.on('upgrade', (req, socket, head) => {
     // the case where fleet-links.json is EMPTY, so "no rows, no hub" would
     // have refused the first node ever to join a fleet (phase 3). The armed
     // check is a memoised read of the code table, not a query per dial.
-    const hub = fleetLinkHub ?? (pairingArmed(Date.now()) ? ensureFleetLinkHub() : null);
+    // #738: and when it holds a revocation it signed. A fleet whose last node
+    // was revoked while offline has no rows and no code, and a destroyed
+    // socket reads as transient on that node, which then dials every minute
+    // instead of hourly. The hub answers it the 401 with its tombstone.
+    const hub = fleetLinkHub
+      ?? (pairingArmed(Date.now()) || fleetLinkIssuedTombstones.size() > 0 ? ensureFleetLinkHub() : null);
     if (!hub) { socket.destroy(); return; }
     hub.handleUpgrade(req, socket, head);
     return;

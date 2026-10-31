@@ -73,6 +73,11 @@ root on that host can read it, and neither the dashboard nor the page ever shows
 it again. The Advisor restarts to pick it up, which waits for any question
 already running, so the last step can take a minute.
 
+Set a monthly spend limit on the provider account the key belongs to. The key
+reaches nothing on your node or validator, so all someone could do with a copy
+is spend on that account, and the limit caps that. If you ever doubt the
+dashboard host, rotate the key (see [Change the model or rotate the key](#change-the-model-or-rotate-the-key)).
+
 **Where the key is kept, by OS.** Two methods, and a host uses whichever one its
 systemd supports. The checklist (`--check`) and the Advisor install both print
 which one this host will use, before anything is installed.
@@ -310,10 +315,12 @@ Everything it does, and everything it refuses to do, is written to a hash-chaine
 
 | Account | Runs | Reaches Docker? |
 |---|---|---|
-| your login | the dashboard | yes (in the docker group) |
+| `aperire-dashboard` | the dashboard | no |
 | `aperire-advisor` | the Advisor | no |
 
-The Advisor runs under its own account so that "it can only act through the wrapper" is enforced by the system, not promised by the code. That account may run exactly one program as root, the wrapper, and the wrapper is a readable list of everything the Advisor can do.
+Neither is your login. A fresh install runs the dashboard as `aperire-dashboard`, a system account with no login shell and no home directory, in none of the groups that are root on a host by themselves (`docker`, `sudo` and the like). A host that already ran the dashboard as another account keeps that account, and the installer warns about it.
+
+The Advisor runs under its own account so that "it can only act through the wrapper" is enforced by the system, not promised by the code. That account holds no sudo rule. It reaches the wrapper through one root socket, owned by root and the Advisor account's own group, mode 0660. The broker behind the socket admits only that account's uid, takes one verb from a fixed table and runs the wrapper, which root owns and which is a readable list of everything the Advisor can do.
 
 The two accounts share one group, `aperire-svc`, for two files the dashboard has to read: `approve.token`, which it presents when it calls the Advisor, and `read.token`, which a fleet aggregator authenticates against. Both are mode 0640.
 
@@ -334,7 +341,7 @@ There is one Advisor install and two ways to reach it. Both run `scripts/install
 5. `aperire-auth.sh advisor-sync` gives the Advisor its own copy of who may approve, for anyone who enrolled before it was installed.
 6. The read-back: enabled, running, and answering on `/v1/status`, before any of the above is claimed.
 
-Steps 1 and 6 are fatal, because there is no Advisor without them. Steps 2 to 5 are degradations: each one says what was lost and what to run instead, and the install carries on. Step 4 is the common one. The wrapper's configuration is read from a node deployment on this box, so a host that watches nodes elsewhere has none, and the Advisor stays on your login account there. That is weaker (your account is in the docker group, which is root-equivalent, so the wrapper is an audit trail rather than a boundary), and it is the expected outcome on such a host, not a failure.
+Steps 1 and 6 are fatal, because there is no Advisor without them. Steps 2, 3 and 5 are degradations: each one says what was lost and what to run instead, and the install carries on. Step 4 runs on every host, Ubuntu 22.04 and hosts with no node included. If it refuses on a host whose Advisor was already running, it puts the previous arrangement back and the rest still runs. The run then ends with exit 3 and a closing block, the last thing on the screen, saying the Advisor isn't on its own account and which command finishes the move. A first install has no previous arrangement to put back, so the Advisor is installed and not started, and the read-back ends the run with exit 1.
 
 **On a host that already runs Aperire One**, one command:
 
@@ -348,10 +355,10 @@ curl -fsSL https://get.aperire.one/advisor | bash
 sudo bash install.sh --role=co-located --with-advisor
 ```
 
-That is for a co-located host: the node runs here, container or native. If your node runs on a different host, use `--role=dashboard` and ask for the shared account, which is what such a host gets anyway:
+That is for a co-located host: the node runs here, container or native. If your node runs on a different host, use `--role=dashboard`, and the Advisor still gets its own account:
 
 ```bash
-sudo bash install.sh --role=dashboard --with-advisor --advisor-shared-account
+sudo bash install.sh --role=dashboard --with-advisor
 ```
 
 Both end where the other ends: with the Advisor answering and the four browser steps above for the model. The [flags](#advisor-flags-and-overrides) below cover the rest.
@@ -364,7 +371,7 @@ Defaults suit a single node. Change them only if you need to.
 
 | Flag or variable | Default | What it does |
 |---|---|---|
-| `--advisor-shared-account` | off | Runs the Advisor as your login account instead of its own. Weaker, and the reason is above |
+| `--advisor-shared-account` | off | Retired. Accepted and ignored: the Advisor always gets its own account |
 | `--advisor-port=N`, or `APERIRE_ADVISOR_PORT` | `7810` | The loopback port advisord listens on |
 | `APERIRE_ACCOUNT` | `aperire-advisor` | The name of the dedicated account |
 | `APERIRE_NODE_CONTAINER` | read from the wrapper config, else the one running container | The container this Advisor watches |
@@ -398,7 +405,7 @@ It detects the running unit (`xrpld.service`, then `rippled.service`, or the one
 `install-advisor-account.sh` creates the `aperire-advisor` account and moves the service onto it. It proves the arrangement works before touching the running service:
 
 - the account can reach its binary and write its own state
-- it can run the wrapper through sudo, and the wrapper answers
+- on a host with a node, it reaches the wrapper through its root socket and the wrapper answers, but the dashboard's account cannot
 - it cannot reach Docker
 - it cannot read your node's configuration (and it warns you if that file is still readable by every account on the host)
 - it cannot list your home directory
@@ -528,7 +535,14 @@ The Advisor's sudo rules are in `/etc/sudoers.d`, which your login can't read on
 
 ### Just the account move, not the Advisor
 
-If what you want is the Advisor back on your own account rather than gone, the installer printed the exact commands and kept your previous service file at `/etc/systemd/system/aperire-advisord.service.before-account`. In short: put that file back, remove `/etc/sudoers.d/aperire-advisor`, give the three directories back to your account with `curl -fsSL https://get.aperire.one | bash -s -- --run advisor-account --hand-trees-back` (it takes `advisor/state`, `advisor/evidence` and `advisor/knowledge-fleet` and does nothing else), and reload systemd.
+If you want the Advisor back on your own account rather than gone, the installer prints the exact commands when it moves the Advisor and keeps your previous service file at `/etc/systemd/system/aperire-advisord.service.before-account`. In order:
+
+1. Put that file back: `sudo cp -a /etc/systemd/system/aperire-advisord.service.before-account /etc/systemd/system/aperire-advisord.service`
+2. On a host with a node wrapper, stop the Advisor's root socket: `sudo systemctl disable --now aperire-node-wrapper.socket`. The installer prints this step only where it applies.
+3. Give the three directories back to your account: `curl -fsSL https://get.aperire.one | bash -s -- --run advisor-account --hand-trees-back`. It takes `advisor/state`, `advisor/evidence` and `advisor/knowledge-fleet` and does nothing else.
+4. Reload systemd and restart the Advisor: `sudo systemctl daemon-reload && sudo systemctl restart aperire-advisord`
+
+A moved Advisor holds no sudo rule, so there's no sudoers step. The installer removes any rule it finds once the Advisor answers on its socket. On a named instance, add `--instance <name>` to step 3 and use `aperire-node-wrapper-<name>.socket` and `aperire-advisord-<name>` in steps 2 and 4.
 
 Your node is untouched by any of this. The Advisor never changes anything without an approval you gave.
 

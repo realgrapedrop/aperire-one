@@ -2984,6 +2984,55 @@ image_binary_sha256() { # $1 = ref -> the sha256 of /usr/bin/xrpld, taken here
   printf '%s' "$out"
 }
 
+# The uid an image's USER runs as, worked out HERE and never by running the
+# image (#1329). A numeric USER (or uid:gid) is the uid as it stands. A name
+# is looked up in the image's own /etc/passwd, streamed out of a container
+# that is never started. Nothing from the image is sourced or evaluated; the
+# file is split on ":" and field 3 has to be a plain number.
+#
+# The runtime reads that file with its own parser, and a difference between
+# the two readers is a way past this check. So the file has to be one that
+# both read the same: printable ASCII and newlines only (a NUL is dropped by
+# a shell variable and kept by the runtime; a CR or a tab is part of a name to
+# one and not the other), no line padded with spaces (the runtime trims them),
+# and the name on exactly one line (no first-match against any-match).
+# Returns 1 when the name cannot be looked up at all (no name, a name the
+# file lacks, a file that cannot be read), 2 when the file is not one
+# both readers agree on, and 3 for a uid above 2147483647, which Docker
+# wraps. The caller treats any of them as a refusal, never a pass.
+image_user_uid() { # $1 = container id, $2 = the image's USER -> uid on stdout
+  local cid=$1 spec=$2 name members pw bad line n uid hit=0 found=""
+  name=${spec%%:*}
+  if [[ "$name" =~ ^[0-9]{1,10}$ ]]; then
+    # Docker keeps the low 32 bits of a uid it is given (uint32), and moby's
+    # own bound is 2147483647: 4294967296 is root to the kernel. Base 10
+    # named, so a leading zero is not read as octal.
+    (( 10#$name <= 2147483647 )) || return 3
+    printf '%s' "$name"
+    return 0
+  fi
+  [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9._-]{0,63}$ ]] || return 1
+  members=$(docker cp -L "$cid:/etc/passwd" - 2>/dev/null | tar -tv 2>/dev/null) || return 1
+  [[ $(printf '%s\n' "$members" | grep -c .) -eq 1 && "$members" == -* ]] || return 2
+  # Counted on the raw stream, before a shell variable can drop a byte.
+  bad=$(docker cp -L "$cid:/etc/passwd" - 2>/dev/null | tar -xO 2>/dev/null \
+        | head -c 1048577 | LC_ALL=C tr -d '\040-\176\n' | wc -c) || return 1
+  [[ "$bad" == 0 ]] || return 2
+  pw=$(docker cp -L "$cid:/etc/passwd" - 2>/dev/null | tar -xO 2>/dev/null | head -c 1048577) || return 1
+  (( ${#pw} <= 1048576 )) || return 2
+  while IFS= read -r line; do
+    [[ "$line" != " "* && "$line" != *" " ]] || return 2
+    IFS=: read -r n _ uid _ <<<"$line"
+    [[ "$n" == "$name" ]] || continue
+    hit=$((hit + 1))
+    found=$uid
+  done <<<"$pw"
+  (( hit == 1 )) || { (( hit == 0 )) && return 1; return 2; }
+  [[ "$found" =~ ^[0-9]{1,10}$ ]] || return 2
+  (( 10#$found <= 2147483647 )) || return 3
+  printf '%s' "$found"
+}
+
 # The marker a verified digest leaves behind, and the check that reads it.
 #
 # Root-owned, under a root-owned directory this script creates itself. Never
@@ -3742,6 +3791,21 @@ json.dump(d, sys.stdout)
     elif (( signed_rc != 0 )); then
       die "could not read $ARG through the signed package chain, so nothing about $ref was checked ($(printf '%s\n' "$signed" | sed -n 's/^refused=//p' | head -1))"
     fi
+    # The file verify_signed_release made for the per-file hashes stays in the
+    # temp dir unless something removes it, and it stayed there on every check
+    # (#588). Removed on every way out of this branch, by the one name it was
+    # made under: the value came back through a stream, so it is removed only
+    # if it still has the shape of what that function creates. Set before any
+    # of the refusals below, because each of them is a die.
+    # The LAST such line: verify_signed_release appends its own after whatever
+    # the container printed, so a line of the container's cannot be the one read.
+    signed_md5=$(printf '%s\n' "$signed" | sed -n 's/^package_md5sums=//p' | tail -1)
+    md5_scrap() {
+      [[ "${signed_md5:-}" == "${TMPDIR:-/tmp}"/aperire-md5sums.?????? && -f "$signed_md5" && ! -L "$signed_md5" ]] \
+        && rm -f -- "$signed_md5"
+      return 0
+    }
+    trap md5_scrap EXIT
     signed_pkg=$(printf '%s\n' "$signed" | sed -n 's/^package=xrpld=//p' | head -1)
     signed_deb=$(printf '%s\n' "$signed" | sed -n 's/^deb_sha256=//p' | head -1)
     # One revision, chosen once, by the image's own package hash, and every
@@ -3761,7 +3825,6 @@ json.dump(d, sys.stdout)
     signed_bin=$(printf '%s\n' "$signed" | sed -n 's/^binary_sha256=//p' | head -1)
     signed_ver=$(printf '%s\n' "$signed" | sed -n 's/^binary_version=//p' | head -1)
     signed_commit=$(printf '%s\n' "$signed" | sed -n 's/^binary_commit=//p' | head -1)
-    signed_md5=$(printf '%s\n' "$signed" | sed -n 's/^package_md5sums=//p' | head -1)
     [[ "$signed_bin" =~ ^[0-9a-f]{64}$ ]] \
       || die "the signed package chain answered with no usable binary hash for $ARG"
 
@@ -3772,7 +3835,7 @@ json.dump(d, sys.stdout)
     # behind for every container created from it, and this verb creates one
     # per check (#682, second review).
     # shellcheck disable=SC2064
-    trap "docker rm -f -v '$cid' >/dev/null 2>&1 || true" EXIT
+    trap "docker rm -f -v '$cid' >/dev/null 2>&1 || true; md5_scrap" EXIT
 
     # Exactly ONE member, and a regular file (#682, second review). A
     # DIRECTORY at /usr/bin/xrpld streams its whole tree through `tar -xO`,
@@ -3867,6 +3930,19 @@ json.dump(d, sys.stdout)
     # ($deb) was read above, before the signed chain, because it picks the
     # revision.
     usr=$(docker image inspect "$ref" --format '{{.Config.User}}' 2>/dev/null) || usr=""
+    # Who that USER is once the image's own /etc/passwd has had its say
+    # (#1329). Read now: the container is removed below. A name is not a
+    # uid, and `USER xrpld` beside `xrpld:x:0:0` runs the node as root.
+    usr_uid=""
+    usr_rc=0
+    if [[ -n "$usr" ]]; then
+      if usr_uid=$(image_user_uid "$cid" "$usr"); then
+        usr_rc=0
+      else
+        usr_rc=$?
+        usr_uid=""
+      fi
+    fi
     base=$(docker image inspect "$ref" \
              --format '{{index .Config.Labels "org.opencontainers.image.base.name"}}' 2>/dev/null) || base=""
     # The index's entry for the SAME revision the chain read, never for
@@ -3881,6 +3957,7 @@ json.dump(d, sys.stdout)
       || die "the signed package index could not be read for $ARG, so the package this image says it was built from was never compared; nothing was recorded"
 
     docker rm -f -v "$cid" >/dev/null 2>&1 || true
+    md5_scrap
     trap - EXIT
 
     # The verdict. Every check has to be MEASURED and EQUAL; an unmeasured
@@ -3902,8 +3979,16 @@ json.dump(d, sys.stdout)
       fail="what this image would load into the node could not be accounted for: $loaded_detail"
     elif [[ -n "$idx" && "$deb" != "$idx" ]]; then
       fail="the image says it was built from package $deb; the signed index publishes $idx"
-    elif [[ -z "$usr" || "$usr" == root || "$usr" == 0 || "$usr" == 0:* ]]; then
+    elif [[ -z "$usr" ]]; then
       fail="$ref names no account of its own, so it would run as root wherever a deployment names none"
+    elif [[ "$usr_rc" == 3 ]]; then
+      fail="$ref runs as '$usr', which resolves to an account Docker would run as root (a uid above 2147483647 wraps to 0); nothing was recorded. Use an image whose USER is an unprivileged account, or build the image here from the signed package"
+    elif [[ "$usr_rc" == 2 ]]; then
+      fail="$ref runs as '$usr', and the image's /etc/passwd is malformed (an odd byte, a line padded with spaces, the name on more than one line, or a uid that is not a number), so what that name means is not proven; nothing was recorded. Build the image here from the signed package instead"
+    elif [[ -z "$usr_uid" ]]; then
+      fail="$ref runs as '$usr', and that could not be turned into a uid from the image's own /etc/passwd, so it is not proven to run as anyone but root; nothing was recorded. Build the image here from the signed package instead"
+    elif [[ "$usr_uid" =~ ^0+$ ]]; then
+      fail="$ref runs as '$usr', which is uid 0 (root) inside the container wherever a deployment names no user; nothing was recorded. Use an image whose USER is an unprivileged account, or build the image here from the signed package"
     fi
 
     printf 'ref=%s\n' "$ref"

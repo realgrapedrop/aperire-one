@@ -124,8 +124,7 @@ func (s *server) knowledgeBundle(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, knowledge.ErrTooLarge):
 			status = http.StatusRequestEntityTooLarge
 		case errors.Is(err, knowledge.ErrPath), errors.Is(err, knowledge.ErrHash),
-			errors.Is(err, knowledge.ErrManifest), errors.Is(err, knowledge.ErrArchive),
-			errors.Is(err, knowledge.ErrEmptyBundle):
+			errors.Is(err, knowledge.ErrManifest), errors.Is(err, knowledge.ErrArchive):
 			status = http.StatusBadRequest
 		default:
 			status = http.StatusInternalServerError

@@ -51,7 +51,7 @@ import {
   UPDATE_SAY_MAX_CHARS, UPDATE_STEP_MAX_CHARS, UPDATE_UNIT_MAX_CHARS,
   UPDATE_MAX_UNITS, UPDATE_STATE_MAX_BYTES,
   type UpdateApplyJob, type UpdateRestartJob, type UpdateJob,
-  type UpdateStateResponse, type UpdateStateRun, type FleetWriteErrorBody,
+  type UpdateStateResponse, type UpdateStateRun, type UpdateStateReleaseKey, type FleetWriteErrorBody,
 } from '../types/fleet-write-contract.js';
 import { FLEET_LINK_BACKOFF_MAX_MS } from '../types/fleet-link-contract.js';
 
@@ -656,6 +656,10 @@ export interface NodeCompleteness {
    *  built to say what they measured; the two are the same reading on
    *  purpose (#266). */
   component_drift?: string[];
+  /** The release key that node's updater checks against, as that node read
+   *  it (#784). Omitted by an older build, and by one whose answer did not
+   *  pass the shape check below: absent is "did not say", never a mismatch. */
+  release_key?: UpdateStateReleaseKey;
   /** Present only when `answered` is false: why. */
   reason?: string;
   detail?: string;
@@ -714,6 +718,32 @@ function appliedNotRestarted(run: UpdateStateRun | null): NodeCompleteness['appl
   };
 }
 
+/** An OpenSSH SHA-256 fingerprint: the prefix and 43 base64 characters. */
+const SSH_FINGERPRINT_RE = /^SHA256:[A-Za-z0-9+/]{43}$/;
+
+/**
+ * A node's release key answer, kept only when it is the shape a node's own
+ * reader produces (#784). It is node-authored and lands on a page, so it is
+ * checked whole: a known state, at most two fingerprints of the one shape,
+ * none unless the state is `ok`, and `lab` only as a literal true. Anything
+ * else is dropped entirely, which reads as "did not say".
+ */
+export function carriedReleaseKey(value: unknown): UpdateStateReleaseKey | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const v = value as { state?: unknown; fingerprints?: unknown; lab?: unknown };
+  if (v.state !== 'ok' && v.state !== 'none' && v.state !== 'unreadable') return undefined;
+  if (!Array.isArray(v.fingerprints)) return undefined;
+  const fps = v.fingerprints;
+  if (v.state === 'ok') {
+    if (fps.length < 1 || fps.length > 2) return undefined;
+    if (!fps.every((f) => typeof f === 'string' && SSH_FINGERPRINT_RE.test(f))) return undefined;
+    if (new Set(fps).size !== fps.length) return undefined;
+  } else if (fps.length !== 0) {
+    return undefined;
+  }
+  return { state: v.state, fingerprints: fps.map(String), ...(v.lab === true ? { lab: true as const } : {}) };
+}
+
 /**
  * Ask one node what it holds. Never throws, never re-pins.
  *
@@ -767,6 +797,11 @@ export async function readNodeCompleteness(
     // applied and its units are still on the old code. Off the node's own
     // run record, never off a job this dashboard happens to be holding.
     ...(applied ? { applied } : {}),
+    // The release key that node trusts (#784), off its own root-owned file.
+    ...(() => {
+      const key = carriedReleaseKey(s.release_key);
+      return key ? { release_key: key } : {};
+    })(),
     // Component drift (#266), off this node's OWN two readings of itself:
     // what it measured, and what it says it is installed at. Never the
     // release this aggregator believes, a node graded `behind` by the

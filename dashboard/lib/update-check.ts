@@ -128,6 +128,12 @@ export interface UpdateLatest {
   sha256: string;
   published_at: string;
   notes?: UpdateNotes;
+  /** Where this release's changelog is, when the publisher knows the tag is
+   *  on the public repository (#299). DISPLAY ONLY, like the notes: the page
+   *  prints a link from it and only after checking it against the one
+   *  public address it knows. Absent is the normal answer, and the page
+   *  then links the file on the default branch. */
+  changelog_url?: string;
 }
 
 export interface UpdateCheckResult {
@@ -270,6 +276,9 @@ export function parseReleaseJson(raw: string | null | undefined): UpdateLatest |
   const out: UpdateLatest = { tag, commit, sha256: sha256.toLowerCase(), published_at: published };
   const notes = parseNotes(o.notes);
   if (notes) out.notes = notes;
+  // Like the notes, a bad link drops the link and never the release.
+  const cl = typeof o.changelog_url === 'string' ? o.changelog_url.trim() : '';
+  if (cl.length > 0 && cl.length <= 300 && /^https:\/\/[^\s"'<>\\]+$/.test(cl)) out.changelog_url = cl;
   return out;
 }
 
@@ -808,20 +817,22 @@ export function parseStoredCheck(raw: string | null | undefined): UpdateCheckRes
  * with no notes, and the fold that says what it brings hides (#295). This
  * process fetched the same release.json on its own read, notes included.
  * When both readings name the same archive, those notes are this release's
- * notes and travel with it. When they name different archives (#293), they
+ * notes and travel with it, and so does the changelog link (#299), which is
+ * published beside them. When they name different archives (#293), they
  * describe a release this host would refuse to install, and stay off.
  */
 export function carryNotes(
   graded: UpdateCheckResult | null,
   own: UpdateCheckResult | null | undefined,
 ): UpdateCheckResult | null {
-  if (!graded || !graded.latest || graded.latest.notes) return graded;
-  const notes = own?.latest?.notes;
-  if (!notes) return graded;
+  if (!graded || !graded.latest) return graded;
+  const notes = graded.latest.notes ? undefined : own?.latest?.notes;
+  const url = graded.latest.changelog_url ? undefined : own?.latest?.changelog_url;
+  if (!notes && !url) return graded;
   const a = graded.latest, b = own!.latest!;
   const same = a.sha256 === b.sha256 || (a.tag === b.tag && sameCommit(a.commit, b.commit));
   if (!same) return graded;
-  return { ...graded, latest: { ...a, notes } };
+  return { ...graded, latest: { ...a, ...(notes ? { notes } : {}), ...(url ? { changelog_url: url } : {}) } };
 }
 
 /** Two endpoints, two answers, one host. */

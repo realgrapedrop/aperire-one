@@ -1234,14 +1234,18 @@ cmd_magic_link() {
       return 0
     fi
     # The send is the dashboard's own code (email.ts), so as root it runs as
-    # the dashboard's account, the same as the reads of authn.yaml (#993). The
-    # inner shell loads the environment file for RESEND_API_KEY itself: the
-    # key never rides on an argument list and never sits in this shell. The
-    # dashboard's account reads that file already; it is its unit's own.
+    # the dashboard's account, the same as the reads of authn.yaml (#993). It
+    # runs through tsx, as the dashboard's unit does: email.ts and lib/ import
+    # one another by .js names that tsx maps to .ts and Node's own type
+    # stripping does not, so under it the script never got past its imports
+    # (#1354). The inner shell loads the environment file for RESEND_API_KEY
+    # itself: the key never rides on an argument list and never sits in this
+    # shell. The dashboard's account reads that file already; it is its
+    # unit's own.
     # shellcheck disable=SC2016  # the inner shell's own variables
     if dash_code bash -c '
          if [[ -r /etc/aperire/aperire.env ]]; then set -a; . /etc/aperire/aperire.env; set +a; fi
-         cd "$1" && exec "$2" --experimental-strip-types scripts/send-magic.mjs "$3" "$4" "$5"' \
+         cd "$1" && exec "$2" --import tsx scripts/send-magic.mjs "$3" "$4" "$5"' \
          send "$DASHBOARD_DIR" "$NODE_BIN" "$user_email" "$EMAIL_SUBJECT" "$url" 2>&1; then
       echo "(emailed enrollment URL to $user_email)"
       emailed=true

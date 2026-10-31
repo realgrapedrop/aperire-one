@@ -61,20 +61,28 @@
 #
 # ── Putting it back ───────────────────────────────────────────────────────
 #
-# The run prints both halves, with the real paths filled in. It is:
+# The run prints this, with the real paths filled in:
 #
 #   sudo docker compose -f <compose> stop
-#   sudo cp <compose>.<stamp>.bak <compose>
 #   curl -fsSL https://get.aperire.one | bash -s -- --run migrate-node --hand-store-back
-#   sudo chgrp root <config>            # what container-root read it as
 #   sudo docker compose -f <compose> up -d
 #
-# The store goes back with --hand-store-back (#1148), entry by entry on a
-# descriptor, the way it went over, and not with a `chown -R` you type: a
-# recursive chown by name changes a hard link to a file outside the store like
-# any other entry, and the node's account writes this tree. It does that and
-# nothing else, takes the same node-stopped and rotation guards as --apply, and
-# the path is the one the compose file names, not one you give it.
+# --hand-store-back puts back all three things --apply changed, each on a
+# descriptor and never by a name root would follow:
+#
+#   the store       to root, entry by entry, the way it went over (#1148). A
+#                   `chown -R` you type changes a hard link to a file outside
+#                   the store like any other entry, and the node's account
+#                   writes this tree
+#   the compose     from the newest dated .bak, read without following a
+#                   link and renamed onto the name (#1208). A `cp` you type
+#                   as root writes through a link planted at the name
+#   the config      its group, and the validator list's, back to root, if it
+#                   is still the node's (#1208). A `chgrp` you type follows
+#                   a link at the name
+#
+# It takes the same node-stopped and rotation guards as --apply, and the paths
+# are the ones root's own confs name, not ones you give it.
 #
 # Nothing outside <dir> and the node's own config is touched by either
 # direction.
@@ -211,9 +219,30 @@ info "store       : $DATA_DIR"
   || die "$DATA_DIR is not a directory. This script only migrates the layout scripts/install-aperire-node.sh writes, where the store is data/ beside the compose file"
 [[ ! -L "$DATA_DIR" ]] \
   || die "$DATA_DIR is a symbolic link to $(readlink -f "$DATA_DIR" 2>/dev/null || echo '<unreadable>'). A recursive chown through it would reach outside this node's own directories. Move the store or chown it by hand, then run this again"
-grep -qF ":/var/lib/xrpld" "$COMPOSE_FILE" \
+# Everything this run reads out of the compose, it reads from one copy root
+# took by descriptor (#1295): the compose's directory is the login's, and a
+# read by name there follows a link planted at the compose's name. A compose
+# that cannot be read that way stops the run here, before anything changes.
+# --hand-store-back alone goes on by name: it replaces that name by plant
+# and never writes through it (#1208), and a link there is what it puts right.
+SHAPE_SNAP=$(mktemp) || die "could not make the file this reads ${COMPOSE_FILE} into; nothing has been changed"
+trap 'rm -f "$SHAPE_SNAP"' EXIT
+SHAPE_SRC="$SHAPE_SNAP"
+if ! command -v python3 >/dev/null 2>&1 || [[ ! -r "$HERE/state-file.py" ]] \
+   || ! python3 -I "$HERE/state-file.py" read "$COMPOSE_FILE" > "$SHAPE_SNAP"; then
+  if ((PUT_BACK)); then
+    SHAPE_SRC="$COMPOSE_FILE"
+  elif ! command -v python3 >/dev/null 2>&1; then
+    die "python3 is needed to read ${COMPOSE_FILE} safely and was not found; nothing has been changed"
+  elif [[ ! -r "$HERE/state-file.py" ]]; then
+    die "$HERE/state-file.py is missing, and it is what reads ${COMPOSE_FILE} and hands the store over; nothing has been changed"
+  else
+    die "${COMPOSE_FILE} could not be read safely (named above); nothing has been changed"
+  fi
+fi
+grep -qF ":/var/lib/xrpld" "$SHAPE_SRC" \
   || die "$COMPOSE_FILE does not mount anything at /var/lib/xrpld, so which directory the node writes its store to is not something this script can read out of it"
-grep -qF -e "${DATA_DIR}:/var/lib/xrpld" "$COMPOSE_FILE" \
+grep -qF -e "${DATA_DIR}:/var/lib/xrpld" "$SHAPE_SRC" \
   || die "$COMPOSE_FILE mounts something other than ${DATA_DIR} at /var/lib/xrpld. Migrate that host by hand: this script would chown a directory the node does not use"
 
 # ── The compose file's own explanation of itself ──────────────────────────
@@ -255,7 +284,7 @@ node_log_host_path() {
 }
 
 compose_image_tag() {  # the tag the running deployment names, @TAG@'s value
-  sed -n 's#^[[:space:]]*image:[[:space:]]*[^:[:space:]]*:\([^[:space:]]*\).*#\1#p' "$COMPOSE_FILE" | head -1
+  sed -n 's#^[[:space:]]*image:[[:space:]]*[^:[:space:]]*:\([^[:space:]]*\).*#\1#p' "$SHAPE_SRC" | head -1
 }
 
 compose_header_ids() {  # "uid gid" to render the header with
@@ -263,8 +292,8 @@ compose_header_ids() {  # "uid gid" to render the header with
   if [[ -n "${NODE_UID:-}" && -n "${NODE_GID:-}" ]]; then
     printf '%s %s' "$NODE_UID" "$NODE_GID"; return 0
   fi
-  u=$(sed -nE 's/^[[:space:]]*user:[[:space:]]*"([0-9]+):([0-9]+)".*/\1/p' "$COMPOSE_FILE" | head -1)
-  g=$(sed -nE 's/^[[:space:]]*user:[[:space:]]*"([0-9]+):([0-9]+)".*/\2/p' "$COMPOSE_FILE" | head -1)
+  u=$(sed -nE 's/^[[:space:]]*user:[[:space:]]*"([0-9]+):([0-9]+)".*/\1/p' "$SHAPE_SRC" | head -1)
+  g=$(sed -nE 's/^[[:space:]]*user:[[:space:]]*"([0-9]+):([0-9]+)".*/\2/p' "$SHAPE_SRC" | head -1)
   printf '%s %s' "${u:-997}" "${g:-997}"
 }
 
@@ -300,7 +329,7 @@ compose_header_rendered() {  # the current template's header, same sed as the in
 #                no-op, not a verdict on the file
 compose_header_state() {
   local now want
-  now=$(compose_header_of "$COMPOSE_FILE") || { printf 'no-name'; return 0; }
+  now=$(compose_header_of "$SHAPE_SRC") || { printf 'no-name'; return 0; }
   want=$(compose_header_rendered) || { printf 'no-template'; return 0; }
   if [[ "$now" == "$want" ]]; then
     printf 'current'
@@ -313,7 +342,10 @@ TMP_HEADER_SRC=$(mktemp)
 # What root recorded of the store and the two config files before it changed
 # anything (#1152), removed with everything else on the way out.
 LIST_STORE=""; LIST_CONFIG=""; LIST_VALIDATORS=""
-trap 'rm -f "$TMP_HEADER_SRC" "$LIST_STORE" "$LIST_CONFIG" "$LIST_VALIDATORS"' EXIT
+# The compose as root read it by descriptor, and the bytes it kept as the
+# backup (#1295): root's own files, never the login's names.
+COMPOSE_SNAP=""; BACKUP_SNAP=""
+trap 'rm -f "$TMP_HEADER_SRC" "$LIST_STORE" "$LIST_CONFIG" "$LIST_VALIDATORS" "$COMPOSE_SNAP" "$BACKUP_SNAP" "$SHAPE_SNAP"' EXIT
 
 # ── The node must be stopped ──────────────────────────────────────────────
 say "Is the node stopped"
@@ -333,15 +365,15 @@ NODE_RUNNING=0
 if ((NODE_RUNNING)) && ((APPLY)); then
   say "Refusing: the node is running"
   info "stop it first, and start it again yourself when this has finished:"
-  info "    sudo docker compose -f ${COMPOSE_FILE} stop     # stop, not down: a removed"
+  info "    sudo docker compose -f $(printf '%q' "$COMPOSE_FILE") stop     # stop, not down: a removed"
   info "                                                    # container takes the compose"
   info "                                                    # label and the log with it"
   if ((PUT_BACK)); then
     info "    curl -fsSL https://get.aperire.one | bash -s -- --run migrate-node --hand-store-back"
-    info "    sudo docker compose -f ${COMPOSE_FILE} up -d"
+    info "    sudo docker compose -f $(printf '%q' "$COMPOSE_FILE") up -d"
   else
-    info "    sudo bash $0 --apply"
-    info "    sudo docker compose -f ${COMPOSE_FILE} up -d    # recreates it in the new shape"
+    info "    curl -fsSL https://get.aperire.one | bash -s -- --run migrate-node --apply"
+    info "    sudo docker compose -f $(printf '%q' "$COMPOSE_FILE") up -d    # recreates it in the new shape"
   fi
   info "changing the ownership of a store underneath a running node changes what"
   info "it can write in the middle of a write. Nothing has been changed."
@@ -466,9 +498,9 @@ DATA_OWNER=$(stat -c '%U' "$DATA_DIR")
 CFG_GROUP=$(stat -c '%G' "$CONFIG_FILE")
 CFG_MODE=$(stat -c '%a' "$CONFIG_FILE")
 COMPOSE_HAS_USER=0
-grep -qE '^[[:space:]]*user:[[:space:]]*"' "$COMPOSE_FILE" && COMPOSE_HAS_USER=1
+grep -qE '^[[:space:]]*user:[[:space:]]*"' "$SHAPE_SRC" && COMPOSE_HAS_USER=1
 COMPOSE_HAS_ETC=0
-grep -qF ":/etc/xrpld/xrpld.cfg:ro" "$COMPOSE_FILE" && COMPOSE_HAS_ETC=1
+grep -qF ":/etc/xrpld/xrpld.cfg:ro" "$SHAPE_SRC" && COMPOSE_HAS_ETC=1
 
 say "What is already true"
 info "data/ owner     : $DATA_OWNER"
@@ -499,14 +531,14 @@ if [[ $APPLY -eq 0 ]]; then
   # will do anything (#435).
   if ((NODE_RUNNING)); then
     say "Before --apply: stop the node"
-    info "    sudo docker compose -f ${COMPOSE_FILE} stop"
-    info "    sudo bash $0 --apply"
-    info "    sudo docker compose -f ${COMPOSE_FILE} up -d"
+    info "    sudo docker compose -f $(printf '%q' "$COMPOSE_FILE") stop"
+    info "    curl -fsSL https://get.aperire.one | bash -s -- --run migrate-node --apply"
+    info "    sudo docker compose -f $(printf '%q' "$COMPOSE_FILE") up -d"
     info "stop, not down: down removes the container, and with it the compose label"
     info "and the log this script and the rotation guard read."
   else
     info "it does not start the node. You do that, and watch it come back:"
-    info "    sudo docker compose -f ${COMPOSE_FILE} up -d"
+    info "    sudo docker compose -f $(printf '%q' "$COMPOSE_FILE") up -d"
     info "re-run with --apply to make the change."
   fi
   exit 0
@@ -550,9 +582,9 @@ refuse_shared_ancestors "$DATA_DIR"
 # store goes back to root, entry by entry on a descriptor from a record taken
 # first, the way it went over; a hard link in it to a file outside it is named
 # and left, where a recursive chown typed by name would have re-owned it.
-# The compose file and the config's group are not touched here: the node is
-# stopped, so they are plain files in the operator's own directory, and
-# "Putting it back" names them.
+# Then the compose file from its dated backup and the config's group, each by
+# descriptor too (#1208): both sit in the operator's own directory, where a
+# `cp` or a `chgrp` typed as root would follow a link at the name.
 if ((PUT_BACK)); then
   say "Giving the store back to root"
   # Only what the migration handed to the node's account, or what is root's
@@ -575,20 +607,74 @@ if ((PUT_BACK)); then
   fi
   # The newest backup this script made: its own name (the stamp it writes, in
   # date order, with the digits spelled out because [0-9] follows the locale and
-  # matches other scripts' digits under UTF-8) and nothing else. The directory is the login's, so any other
-  # name there is the login's, and what is printed below is a line the operator
-  # pastes into a root shell.
+  # matches other scripts' digits under UTF-8) and nothing else. The directory
+  # is the login's, so any other name there is the login's.
   PUT_BAK=""
   for _f in "${COMPOSE_FILE}".*.bak; do
     if [[ -f "$_f" && ! -L "$_f" && "$_f" =~ ^"${COMPOSE_FILE}"\.[0123456789]{8}-[0123456789]{6}\.bak$ ]]; then PUT_BAK="$_f"; fi
   done
-  info "the compose file and the config's group are not changed by this. With the node still stopped, to finish putting it back:"
+  # The compose file back from that backup, and by descriptor (#1208), not a
+  # `cp` typed as root: cp writes through a link planted at the compose
+  # file's name, and the login owns the directory both names are in. The
+  # backup is read without following a link and refused if it has a second
+  # name; it lands with the owner, group and mode it was read with, so what
+  # the login can read afterwards is what it could read before. The new file
+  # is renamed onto the name, which replaces a link there rather than writing
+  # through it.
   if [[ -n "$PUT_BAK" ]]; then
-    info "    sudo cp $(printf '%q' "$PUT_BAK") $(printf '%q' "$COMPOSE_FILE")"
+    _bak_read=$(mktemp) || die "could not make the file this reads ${PUT_BAK} into; the store is root's again, the compose file and the config's group are unchanged"
+    if ! python3 -I "$HERE/state-file.py" read "$PUT_BAK" --meta > "$_bak_read"; then
+      rm -f "$_bak_read"
+      die "${PUT_BAK} could not be read safely (named above), so ${COMPOSE_FILE} was not put back. The store is root's again; make the backup a plain file with one name, then run this again with --hand-store-back"
+    fi
+    # The newest backup is the migration's only if nothing has rewritten the
+    # compose since (the wrapper keeps backups under the same name). One that
+    # already runs the node as its own account is not the old shape, and
+    # putting it back over a store that is root's again would leave a node
+    # that cannot write it.
+    # One read of the whole file, no pipe: `grep -q` quitting early under
+    # pipefail failed the pipeline on a backup past 64 KiB, so the refusal
+    # was skipped (#1206 review). YAML's quoted key counts too.
+    if awk 'NR > 1 && /^[[:space:]]*("user"|user)[[:space:]]*:/ { f = 1 } END { exit !f }' "$_bak_read"; then
+      rm -f "$_bak_read"
+      die "${PUT_BAK}, the newest dated backup, already has a user: line, so it is not the deployment from before the migration and was not put back. The store is root's again; copy back the backup that has no user: line yourself, as the account that owns ${DIR}, then start the node"
+    fi
+    _bak_ok=0
+    # The first line is "<uid> <gid> <mode>" from the descriptor the bytes came
+    # from; the rest is the backup. The mode keeps its permission bits only.
+    { IFS=' ' read -r _bu _bg _bm \
+        && [[ "$_bu" =~ ^[0-9]+$ && "$_bg" =~ ^[0-9]+$ && "$_bm" =~ ^[0-7]{1,4}$ ]] \
+        && _bm=$(printf '%o' "$(( 8#$_bm & 8#0777 ))") \
+        && python3 -I "$HERE/state-file.py" plant "$COMPOSE_FILE" "$_bu" "$_bg" "$_bm" --stdin \
+        && _bak_ok=1; } < "$_bak_read"
+    rm -f "$_bak_read"
+    ((_bak_ok)) || die "${COMPOSE_FILE} was not put back from ${PUT_BAK} (named above). The store is root's again; run this again with --hand-store-back once what is named is right"
+    info "${COMPOSE_FILE} <- ${PUT_BAK}, by descriptor, with the backup's owner, group and mode"
   else
-    info "    (no dated .bak beside ${COMPOSE_FILE}: it was already in the new shape when it was migrated, so there is no compose to copy back)"
+    info "no dated .bak beside ${COMPOSE_FILE}: it was already in the new shape when it was migrated, so there is no compose to put back"
   fi
-  info "    sudo chgrp root $(printf '%q' "$CONFIG_FILE")      # what the container's root read it as"
+  # The config's group, and the validator list's, back to root, by descriptor
+  # from a record taken now (#1208), not a `chgrp` typed as root, which
+  # follows a link at the name. Only a file whose group is still the node's:
+  # that is what the migration changed, and any other group is the operator's
+  # since. Root is what the container's root read it as before the migration.
+  for _f in "$CONFIG_FILE" "$(dirname -- "$CONFIG_FILE")/validators.txt"; do
+    [[ -e "$_f" || -L "$_f" ]] || continue
+    if [[ "$(stat -c '%g' -- "$_f" 2>/dev/null)" != "$NODE_GID" ]]; then
+      info "${_f}: its group is not ${NODE_USER}'s, so it was left as it is"
+      continue
+    fi
+    _list=$(mktemp) || die "could not make the file this records ${_f} in; the store and the compose file are back, ${_f} is unchanged"
+    record_for_handover "$_f" "$_list"
+    if ! printf '%s\0' "$_f" \
+         | python3 -I "$HERE/state-file.py" own-many "" 0 "" --root "$(dirname -- "$_f")" --judge-root --list "$_list"; then
+      rm -f "$_list"
+      die "the group of ${_f} was not given back to root: it is a link, has a second name, or is not the file that was there when this began (named above), and root leaves that as it is. Make it a plain file that only that path names, then run this again with --hand-store-back"
+    fi
+    rm -f "$_list"
+    info "${_f} -> group root, by descriptor"
+  done
+  info "with the node still stopped, start it in its old shape:"
   info "    sudo docker compose -f $(printf '%q' "$COMPOSE_FILE") up -d"
   exit 0
 fi
@@ -627,18 +713,111 @@ info "${NODE_USER}: uid ${NODE_UID}, gid ${NODE_GID}"
 # template. Fleet compose files carry per-host edits (a corrected peer
 # mapping, a different memory cap), and re-rendering would revert them
 # silently.
+#
+# Read, kept and put back by descriptor (#1295), the way --hand-store-back
+# puts it back (#1208). The directory is the login's: a `cp -a` as root by
+# name there writes through a link planted at the backup's name, and a read
+# by name follows one planted at the compose's. state-file.py opens each
+# component without following a link and refuses a file with a second name;
+# plant renames a new file onto the name, which replaces a link there rather
+# than writing through it. The rewrite below works on the bytes read here,
+# builds the new file in root's own temporary directory, and lands it with
+# plant too: nothing is created, chowned or chmodded by name beside the
+# compose. plant carries owner, group and permission bits. An ACL with named
+# entries does not come across, and the run says so rather than refusing.
 STAMP=$(date +%Y%m%d-%H%M%S)
 BACKUP="${COMPOSE_FILE}.${STAMP}.bak"
+BACKUP_MADE=0
+# The compose's bytes into COMPOSE_SNAP, its owner, group and permission bits
+# into SNAP_U, SNAP_G and SNAP_M, and whether it carries an ACL with named
+# entries into SNAP_ACL (acl or noacl). Returns 1, the helper having said
+# why, when it cannot be read that way.
+compose_snap() {
+  local raw
+  raw=$(mktemp) || return 1
+  if [[ -z "$COMPOSE_SNAP" ]]; then COMPOSE_SNAP=$(mktemp) || { rm -f "$raw"; return 1; }; fi
+  if ! python3 -I "$HERE/state-file.py" read "$COMPOSE_FILE" --meta-acl > "$raw"; then
+    rm -f "$raw"; return 1
+  fi
+  IFS=' ' read -r SNAP_U SNAP_G SNAP_M SNAP_ACL SNAP_GPERM < "$raw" || { rm -f "$raw"; return 1; }
+  if ! [[ "$SNAP_U" =~ ^[0-9]+$ && "$SNAP_G" =~ ^[0-9]+$ && "$SNAP_M" =~ ^[0-7]{1,4}$ \
+          && ( "$SNAP_ACL $SNAP_GPERM" == "noacl -" || ( "$SNAP_ACL" == acl && "$SNAP_GPERM" =~ ^[0-7]$ ) ) ]]; then
+    rm -f "$raw"; return 1
+  fi
+  SNAP_M=$(printf '%o' "$(( 8#$SNAP_M & 8#0777 ))")
+  # With a named ACL entry the mode's group bits are the mask. The file that
+  # lands has no ACL, so its group bits are what the owning group could
+  # actually do: its own entry limited by the mask (POSIX ACL rule). The
+  # group entry alone could be wider than the mask allowed.
+  if [[ "$SNAP_ACL" == acl ]]; then
+    SNAP_M=$(printf '%o' "$(( (8#$SNAP_M & 8#0707) | ((SNAP_GPERM & ((8#$SNAP_M >> 3) & 7)) << 3) ))")
+  fi
+  tail -n +2 "$raw" > "$COMPOSE_SNAP" || { rm -f "$raw"; return 1; }
+  rm -f "$raw"
+}
+# The compose as read, planted at BACKUP with its owner, group and bits, read
+# back by descriptor and compared. Its bytes stay in BACKUP_SNAP, which is
+# what a failed rewrite is put back from. $1 = what the refusal leaves as it was.
+backup_compose() {
+  compose_snap || die "${COMPOSE_FILE} could not be read safely (named above), so no backup was made; $1"
+  BACKUP_SNAP=$(mktemp) || die "could not make the file the backup is kept in; $1"
+  cp "$COMPOSE_SNAP" "$BACKUP_SNAP"
+  BAK_U=$SNAP_U BAK_G=$SNAP_G BAK_M=$SNAP_M
+  python3 -I "$HERE/state-file.py" plant "$BACKUP" "$BAK_U" "$BAK_G" "$BAK_M" --stdin < "$BACKUP_SNAP" \
+    || die "the backup at ${BACKUP} could not be written (named above); $1"
+  python3 -I "$HERE/state-file.py" read "$BACKUP" | cmp -s - "$BACKUP_SNAP" \
+    || die "the backup at ${BACKUP} does not match the original; $1"
+  BACKUP_MADE=1
+}
+# The backup's bytes back at the compose's name, by plant, and read back. Never
+# from the backup's name, which is in the login's directory.
+restore_compose() {
+  python3 -I "$HERE/state-file.py" plant "$COMPOSE_FILE" "$BAK_U" "$BAK_G" "$BAK_M" --stdin < "$BACKUP_SNAP" || return 1
+  python3 -I "$HERE/state-file.py" read "$COMPOSE_FILE" | cmp -s - "$BACKUP_SNAP"
+}
+# What a put-back restores and what it does not, said in every refusal that
+# made one.
+put_back_said() {
+  printf 'put back from %s: its bytes, owner, group and permission bits. Not put back: an ACL with named entries, and the file times' "$BACKUP"
+}
+# The new bytes at the compose's name, by plant, with the owner, group and
+# permission bits the compose was read with, then read back by descriptor and
+# compared. If what landed is not what was planted, the backup's bytes go back
+# the same way and the run stops. $1 = root's file holding the new bytes,
+# $2 = what the rewrite was, $3 = what the refusal adds about the store.
+land_compose() {
+  local back ok=0
+  if ! python3 -I "$HERE/state-file.py" plant "$COMPOSE_FILE" "$SNAP_U" "$SNAP_G" "$SNAP_M" --stdin < "$1"; then
+    rm -f "$1"
+    die "$2 could not be written to ${COMPOSE_FILE} (named above), so it was not changed$3"
+  fi
+  back=$(mktemp) || back=""
+  if [[ -n "$back" ]] && python3 -I "$HERE/state-file.py" read "$COMPOSE_FILE" --meta > "$back" \
+     && [[ "$(head -n 1 "$back")" == "$SNAP_U $SNAP_G $SNAP_M" ]] \
+     && tail -n +2 "$back" | cmp -s - "$1"; then
+    ok=1
+  fi
+  rm -f "$back" "$1"
+  if ((ok == 0)); then
+    if restore_compose; then
+      die "${COMPOSE_FILE} did not read back as $2 wrote it (bytes, owner, group or mode); $(put_back_said)$3"
+    fi
+    die "${COMPOSE_FILE} did not read back as $2 wrote it, AND putting ${BACKUP} back failed; fix ${COMPOSE_FILE} by hand from ${BACKUP} before starting the node"
+  fi
+  if [[ "$SNAP_ACL" == acl ]]; then
+    info "note: ${COMPOSE_FILE} had an ACL with named entries, and it was not carried over to the rewritten file (its owner, group and mode were). Set it again with setfacl if anything relied on it."
+  fi
+}
 if ((COMPOSE_HAS_USER)) && ((COMPOSE_HAS_ETC)); then
   info "${COMPOSE_FILE} already has user: and the /etc/xrpld mounts; leaving it alone"
 else
-  cp -a "$COMPOSE_FILE" "$BACKUP"
-  cmp -s "$COMPOSE_FILE" "$BACKUP" || die "the backup at ${BACKUP} does not match the original; nothing further was changed"
+  backup_compose "nothing further was changed"
   cwl_prune_backups "$COMPOSE_FILE" 10
   info "kept the previous deployment at ${BACKUP}"
 
-  COMPOSE_WAS_SNAP=$(cwl_acl_snapshot "$COMPOSE_FILE")
-  TMPC=$(mktemp "${COMPOSE_FILE}.XXXXXX")
+  # In root's own temporary directory, never beside the compose: the
+  # directory is the login's (#1295).
+  TMPC=$(mktemp) || die "could not make the file the rewrite is built in; ${COMPOSE_FILE} is untouched"
   # awk, one pass, two insertions, both anchored on a line that is already
   # there rather than on a line number:
   #   user:            goes after `init: true`, which the template has had
@@ -682,7 +861,7 @@ else
       if (!did_user)   { print "MIGRATE-FAILED: no `init: true` line to put user: after" > "/dev/stderr"; exit 3 }
       if (!did_mounts) { print "MIGRATE-FAILED: no mount of /config/rippled.cfg to put the /etc/xrpld pair before" > "/dev/stderr"; exit 3 }
     }
-  ' "$COMPOSE_FILE" > "$TMPC" || {
+  ' "$COMPOSE_SNAP" > "$TMPC" || {
       rm -f "$TMPC"
       die "could not patch ${COMPOSE_FILE}: it is not the shape this script knows how to edit. The file is untouched and the store has not been handed to ${NODE_USER} yet, so either add these two things by hand and run this again, or leave the node as it is"
     }
@@ -697,20 +876,7 @@ else
   grep -qF "cap_drop" "$TMPC" \
     || { rm -f "$TMPC"; die "the patched compose lost its cap_drop line; ${COMPOSE_FILE} is untouched"; }
 
-  if ! cwl_carry_permissions "$COMPOSE_FILE" "$TMPC"; then
-    rm -f "$TMPC"
-    die "could not carry ${COMPOSE_FILE}'s owner, group, mode and ACL onto the rewrite; ${COMPOSE_FILE} is untouched, and the store under ${DATA_DIR} has not been handed to ${NODE_USER} yet."
-  fi
-  mv "$TMPC" "$COMPOSE_FILE"
-
-  COMPOSE_NOW_SNAP=$(cwl_acl_snapshot "$COMPOSE_FILE")
-  if [[ "$COMPOSE_NOW_SNAP" != "$COMPOSE_WAS_SNAP" ]]; then
-    if cwl_restore_from_backup "$BACKUP" "$COMPOSE_FILE"; then
-      die "the rewrite changed ${COMPOSE_FILE}'s $(cwl_snapshot_describe); restored ${BACKUP} and left the compose file reading exactly as it did before this ran. The store under ${DATA_DIR} has not been handed to ${NODE_USER} yet; fix the compose file's shape by hand, then run this again"
-    else
-      die "the rewrite changed ${COMPOSE_FILE}'s $(cwl_snapshot_describe), AND restoring ${BACKUP} failed; the deployment file's permissions are unproven, fix ${COMPOSE_FILE} by hand from ${BACKUP} before starting the node"
-    fi
-  fi
+  land_compose "$TMPC" "the rewrite" ". The store under ${DATA_DIR} has not been handed to ${NODE_USER} yet; fix the compose file's shape by hand, then run this again"
   info "${COMPOSE_FILE}: user: \"${NODE_UID}:${NODE_GID}\" and the /etc/xrpld mounts added"
 fi
 
@@ -737,39 +903,29 @@ case "$(compose_header_state)" in
     ;;
   stale)
     NEW_HEADER=$(compose_header_rendered) || NEW_HEADER=''
-    if [[ ! -f "$BACKUP" ]]; then
-      cp -a "$COMPOSE_FILE" "$BACKUP"
-      cmp -s "$COMPOSE_FILE" "$BACKUP" || die "the backup at ${BACKUP} does not match the original; the header was not touched"
+    # A backup this run made, never a name that is merely there: -f follows
+    # a link the login could plant at the backup's name. The compose is read
+    # again either way, since the body rewrite above may have changed it.
+    if ((BACKUP_MADE)); then
+      compose_snap || die "${COMPOSE_FILE} could not be read safely (named above); the header was not touched"
+    else
+      backup_compose "the header was not touched"
       cwl_prune_backups "$COMPOSE_FILE" 10
       info "kept the previous deployment at ${BACKUP}"
     fi
-    COMPOSE_WAS_SNAP=$(cwl_acl_snapshot "$COMPOSE_FILE")
-    TMPH=$(mktemp "${COMPOSE_FILE}.XXXXXX")
+    TMPH=$(mktemp) || die "could not make the file the header rewrite is built in; ${COMPOSE_FILE} is untouched"
     {
       printf '%s\n' "$NEW_HEADER"
-      sed -n '/^name:/,$p' "$COMPOSE_FILE"
+      sed -n '/^name:/,$p' "$COMPOSE_SNAP"
     } > "$TMPH"
     # The body is the thing that must not have moved. Compared before the file
     # is installed, so a header swap that ate a line of the deployment is a
     # refusal rather than a node that comes back missing a mount.
-    if ! diff -q <(sed -n '/^name:/,$p' "$COMPOSE_FILE") <(sed -n '/^name:/,$p' "$TMPH") >/dev/null; then
+    if ! diff -q <(sed -n '/^name:/,$p' "$COMPOSE_SNAP") <(sed -n '/^name:/,$p' "$TMPH") >/dev/null; then
       rm -f "$TMPH"
       die "replacing the header would have changed the deployment below it; ${COMPOSE_FILE} is untouched"
     fi
-    if ! cwl_carry_permissions "$COMPOSE_FILE" "$TMPH"; then
-      rm -f "$TMPH"
-      die "could not carry ${COMPOSE_FILE}'s owner, group, mode and ACL onto the header rewrite; ${COMPOSE_FILE} is untouched"
-    fi
-    mv "$TMPH" "$COMPOSE_FILE"
-
-    COMPOSE_NOW_SNAP=$(cwl_acl_snapshot "$COMPOSE_FILE")
-    if [[ "$COMPOSE_NOW_SNAP" != "$COMPOSE_WAS_SNAP" ]]; then
-      if cwl_restore_from_backup "$BACKUP" "$COMPOSE_FILE"; then
-        die "the header rewrite changed ${COMPOSE_FILE}'s $(cwl_snapshot_describe); restored ${BACKUP} and left the compose file reading exactly as it did before this ran"
-      else
-        die "the header rewrite changed ${COMPOSE_FILE}'s $(cwl_snapshot_describe), AND restoring ${BACKUP} failed; fix ${COMPOSE_FILE} by hand from ${BACKUP} before starting the node"
-      fi
-    fi
+    land_compose "$TMPH" "the header rewrite" ""
     info "${COMPOSE_FILE}: the comment block above 'name:' is this release's, and nothing below it changed"
     ;;
 esac
@@ -839,22 +995,23 @@ fi
 
 # ── What to do now ────────────────────────────────────────────────────────
 say "Done. Start the node and watch it come back"
-info "    sudo docker compose -f ${COMPOSE_FILE} up -d"
+info "    sudo docker compose -f $(printf '%q' "$COMPOSE_FILE") up -d"
 info "    sudo aperire-node-wrapper config-readable"
-info "    docker exec ${SERVICE} id -u        # ${NODE_UID}, not 0"
+info "    docker exec $(printf '%q' "$SERVICE") id -u        # ${NODE_UID}, not 0"
 echo
 info "The first start prints one 'Read-only file system' line per config file."
 info "That is the image's entrypoint trying to copy a config that is already"
 info "mounted where it copies it to. The node reads the operator's config."
 echo
 say "Putting it back"
-if [[ -f "$BACKUP" ]]; then
-  info "    sudo docker compose -f ${COMPOSE_FILE} stop"
-  info "    sudo cp ${BACKUP} ${COMPOSE_FILE}"
-else
-  info "    sudo docker compose -f ${COMPOSE_FILE} stop"
-  info "    # the compose was already in the new shape, so there is no new .bak"
-fi
+info "    sudo docker compose -f $(printf '%q' "$COMPOSE_FILE") stop"
 info "    curl -fsSL https://get.aperire.one | bash -s -- --run migrate-node --hand-store-back"
-info "    sudo chgrp ${CFG_GROUP} ${CONFIG_FILE}"
-info "    sudo docker compose -f ${COMPOSE_FILE} up -d"
+info "    sudo docker compose -f $(printf '%q' "$COMPOSE_FILE") up -d"
+if ((BACKUP_MADE)); then
+  info "the step gives the store back to root, puts ${BACKUP} back as the compose file,"
+else
+  info "the step gives the store back to root (the compose was already in the new shape, so it stays),"
+fi
+info "and gives the config's group back to root, all by descriptor."
+[[ "$CFG_GROUP" == root ]] \
+  || info "the config was group ${CFG_GROUP} before this ran, not root; the step gives it to root, which is how the container read it"

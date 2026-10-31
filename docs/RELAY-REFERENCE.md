@@ -158,6 +158,14 @@ For the net effect and the trust boundaries it creates, see the [architecture gu
 
 **Relay sessions end with `... expected handshake response status code 101 but got 403`.** The token was accepted and the transport was not. The dashboard is bound off-loopback and this relay reached it over plain `ws` from another machine, so it refused the push (see [Securing a remote relay link](#securing-a-remote-relay-link)). The explanation is in the dashboard host's journal, not this one. Fix it on the relay by pointing `dashboard_url` at a tunnel endpoint on loopback or at a `wss://` URL; the dashboard-side override is the last resort, not the first move.
 
+**Nothing arrives and you don't know why.** Ask the relay. It tries `dashboard_url` once with its own handshake, sends no data, and names what's in the way:
+
+```sh
+sudo aperire-relay --check-dashboard
+```
+
+The first line is `check=` followed by one of `accepted`, `dns`, `refused`, `timeout`, `no_route`, `tls`, `unauthorized` (401), `forbidden` (403), `not_ingest` (404), `http` or `no_url`. The second is a sentence giving the one next step. The exit code is 0 only for `accepted`. It reads `/etc/aperire/relay.conf` (pass `--config` for another file) and never prints the token. The installer runs it once at the end of a remote install.
+
 **Relay logs `dial: connection refused`.** The dashboard isn't running, or `dashboard_url` points to the wrong host/port. Verify with `curl -I http://<dashboard-host>:7800/`.
 
 **Cards populate with the wrong interface name.** Default-route discovery picked a NIC that's not what you expected (common on multi-homed or VPN-first hosts). Hover the Network tab's Monthly Budget card: the tooltip's `NIC` line names the interface the relay resolved and where the name came from (`default_route`, `config`, or `fallback_sum`). That tooltip is the only place the resolved NIC is reported, and it needs `monthly_budget_bytes` set (without a cap the card says so instead). The journal is no help: it echoes the configured value (`interface="auto"`), never the result.
@@ -192,6 +200,7 @@ sudo journalctl -u aperire-relay -f        # follow logs
 sudo journalctl -u aperire-relay --since "1 hour ago"
 
 sudo ss -ltnp | grep aperire-relay         # confirm no inbound listener (should be empty)
+sudo aperire-relay --check-dashboard      # try dashboard_url once and say what is in the way
 ```
 
 **No SIGHUP reload.** Unlike the dashboard, the relay has no config-reload signal handler. Any change to `relay.conf` or rippled.cfg ports needs a full `systemctl restart aperire-relay`. The restart costs one missed push, so one push interval of stale Network-tab data (5 s on the default cadence); nothing else is affected. The relay writes nothing and holds no state, so there is nothing to lose on the way down.

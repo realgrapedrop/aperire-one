@@ -32,15 +32,27 @@
 # anything, and no image is built: this only puts files in place.
 set -euo pipefail
 
+# As root the environment chooses no path (#1206): every APERIRE_* variable
+# is dropped except the one a root caller passes on purpose:
+#   APERIRE_INSTALL_TREE  get-aperire.sh names the tree a staged copy serves
+#                         (#764); the node and wrapper installers pass theirs on
+# An account id(1) says is not root keeps them all, which is what every
+# suite is. id(1) at a fixed path, never bash's $EUID (#1109).
+if ! [[ "$(/usr/bin/id -u 2>/dev/null)" =~ ^[1-9][0-9]*$ ]]; then
+  for _v in $(compgen -e); do
+    case "$_v" in APERIRE_INSTALL_TREE) ;; APERIRE_*) unset "$_v" ;; esac
+  done
+fi
+
 # Where this program and its siblings are (RECIPE_SELF), and the install tree it acts
 # on (REPO_DIR): a directory and its parent from a checkout, two when it is a copy
 # root staged out of the release and APERIRE_INSTALL_TREE names the tree
 # (#764). Code is loaded and run from RECIPE_SELF only.
 RECIPE_SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="${APERIRE_INSTALL_TREE:-$(cd "$RECIPE_SELF/.." && pwd)}"
-# A variable only so the tests can point it somewhere harmless. Nothing on a
-# host should ever pass anything else, and the wrapper's own copy of this
-# path is a constant.
+# A variable only so the tests can point it somewhere harmless, and only for
+# an account that is not root (above). The wrapper's own copy of this path is
+# a constant.
 DEST_DIR="${APERIRE_IMAGE_RECIPE_DIR:-/usr/local/lib/aperire}"
 
 SRC_SCRIPT="$REPO_DIR/scripts/build-xrpld-image.sh"

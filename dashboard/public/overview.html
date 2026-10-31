@@ -247,9 +247,6 @@ html[data-embedded] header{display:none}
   .node-chip:hover { border-color: var(--border-hi); background: var(--surface-hi); }
   .node-chip:focus-visible { outline: none; border-color: var(--accent); box-shadow: 0 0 0 1px rgba(var(--blue-rgb), 0.4); }
   .node-chip[aria-expanded="true"] { border-color: var(--accent); background: var(--surface-hi); }
-  .chip-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; background: var(--text-muted); border: 1px solid rgba(0,0,0,0.3); }
-  .chip-dot.ok   { background: var(--green); box-shadow: 0 0 4px rgba(var(--green-rgb), 0.55); }
-  .chip-dot.warn { background: var(--amber); box-shadow: 0 0 4px rgba(var(--amber-rgb), 0.55); }
   .chip-name { font-weight: 700; max-width: 128px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .chip-sep { color: var(--border-hi); }
   .chip-roll { display: flex; align-items: center; gap: 4px; color: var(--text-dim); font-weight: 600; }
@@ -2506,7 +2503,7 @@ html[data-embedded] header{display:none}
     <div class="tabs-spacer"></div>
     <div class="tab-pubkey"><span class="lbl">Pubkey</span><span class="val" id="pubkeyVal">—</span></div>
     <span class="right-group">
-    <button class="audio-toggle" id="audio-toggle" title="Toggle ambient audio">
+    <button class="audio-toggle" id="audio-toggle" data-hdr-tip="Toggle ambient audio" aria-label="Toggle ambient audio">
       <svg class="audio-icon-off" viewBox="0 0 16 16" fill="currentColor" style="display:none"><path d="M6.717 3.55A.5.5 0 0 1 7 4v8a.5.5 0 0 1-.812.39L3.825 10.5H1.5A.5.5 0 0 1 1 10V6a.5.5 0 0 1 .5-.5h2.325l2.363-1.89a.5.5 0 0 1 .529-.06zM6 5.04 4.312 6.39A.5.5 0 0 1 4 6.5H2v3h2a.5.5 0 0 1 .312.11L6 10.96V5.04zm3.05.05a.5.5 0 0 1 .707 0c.652.652.978 1.486.978 2.41s-.326 1.758-.978 2.41a.5.5 0 1 1-.707-.707c.476-.476.685-1.073.685-1.703s-.21-1.227-.685-1.703a.5.5 0 0 1 0-.707z"/><path d="M1.5 14.5l13-13" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/></svg>
       <svg class="audio-icon-on" viewBox="0 0 16 16" fill="currentColor"><path d="M6.717 3.55A.5.5 0 0 1 7 4v8a.5.5 0 0 1-.812.39L3.825 10.5H1.5A.5.5 0 0 1 1 10V6a.5.5 0 0 1 .5-.5h2.325l2.363-1.89a.5.5 0 0 1 .529-.06zM6 5.04 4.312 6.39A.5.5 0 0 1 4 6.5H2v3h2a.5.5 0 0 1 .312.11L6 10.96V5.04zm3.05.05a.5.5 0 0 1 .707 0c.652.652.978 1.486.978 2.41s-.326 1.758-.978 2.41a.5.5 0 1 1-.707-.707c.476-.476.685-1.073.685-1.703s-.21-1.227-.685-1.703a.5.5 0 0 1 0-.707zm2.122-2.12a.5.5 0 0 1 .707 0C13.26 4.352 14 5.985 14 7.5c0 1.515-.74 3.148-2.12 4.53a.5.5 0 0 1-.708-.708C12.37 10.124 13 8.763 13 7.5c0-1.263-.63-2.624-1.828-3.822a.5.5 0 0 1 0-.707z"/></svg>
     </button>
@@ -2571,8 +2568,10 @@ html[data-embedded] header{display:none}
 
 <main>
 
-  <div class="amendment-banner" id="amendmentBanner">
-    AMENDMENT BLOCKED — rippled is frozen pending upgrade. Immediate action required.
+  <!-- Shown while the node on screen reports amendment_blocked (#1308). Hidden
+       until a current reading says so: paintAmendmentBanner below sets .active. -->
+  <div class="amendment-banner" id="amendmentBanner" role="alert">
+    AMENDMENT BLOCKED. rippled is frozen pending upgrade. Immediate action required.
   </div>
 
   <!-- ═══ METRIC CARDS ═══ — FOUR cells: Nodes | Health | Validations | System.
@@ -2922,8 +2921,8 @@ html[data-embedded] header{display:none}
   // State
   // ═══════════════════════════════════════════════════════════
   const state = {
-    // This host's own reported hostname, os.hostname() as the server sees
-    // it, arriving on the `system` broadcast as host.meta.hostname. Null
+    // The node's machine as the server names it (the relay's host on a split
+    // install, #1284), arriving on the `system` broadcast as host.meta.hostname. Null
     // until the first broadcast, because until then this tab has not been
     // told what host it is talking to and the browser's own address is not
     // an answer to that question.
@@ -4851,6 +4850,7 @@ html[data-embedded] header{display:none}
   function applyServerInfo(info) {
     if (!info) return;
     state.serverInfo = info;
+    paintAmendmentBanner();
     if (info.uptime) {
       state.uptimeSeconds = info.uptime;
       // A live server_info push carries no age of its own; it IS the moment it
@@ -4946,6 +4946,7 @@ html[data-embedded] header{display:none}
     if (!d) return;
     const was = state.nodeReach && state.nodeReach.ok === false;
     state.nodeReach = d;
+    paintAmendmentBanner();
     renderStatePill();
 
     // Peers are observed, not remembered. pollPeers swallows a failed read
@@ -5754,12 +5755,14 @@ html[data-embedded] header{display:none}
   // tunnelled or port-forwarded operator was shown "localhost" as though it
   // were the machine's name, and an aggregator viewing itself was shown its
   // own address rather than its hostname. The field contradicted its own
-  // tooltip. It now comes from the `system` broadcast's host.meta.hostname,
-  // which is os.hostname() on the serving box.
+  // tooltip. It now comes from the `system` broadcast's host.meta.hostname:
+  // APERIRE_HOSTNAME when set, then the host the node's relay reports, then
+  // os.hostname() on the serving box. On a split install the relay's host is
+  // the node's machine and the serving box is not (#1284).
   //
   // The peer branch already did this correctly, passing that peer's own
-  // `host_name` from node-status. Both sides are one derivation now,
-  // os.hostname, taken on the machine being named. location.hostname is no
+  // `host_name` from node-status. Both sides are one derivation now, the
+  // server's hostnameForAlerts(), taken on the node being named. location.hostname is no
   // longer an identity source anywhere in this card.
   //
   // A peer whose dashboard predates that field sends nothing, and nothing
@@ -6021,6 +6024,14 @@ html[data-embedded] header{display:none}
   // The fallback carries the same self exclusion the one copy does (#488):
   // this host's own row holds the two keys for a stale registry, not for an
   // impostor, and nothing it reported is refused.
+  // This dashboard could not read its own read token for the node (#1305), so
+  // nothing was asked of it. The row's flag, never the detail's words.
+  function tokenUnreadable(n) {
+    return !!(n && !n.self && n.token_unreadable === true);
+  }
+  function tokenUnreadableTip(label) {
+    return 'This dashboard cannot read its token for ' + label + ', so nothing was sent to it.';
+  }
   function pinFailed(n) {
     return window.__fleetPinFailed
       ? window.__fleetPinFailed(n)
@@ -6081,6 +6092,9 @@ html[data-embedded] header{display:none}
     // Red, and the word is REFUSED: the node answered, so this is not the
     // same fact as Unreachable and must never render as it (#268).
     if (verdict === 'refused') return { cls: 'crit', tip: 'REFUSED — ' + esc(refusedTipText(label)) };
+    // Nothing was asked of the node: this dashboard could not read its token
+    // for it (#1305). Not Unreachable.
+    if (tokenUnreadable(n)) return { cls: 'crit', tip: 'TOKEN UNREADABLE. ' + esc(tokenUnreadableTip(label)) };
     if (verdict === 'unreachable') return { cls: 'crit', tip: 'Unreachable' };
     return { cls: '', tip: 'Unknown' };
   }
@@ -6098,6 +6112,7 @@ html[data-embedded] header{display:none}
     // and the answer is that there is no reading at all until the token is
     // replaced. The whole sentence, because this is where there is room.
     if (verdict === 'refused') return { cls: 'crit', tip: esc(refusedTipText(label)) };
+    if (tokenUnreadable(n)) return { cls: 'crit', tip: esc(tokenUnreadableTip(label)) };
     if (verdict === 'unreachable') return { cls: 'crit', tip: 'Unreachable' };
     return { cls: '', tip: 'Unknown' };
   }
@@ -6112,6 +6127,7 @@ html[data-embedded] header{display:none}
     if (verdict === 'critical') return { cls: 'crit', tip: detail || 'Critical alert firing' };
     // Nothing was read, so nothing is claimed — but the reason is not silence.
     if (verdict === 'refused') return { cls: '', tip: 'Unknown — this node rejected the read token' };
+    if (tokenUnreadable(n)) return { cls: '', tip: 'Unknown. This dashboard cannot read its token for this node' };
     if (verdict === 'unreachable') return { cls: '', tip: 'Unknown — node unreachable' };
     return { cls: '', tip: 'Unknown' };
   }
@@ -6133,6 +6149,7 @@ html[data-embedded] header{display:none}
     // server-side (nothing was read). The row's own verdict is what says
     // WHY, so this reads it rather than the release verdict alone.
     if (n.verdict === 'refused') return { cls: '', tip: 'Unknown — this node rejected the read token' };
+    if (tokenUnreadable(n)) return { cls: '', tip: 'Unknown. This dashboard cannot read its token for this node' };
     // Ahead of the critical branch below, which reads 'amendment blocked'
     // unconditionally: a pin mismatch grades R critical too (the impostor's
     // governance answer is refused with everything else it said), so without
@@ -6223,7 +6240,8 @@ html[data-embedded] header{display:none}
       : !!(selfNode && selfNode.self && selfNode.pin_state === 'changed'
         && selfNode.pin_expected && selfNode.pin_reported);
     if (!stale) { el.hidden = true; el.innerHTML = ''; return; }
-    const label = selfNode.label || 'this node';
+    // display_name: the name every page gives this host (#1284).
+    const label = selfNode.display_name || selfNode.label || 'this node';
     const sentence = window.__fleetPinStaleTip
       ? window.__fleetPinStaleTip(label, selfNode.pin_expected, selfNode.pin_reported)
       : 'This dashboard’s own registry pins a node key ' + label + ' does not have.';
@@ -6397,6 +6415,7 @@ html[data-embedded] header{display:none}
     // node's badge is immediately corrected to its live centre-card state
     // rather than showing the poll value until the next live tick.
     renderStatePill();
+    paintAmendmentBanner(nodes);
   }
   window.addEventListener('aperire:fleet', (e) => renderFleetNodeRows(e.detail));
   // fleet-chip.js may have already fetched once (script order, or a fast
@@ -6549,7 +6568,7 @@ html[data-embedded] header{display:none}
     },
     'Host': {
       title: 'Host',
-      body: "The node's own machine hostname, exactly as the host reports it (os.hostname()). On a cloud VPS that is often a short name like srv12345 rather than a fully qualified domain. Distinct from Host ID above (rippled's process identifier). Copy it with the button beside it.",
+      body: "The node's own machine hostname. On a split install, where the dashboard runs on a different machine, it is the host the node's relay reports. APERIRE_HOSTNAME overrides it. On a cloud VPS that is often a short name like srv12345 rather than a fully qualified domain. Distinct from Host ID above (rippled's process identifier). Copy it with the button beside it.",
     },
     'Base Fee': {
       title: 'Base Fee',
@@ -7601,7 +7620,39 @@ html[data-embedded] header{display:none}
     if (s < 60) return s + 's ago';
     return Math.round(s / 60) + 'm ago';
   }
+  // #1308. The full-width AMENDMENT BLOCKED banner, from the one fact that
+  // means it: this node's own `amendment_blocked`. Nothing set `.active` before,
+  // so a blocked node never showed it.
+  //
+  // Local: the server_info frame the page already holds. rippled omits the key
+  // when the node is not blocked, so a frame without it is "not blocked", and no
+  // frame yet is "not read". A frame kept from before the node stopped answering
+  // is not a reading of now, so an unreachable node shows nothing.
+  // Peer: the fleet row's `amendment_blocked`, which the poller publishes only
+  // for a node that answered as itself. No row, no key or an error state means
+  // not read, and not read is hidden. Never a guess.
+  function paintAmendmentBanner(nodesArg) {
+    const el = document.getElementById('amendmentBanner');
+    if (!el) return;
+    let blocked = false;
+    if (peerView.label) {
+      if (!peerView.lastError) {
+        const nodes = Array.isArray(nodesArg) ? nodesArg
+          : (window.__fleetChip && typeof window.__fleetChip.getNodes === 'function')
+            ? (window.__fleetChip.getNodes() || []) : [];
+        const row = nodes.filter((n) => !n.self && n.label === peerView.label)[0] || null;
+        blocked = !!row && row.amendment_blocked === true;
+      }
+    } else {
+      const info = state.serverInfo;
+      const reach = state.nodeReach;
+      blocked = !!info && info.amendment_blocked === true && !(reach && reach.ok === false);
+    }
+    el.classList.toggle('active', blocked);
+  }
+
   function renderPeerBanner() {
+    paintAmendmentBanner();
     // #8 — the "· viewing <label> · as of Ns ago" banner is removed per operator
     // request: the Fleet card already names the active node, and the freshness
     // line read as noise. The HARD stale guard is unaffected — an unreachable or
@@ -7699,7 +7750,7 @@ html[data-embedded] header{display:none}
   // three different words, one red band — they all need attention, and the
   // work each one needs is different (#268: a 401 rendered as UNREACHABLE
   // sent the operator to check a network path that was fine).
-  function renderPeerErrorState(kind) {
+  function renderPeerErrorState(kind, detail) {
     peerView.lastError = kind;
     peerView.lastGood = null;
     clearParameterizedFields();
@@ -7708,6 +7759,7 @@ html[data-embedded] header{display:none}
       sv.classList.add('alert');
       sv.textContent = kind === 'integrity' ? 'NOT VERIFIED'
         : kind === 'refused' ? 'REFUSED'
+        : kind === 'token' ? 'TOKEN UNREADABLE'
         : 'UNREACHABLE';
       // The card's glow follows the STATE word here as it does everywhere
       // else; this path painted a red pill inside a blue border (operator,
@@ -7717,7 +7769,9 @@ html[data-embedded] header{display:none}
         ? integrityTitle(peerView.label)
         : kind === 'refused'
           ? refusedTipText(peerView.label)
-          : peerView.label + ' could not be reached.';
+          : kind === 'token'
+            ? (detail || 'This dashboard cannot read its token for ' + peerView.label + ', so nothing was sent to it.')
+            : peerView.label + ' could not be reached.';
     }
     renderPeerBanner();
     // lastGood was just cleared, so this hides the age chip — an error state
@@ -7798,6 +7852,13 @@ html[data-embedded] header{display:none}
     // that is up and answering unreachable.
     if (body && body.error === 'peer_refused') {
       renderPeerErrorState('refused');
+      return;
+    }
+    // This host could not read its own token for the peer (#1305): nothing was
+    // sent, so neither "refused" nor "unreachable" is true. The sentence is the
+    // server's, and it names the file.
+    if (body && body.error === 'token_unreadable') {
+      renderPeerErrorState('token', typeof body.detail === 'string' ? body.detail : '');
       return;
     }
     if (!body || body.ok === false || typeof body.node_status !== 'object' || body.node_status === null) {

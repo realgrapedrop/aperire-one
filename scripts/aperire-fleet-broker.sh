@@ -227,6 +227,17 @@ set -euo pipefail
 # 37 bytes regardless of what systemd or the shell's own environment set.
 export LC_ALL=C
 
+# As root the environment chooses no path (#1206): every APERIRE_* variable
+# is dropped. No root caller passes one this program needs: its socket unit
+# sets none, and the update's rollback passes APERIRE_ETC=/etc/aperire, the
+# constant below. An account id(1) says is not root keeps them all, which is
+# what every suite is. id(1) at a fixed path, never bash's $EUID (#1109).
+if ! [[ "$(/usr/bin/id -u 2>/dev/null)" =~ ^[1-9][0-9]*$ ]]; then
+  for _v in $(compgen -e); do
+    case "$_v" in APERIRE_*) unset "$_v" ;; esac
+  done
+fi
+
 ETC="${APERIRE_ETC:-/etc/aperire}"
 CONF="$ETC/fleet-broker.conf"
 UNIT_DIR="${APERIRE_UNIT_DIR:-/etc/systemd/system}"
@@ -642,6 +653,11 @@ TOKEN_DIR="$ETC/fleet-tokens"
 command -v python3 >/dev/null || fail no_python3 "python3 is not on this host, and this program will not write a registry it cannot read back"
 
 WORK="$(umask 077; mktemp -d)"
+# Removed on every exit from here on. The full trap (cleanup, below) is laid
+# only after the anchor check, and a refusal before it (the install moved, its
+# mode is open to every account) used to end with $WORK, and dirsafe.py inside
+# it, left in the temp dir (#588). cleanup and rr_cleanup replace this one.
+trap 'rm -rf "$WORK"' EXIT
 
 # ── the directory-safe primitive (#648, round 7, review7-0.json CRITICAL) ──
 #
@@ -3068,6 +3084,45 @@ snap_fleet_trust() {  # -> refuses by name, or sets SNAP_FLEET_TRUST
     *) refuse registry_unreadable "$INSTALL_DIR/$FLEET_TRUST_REL is not a plain file this program will read, or could not be read without risking this connection. Nothing was sent." ;;
   esac
 }
+
+# Root's pin of this aggregator's fleet trust key (#1008). The seed above is
+# read out of a file the dashboard account can write, so it signs only when
+# its public half is the key root pinned in $ETC: a key planted in that file
+# is refused here, before anything is signed or sent.
+FLEET_TRUST_PIN_FILE="$ETC/fleet-trust.pub"
+# ---- BEGIN read_fleet_trust_pin (one rule, three copies: #1008) ---------
+# Sets FLEET_TRUST_PIN to the fleet trust public key root pinned at $1 and
+# returns 0, or returns 1 with FLEET_TRUST_PIN_WHY. No subshell, so call it
+# bare and read the two variables. The same text is in aperire-fleet-arm.sh,
+# aperire-fleet-broker.sh and fleet-trust-split.sh, and
+# scripts/test-fleet-trust-split.sh fails if the copies differ: the installed
+# programs source nothing out of the tree.
+#
+# A pin is a plain file, never a link, owned by the account running this
+# (root, on a host), writable by nobody else, holding one line: 32 bytes as
+# canonical unpadded base64url. Anything else is no pin at all.
+# shellcheck disable=SC2034
+FLEET_TRUST_PIN='' FLEET_TRUST_PIN_WHY=''
+read_fleet_trust_pin() {  # $1 = the pin's path
+  local pin="$1" mode line
+  FLEET_TRUST_PIN='' FLEET_TRUST_PIN_WHY=''
+  if [[ ! -e "$pin" && ! -L "$pin" ]]; then
+    FLEET_TRUST_PIN_WHY="there is no $pin"; return 1
+  fi
+  if [[ -L "$pin" || ! -f "$pin" || ! -O "$pin" ]]; then
+    FLEET_TRUST_PIN_WHY="$pin is not a plain file this account owns"; return 1
+  fi
+  mode="$(stat -c '%a' -- "$pin" 2>/dev/null)" || mode=777
+  if (( (8#$mode & 8#022) != 0 )); then
+    FLEET_TRUST_PIN_WHY="$pin can be written by another account"; return 1
+  fi
+  line="$(head -c 128 -- "$pin" 2>/dev/null)" || line=''
+  if [[ ! "$line" =~ ^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$ ]]; then
+    FLEET_TRUST_PIN_WHY="$pin does not hold one 32-byte public key"; return 1
+  fi
+  FLEET_TRUST_PIN="$line"
+}
+# ---- END read_fleet_trust_pin --------------------------------------------
 
 # port_free's DEFINITION is hoisted; the port pool it reads ($PLAN, the
 # LISTENING scan) stays computed inside whichever verb allocates one, since
@@ -5639,6 +5694,19 @@ open(sys.argv[1], "wb").write(bytes.fromhex("302e020100300506032b657004220420") 
 ' "$SEED_DER"; then
     PUSH_PLAIN=""
     refuse no_signing_key "the fleet-trust private key on this aggregator is not a usable 32-byte signing key"
+  fi
+  SEED_PUB="$(openssl pkey -inform DER -in "$SEED_DER" -pubout -outform DER 2>/dev/null | tail -c 32 \
+    | python3 -c 'import sys,base64; sys.stdout.write(base64.urlsafe_b64encode(sys.stdin.buffer.read()).decode().rstrip("="))' || true)"
+  if ! read_fleet_trust_pin "$FLEET_TRUST_PIN_FILE"; then
+    rm -f "$SEED_DER"; PUSH_PLAIN=""
+    if [[ ! -e "$FLEET_TRUST_PIN_FILE" && ! -L "$FLEET_TRUST_PIN_FILE" ]]; then
+      refuse signing_key_not_pinned "root has no pin of this aggregator's fleet trust key ($FLEET_TRUST_PIN_WHY), so it signs nothing with the key in $FLEET_TRUST_REL. Run the update on this host, which pins it. Nothing was sent."
+    fi
+    refuse signing_key_not_pinned "root's pin of this aggregator's fleet trust key is not one it will read ($FLEET_TRUST_PIN_WHY), so it signs nothing. The update never replaces a pin that is there: look at $FLEET_TRUST_PIN_FILE by hand, or put it back from a backup set with --restore --from <backup set> --replace-trust-pin. Nothing was sent."
+  fi
+  if [[ -z "$SEED_PUB" || "$SEED_PUB" != "$FLEET_TRUST_PIN" ]]; then
+    rm -f "$SEED_DER"; PUSH_PLAIN=""
+    refuse signing_key_not_pinned "the key in $FLEET_TRUST_REL is not the fleet trust key root pinned in $FLEET_TRUST_PIN_FILE, so root will not sign with it. Nothing was sent."
   fi
   SIGNATURE="$(openssl pkeyutl -sign -rawin -inkey "$SEED_DER" -in "$SIGN_FILE" 2>/dev/null \
     | python3 -c 'import sys,base64; sys.stdout.write(base64.urlsafe_b64encode(sys.stdin.buffer.read()).decode().rstrip("="))' || true)"

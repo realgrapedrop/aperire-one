@@ -57,7 +57,12 @@ BUILD_LINE=$(grep -n '^build_as_user aperire-executor ' "$ORIG" | head -1 | cut 
 CUT_LINE=$(awk -v start="$BUILD_LINE" 'NR>start && /^fi$/ {print NR; exit}' "$ORIG")
 [[ -n "$CUT_LINE" ]] || { echo "cannot find the end of the build block in $ORIG"; exit 1; }
 SUT="$TMP/tree/scripts/install-advisord.sh"
-{ head -n "$CUT_LINE" "$ORIG"; printf 'echo "CUT: reached the end of the build block"\n'; } > "$SUT"
+# The flag the start report reads to repeat the missing-linter warning at the
+# end of the run (#1215) is printed with it, so a row can read what the build
+# block decided.
+# shellcheck disable=SC2016  # the expansion is for the copy, not for here
+{ head -n "$CUT_LINE" "$ORIG"; printf 'echo "CUT: reached the end of the build block"\n'
+  printf 'echo "LINT_MISSING=${ADV_LINT_MISSING:-unset}"\n'; } > "$SUT"
 chmod +x "$SUT"
 
 # The installer refuses to run without every file it sources (#142: one place
@@ -258,6 +263,11 @@ if [[ $rc -eq 0 ]] && grep -q 'Using the prebuilt binaries' <<<"$out" \
 else
   bad "prebuilt binaries are honoured" "exit $rc: $(tail -4 <<<"$out")"
 fi
+if grep -qx 'LINT_MISSING=0' <<<"$out"; then
+  ok "and leaves nothing for the end of the run to repeat (#1215)"
+else
+  bad "a present linter sets no repeat (#1215)" "$(grep LINT_MISSING <<<"$out")"
+fi
 
 # The daemon and the executor with no linter: a host set up from the old copy
 # lines, or a pre-#1131 box re-running this installer with no Go (#1192). The
@@ -276,6 +286,11 @@ if grep -q 'warning: .*/advisor/bin/knowledge-lint is missing or not executable'
   ok "and names the missing linter, without counting it among the binaries in use"
 else
   bad "the missing linter is named" "$(grep -i -e lint -e warning <<<"$out" | head -4)"
+fi
+if grep -qx 'LINT_MISSING=1' <<<"$out"; then
+  ok "and marks it, so the end of the run says it again (#1215)"
+else
+  bad "a missing linter is marked for the end of the run (#1215)" "$(grep LINT_MISSING <<<"$out")"
 fi
 if grep -q 'Promote and the knowledge' <<<"$out" && grep -q '"no knowledge-lint on this host"' <<<"$out"; then
   ok "says what it costs: Promote and the knowledge pull stop, in the words the dashboard will use"

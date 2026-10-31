@@ -63,8 +63,14 @@ export interface KnowledgeAdminDeps {
   /** A registered peer by label, or null. Never trusted from the browser
    *  beyond being a lookup key. */
   peerByLabel: (label: string) => FleetNodeConfig | null;
-  /** This host's own fleet label, or null when there is no registry. */
+  /** This host's own fleet label, or null when there is no registry. A key:
+   *  the Inbox sends it back as `node_label` for this host's own proposals. */
   selfLabel: () => string | null;
+  /** The name this host goes by on every page (the pairing label, then the
+   *  fleet label, then the host): `resolveNodeName` in lib/alert-identity.ts.
+   *  Display, plus one more spelling `originIsSelf` accepts for this host
+   *  (#1284). Null or absent leaves both to `selfLabel`. */
+  selfName?: () => string | null;
   log?: (line: string) => void;
 }
 
@@ -133,8 +139,11 @@ function noLint(repoDir: string): string {
     'Or build it by hand where Go is installed: cd advisor && go build -o bin/knowledge-lint ./cmd/knowledge-lint';
 }
 
+/** Every answer this module writes, with an edge-rewritten status moved
+ *  (#1209): the field guide pull and tree reads answered 502, and the edge in
+ *  front of an aggregator swapped in its own page for the reason in `error`. */
 function send(res: ServerResponse, status: number, body: unknown): void {
-  res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' });
+  res.writeHead(edgeSafeStatus(status), { 'content-type': 'application/json', 'cache-control': 'no-store' });
   res.end(JSON.stringify(body));
 }
 
@@ -232,23 +241,43 @@ Promise<{ ok: boolean; seq?: number; nodes: PushResult[]; output: string }> {
  * One proposal write, routed to the node that proposed: this host's own
  * advisord over loopback, or a registered peer through the pinned proxy.
  *
- * The self-or-peer test is the one both writers share, and it is written this
- * way rather than as `label === self` alone because an aggregator with no
- * fleet registry has no self label either — a local proposal decided there
- * carries an empty label and must still reach this host's advisord.
+ * The self-or-peer test (`originIsSelf`) is the one both writers share, and it
+ * is written this way rather than as `label === self` alone because an
+ * aggregator with no fleet registry has no self label either: a local
+ * proposal decided there carries an empty label and must still reach this
+ * host's advisord.
  *
  * The node's own body comes back on success. The decision path ignores it; the
  * verification path needs it, because what the node computed (the provenance
  * and the rank it worked out from its own record) is the whole answer.
  */
+export function originIsSelf(
+  label: string,
+  deps: Pick<KnowledgeAdminDeps, 'selfLabel' | 'selfName' | 'peerByLabel'>,
+): boolean {
+  if (!label) return true;
+  const self = deps.selfLabel();
+  if (label === self) return true;
+  // A registered peer keeps its own name, even one that matches what this
+  // host is called on its pages: the registry is the key, the page name is
+  // not, and a decision must never be taken from a peer and kept here.
+  if (deps.peerByLabel(label)) return false;
+  // #1284. This host's page name (its pairing label on a paired node) is
+  // also this host. The Inbox sends the registry label, but the name an
+  // operator reads must never route a decision to the peer proxy, where it
+  // would be refused as a node that is not registered.
+  const name = deps.selfName?.() ?? null;
+  if (name && label === name) return true;
+  return !self;
+}
+
 async function callOrigin(
   deps: KnowledgeAdminDeps,
   label: string,
   write: 'mark' | 'revise',
   payload: Record<string, unknown>,
 ): Promise<{ ok: boolean; body?: unknown; error?: string }> {
-  const self = deps.selfLabel();
-  if (!label || label === self || (!self && !deps.peerByLabel(label))) {
+  if (originIsSelf(label, deps)) {
     const token = deps.advisorToken();
     if (!token) return { ok: false, error: 'no advisor token readable on this host' };
     try {
@@ -403,6 +432,7 @@ export async function handleKnowledgeAdmin(
     const out = await promoteProposal(body, {
       paths: p, repoDir: deps.repoDir, operator, role, log,
       selfLabel: deps.selfLabel() ?? null,
+      selfName: deps.selfName?.() ?? null,
       mark: (label, payload) => markOrigin(deps, label, payload),
     });
     send(res, out.status, out.body);
@@ -506,6 +536,9 @@ export interface PromoteCtx {
   operator: string;
   role: string;
   selfLabel: string | null;
+  /** The name this host goes by on its pages, for the source line of a note
+   *  this host proposed (#1284). Absent falls back to `selfLabel`. */
+  selfName?: string | null;
   log: (line: string) => void;
   mark: (label: string, payload: { id: string; decision: 'promoted' | 'rejected'; reason?: string; file?: string; operator: string; role: string })
     => Promise<{ ok: boolean; error?: string }>;
@@ -536,7 +569,11 @@ export async function promoteProposal(
   const today = isoDate();
   const proposedOn = oneLine(body.created_at, 40).slice(0, 10) || today;
   const question = oneLine(body.question, 200);
-  const from = label || ctx.selfLabel || 'this host';
+  // The name the source line carries. A note this host proposed is named the
+  // way every page names this host (#1284); `label` itself is still what the
+  // decision is routed by.
+  const fromSelf = !label || label === ctx.selfLabel;
+  const from = (fromSelf ? (ctx.selfName || label || ctx.selfLabel) : label) || 'this host';
   const file = stampFrontmatter({
     title,
     tags,
@@ -663,8 +700,9 @@ export interface PromoteMemoryCtx {
   repoDir: string;
   operator: string;
   role: string;
-  /** This host's own fleet label, for the source line when the entry being
-   *  promoted is this dashboard's OWN Advisor rather than a peer's, see
+  /** The name this host goes by on its pages (#1284), for the source line
+   *  when the entry being promoted is this dashboard's OWN Advisor rather than
+   *  a peer's, see
    *  LOCAL_NODE_SENTINEL below for why that case needs handling at all. */
   selfLabel: string | null;
   log: (line: string) => void;

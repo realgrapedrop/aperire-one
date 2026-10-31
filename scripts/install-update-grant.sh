@@ -66,6 +66,19 @@
 
 set -euo pipefail
 
+# As root the environment chooses no path, program or endpoint (#1206): every
+# APERIRE_* variable is dropped except the one a root caller passes on
+# purpose:
+#   APERIRE_INSTALL_TREE  install.sh exports it; get-aperire.sh names the tree
+#                         a staged copy serves (#764)
+# An account id(1) says is not root keeps them all, which is what every
+# suite is. id(1) at a fixed path, never bash's $EUID (#1109).
+if ! [[ "$(/usr/bin/id -u 2>/dev/null)" =~ ^[1-9][0-9]*$ ]]; then
+  for _v in $(compgen -e); do
+    case "$_v" in APERIRE_INSTALL_TREE) ;; APERIRE_*) unset "$_v" ;; esac
+  done
+fi
+
 # Where this program and its siblings are (UPD_SELF), and the install tree it acts
 # on (REPO): a directory and its parent from a checkout, two when it is a copy
 # root staged out of the release and APERIRE_INSTALL_TREE names the tree

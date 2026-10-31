@@ -99,7 +99,11 @@
 #                   with a --node-wrapper flag: configure the wrapper of a
 #                   named Advisor instance rather than the default one,
 #                   [a-z0-9-]{1,31}. APERIRE_INSTANCE says the same. With
-#                   --refresh-node-key: the instance whose node to ask
+#                   --refresh-node-key: the instance whose node to ask. With
+#                   --fleet-aggregator and --code: the dashboard instance to
+#                   pair (only the flag names it, not APERIRE_INSTANCE). A host
+#                   with more than one dashboard refuses a pair that names
+#                   none; --instance= with nothing after it is the default one
 #   --refresh-node-key [--node-key <key>] [--instance <name>]
 #                   a host that is ALREADY installed: ask the node who it is
 #                   again and stamp the answer as this host's own node key,
@@ -111,7 +115,7 @@
 #                   sealer's installer, never the one in your checkout
 #   --backup [--to <dir>] [--instance <name>] [--yes] [--dry-run]
 #   --restore --from <set> [--instance <name>] [--yes] [--overwrite]
-#             [--dry-run] [--db-path <file>]
+#             [--dry-run] [--db-path <file>] [--replace-trust-pin]
 #                   a host that is ALREADY installed: back it up, or put a
 #                   backup set back (the set the backup wrote):
 #                       curl -fsSL <url> | bash -s -- --backup
@@ -202,7 +206,7 @@ SENTINEL='# --- end of get-aperire.sh ---'
 # .release then is what it knows, and nothing else (ADR 0022).
 # >>> release stamp >>>
 DEFAULT_SOURCE_URL='https://get.aperire.one/release.tar.gz'
-DEFAULT_SOURCE_REF='snapshot-2026-09-17bz'
+DEFAULT_SOURCE_REF='snapshot-2026-09-17cc'
 DEFAULT_SELF_URL='https://get.aperire.one'
 DEFAULT_EXPECTED_SHA256=''
 DEFAULT_RELEASE_TAG=''
@@ -333,8 +337,14 @@ RELEASE_STORE="${APERIRE_GET_RELEASE_STORE:-/var/lib/aperire/release}"
 # operator, not root: the services run as them, the checkout is theirs, and
 # the builds run as them. Under `curl | bash` it is simply us.
 OP_USER="${SUDO_USER:-$(id -un)}"
-OP_HOME="$(getent passwd "$OP_USER" 2>/dev/null | cut -d: -f6)"
-[[ -n "$OP_HOME" ]] || OP_HOME="${HOME:-/tmp}"
+# `|| true`: getent exits 2 for an account it has no entry for, and under
+# pipefail that ended this script right here, silently, with exit 2.
+OP_HOME="$(getent passwd "$OP_USER" 2>/dev/null | cut -d: -f6 || true)"
+# $HOME stands in only when this process is the operator. Under sudo it is
+# root's, and the checkout would land in root's home. Nothing else stands in:
+# the old /tmp put the checkout in a directory anyone can write, with root
+# about to run out of it (#616). main refuses an unresolved home by name.
+if [[ -z "$OP_HOME" && -z "${SUDO_USER:-}" ]]; then OP_HOME="${HOME:-}"; fi
 
 # >>> aperire palette >>>
 # Colour says what happened. It is never decoration, and nothing is said in
@@ -466,14 +476,15 @@ get-aperire.sh - installs Aperire One on this host.
                   name is given). --node-wrapper-rpc <port|url> names its
                   admin RPC
   --node-wrapper-native [<unit>]   the same for a node run by systemd
-  --instance <name>   with either, the Advisor instance to configure
+  --instance <name>   with either, the Advisor instance to configure; with
+                  --fleet-aggregator and --code, the dashboard instance to pair
   --refresh-node-key [--node-key <key>] [--instance <name>]   an installed host: ask the node who
                   it is again and stamp that as this host's own node key.
                   --node-key states it when the node cannot be asked
   --backup [--to <dir>] [--instance <name>] [--yes] [--dry-run]
                   an installed host: write a backup set of its operator state
   --restore --from <set> [--instance <name>] [--yes] [--overwrite]
-            [--dry-run] [--db-path <file>]
+            [--dry-run] [--db-path <file>] [--replace-trust-pin]
                   an installed host: put a backup set back. Everything after
                   --backup or --restore is that program's own arguments
   --run <step> [its arguments]
@@ -695,6 +706,22 @@ EOF
   exit 1
 }
 
+# python3, asked of the same two fixed paths root's trusted-path check runs
+# in, never a PATH (#1193). Without it every copy root makes out of the
+# release is refused, and the refusal used to blame where the release digests
+# sit. So it is named here, before anything is fetched. A --check reports it
+# and carries on, since a check runs nothing as root.
+PYTHON3_MISSING=0
+guard_python3() {
+  _tp_python >/dev/null && return 0
+  PYTHON3_MISSING=1
+  if [[ $CHECK_ONLY -eq 1 ]]; then
+    warn "this host has no python3 at /usr/bin or /bin, and the install needs it: the check on every file root copies runs in it. Install it first: sudo apt-get install -y python3"
+    return 0
+  fi
+  die "this install needs python3, and this host has none at /usr/bin or /bin: the check on every file root copies runs in it. Nothing was fetched. Install it, then run this again: sudo apt-get install -y python3"
+}
+
 # -- Idempotence: an installed host gets the menu, not a second install --
 #
 # Installed means a UNIT. Nothing else, and this is a correction: /etc/aperire
@@ -898,6 +925,116 @@ report_components_against_before() {
   echo
 }
 
+# Whether the operator can read a directory, asked as the operator (#616).
+# Under `curl | sudo bash` this shell is root, which reads everything, so a
+# test made here would be a claim about root under a refusal that names the
+# operator.
+operator_reads_dir() { [[ -d "$1" ]] && as_operator test -r "$1"; }
+
+# The dashboard instances this host runs, read off the units: an empty line
+# for the default one (aperire-server or aperire-read), the suffix for each
+# named one. Only the dashboard's own units count, not the Advisor's, the
+# relay's or the trust sync's, because the pair command talks to a dashboard.
+dashboard_instances() {
+  local LC_ALL=C u
+  while read -r u; do
+    [[ "$u" =~ ^aperire-(server|read)(-([a-z0-9][a-z0-9-]*))?\.service$ ]] || continue
+    printf '%s\n' "${BASH_REMATCH[3]}"
+  done < <(installed_units | awk '{print $1}') | sort -u
+}
+
+# The shape of a run that names an instance beside a pair (#1278): --instance
+# beside --fleet-aggregator, on a host that is installed, with nothing else in
+# the run that wants --instance for itself. Whether it also has its --code is
+# the two callers' question below. On a host that is not installed the old
+# refusal still stands, so the flag is never dropped.
+pair_instance_shape() {
+  [[ $WRAPPER_INSTANCE_GIVEN -eq 1 && -n "$FLEET_AGGREGATOR" ]] || return 1
+  [[ $WRAPPER_ASKED -eq 0 && $WRAPPER_NATIVE_ASKED -eq 0 && $WRAPPER_RPC_GIVEN -eq 0 \
+     && $REFRESH_NODE_KEY_ASKED -eq 0 && $NODE_KEY_GIVEN -eq 0 \
+     && $UPDATE -eq 0 && $UPDATE_FORCE -eq 0 && $CHECK_ONLY -eq 0 && $NODE_FIRST -eq 0 \
+     && -z "$BR_VERB" && $RS_ASKED -eq 0 ]] || return 1
+  already_installed
+}
+# True when this run is a pair that names its instance (#1278).
+pair_names_instance() {
+  [[ $FLEET_CODE_GIVEN -eq 1 ]] || return 1
+  pair_instance_shape
+}
+# The same run with no --code (#1358). It was given the wrapper's sentence,
+# "--instance goes beside --node-wrapper", which is true and says nothing about
+# the pair the operator was writing.
+pair_instance_needs_code() {
+  [[ $FLEET_CODE_GIVEN -eq 0 ]] || return 1
+  pair_instance_shape
+}
+
+# The checkout one dashboard instance runs from: the parent of its unit's
+# WorkingDirectory (<checkout>/dashboard), as a real path. Empty when there is
+# no unit or it names nothing this can read, which is not a mismatch.
+instance_checkout() {  # <instance, or empty for the default one>
+  local unit_dir="${APERIRE_GET_UNIT_DIR:-/etc/systemd/system}" f wd
+  for f in "$unit_dir/aperire-server${1:+-$1}.service" "$unit_dir/aperire-read${1:+-$1}.service"; do
+    [[ -f "$f" ]] || continue
+    wd="$(awk -F= '$1=="WorkingDirectory"{sub(/^[^=]*=/, ""); print; exit}' "$f" 2>/dev/null || true)"
+    [[ "$wd" == */dashboard ]] || continue
+    (cd "${wd%/dashboard}" 2>/dev/null && pwd -P) && return 0
+  done
+  return 0
+}
+
+# Which dashboard the pair command talks to, settled before anything is
+# dialled or any code is spent (#1278). $1 is the instance the run named, and
+# $2 is 1 when it named one (an empty name given on purpose, --instance=, is
+# the default instance). A run that names none pairs the default instance, and
+# that is only a safe guess on a host that runs nothing else: with a second
+# instance beside it the run is refused and the instances are listed, because
+# guessing pairs the wrong dashboard and the code is spent on it.
+pair_instance_gate() {
+  local want="$1" given="$2" i label here there
+  local -a all=()
+  mapfile -t all < <(dashboard_instances)
+  if [[ $given -eq 0 ]]; then
+    [[ ${#all[@]} -eq 0 || ( ${#all[@]} -eq 1 && -z "${all[0]}" ) ]] && return 0
+    warn "this host runs more than one dashboard, or only a named one, and a run that names none would pair the default instance."
+  else
+    for i in "${all[@]}"; do
+      [[ "$i" == "$want" ]] || continue
+      # The pair command takes the instance's port and unit from the name and
+      # the tokens and the config it writes from the checkout. A name with the
+      # wrong checkout reads one dashboard's token and writes another's link,
+      # so the two must be the same instance's.
+      here="$(cd "$DIR" 2>/dev/null && pwd -P)" || here="$DIR"
+      there="$(instance_checkout "$want")"
+      [[ -z "$there" || "$there" == "$here" ]] && return 0
+      if [[ -n "$want" ]]; then
+        warn "the dashboard of instance '$want' runs from $there, and this run was pointed at $here."
+      else
+        warn "the default dashboard runs from $there, and this run was pointed at $here."
+      fi
+      die "add --dir $(printf '%q' "$there") to pair that instance. Nothing was dialled and no code was spent."
+    done
+    [[ -z "$want" && ${#all[@]} -eq 0 ]] && return 0
+    if [[ -n "$want" ]]; then
+      warn "there is no dashboard instance '$want' on this host (no aperire-server-$want or aperire-read-$want unit)."
+    else
+      warn "there is no default dashboard instance on this host (no aperire-server or aperire-read unit)."
+    fi
+  fi
+  info "the dashboards here, and the flag that pairs each:"
+  for i in "${all[@]}"; do
+    label="${i:-the default one}"
+    there="$(instance_checkout "$i")"
+    if [[ -z "$i" ]]; then
+      info "  ${label}   --instance=   (nothing after the equals sign)${there:+   in $there}"
+    else
+      info "  ${label}   --instance $i${there:+   in $there}"
+    fi
+  done
+  info "add --dir <that instance's checkout> as well when it is not $DIR."
+  die "nothing was dialled and no code was spent. Name the instance and run this again."
+}
+
 offer_the_menu() {
   local units menu
   units="$(installed_units | awk '{print $1}' | tr '\n' ' ')"
@@ -926,14 +1063,25 @@ offer_the_menu() {
   # refuses the one shape this script can tell apart from a real checkout.
   # The operator who chose --dir is the one handing this run sudo.
   if [[ -n "$FLEET_AGGREGATOR" && $FLEET_CODE_GIVEN -eq 1 ]]; then
-    [[ -d "$DIR" && -r "$DIR" ]] \
+    operator_reads_dir "$DIR" \
       || die "the checkout at $DIR is not readable by $OP_USER, so there is nothing here to pair. Pass --dir if it lives somewhere else."
     looks_like_a_checkout "$DIR" \
       || die "$DIR does not look like an Aperire checkout (no install.sh there), so there is no pair command to run here. Pass --dir if it lives somewhere else."
     [[ -f "$DIR/scripts/aperire-fleet-pair.sh" ]] \
       || die "$DIR/scripts/aperire-fleet-pair.sh is missing from this checkout, so there is no pair command to run here. That install predates fleet pairing (#176); update it first, then run this again."
+    # Only an explicit --instance names one. A login's own APERIRE_INSTANCE
+    # is not read here, and the pair command is always handed the answer, empty
+    # included: it keeps the variable it is given, so a stale one would pair
+    # that instance by another route (#949 settled the same for the seal).
+    local pair_instance="" pair_given=0
+    if [[ $WRAPPER_INSTANCE_GIVEN -eq 1 ]]; then
+      pair_instance="$WRAPPER_INSTANCE"; pair_given=1
+      wrapper_instance_ok "$pair_instance" \
+        || die "--instance must match [a-z0-9][a-z0-9-]{0,30}, the rule the Advisor's instance names follow."
+    fi
+    pair_instance_gate "$pair_instance" "$pair_given"
     echo
-    info "pairing this checkout with ${FLEET_AGGREGATOR}"
+    info "pairing this checkout with ${FLEET_AGGREGATOR}${pair_instance:+ as instance $pair_instance}"
     ensure_sudo
     local -a pair_args=( --code - --aggregator "$FLEET_AGGREGATOR" )
     [[ -n "$FLEET_LABEL" ]] && pair_args+=( --label "$FLEET_LABEL" )
@@ -945,7 +1093,7 @@ offer_the_menu() {
     stage_release_for_root || refuse_unstaged_release
     local rc=0
     printf '%s\n' "$FLEET_CODE" \
-      | run_root env APERIRE_INSTALL_TREE="$DIR" bash "$RUN_TREE/scripts/aperire-fleet-pair.sh" "${pair_args[@]}" || rc=$?
+      | run_root env APERIRE_INSTALL_TREE="$DIR" APERIRE_INSTANCE="$pair_instance" bash "$RUN_TREE/scripts/aperire-fleet-pair.sh" "${pair_args[@]}" || rc=$?
     collect_installer_refusals
     [[ ${#ROOT_COPY_REFUSED[@]} -eq 0 ]] || report_refused_root_copies
     exit "$rc"
@@ -2081,7 +2229,7 @@ _tp_run() { # $@ = op and arguments; the account set and tolerance come from tru
   # Root's own interpreter at a fixed path, never one a caller's PATH
   # finds (#877 review, L2). None there is a fault, which refuses.
   local py
-  py="$(_tp_python)" || { printf 'fault\tno python3 at /usr/bin or /bin, and the check runs in it\n'; return 1; }
+  py="$(_tp_python)" || { printf 'fault\tno python3 at /usr/bin or /bin, and the check runs in it (sudo apt-get install -y python3)\n'; return 1; }
   "$py" -I -c "$_TP_PY" "${args[@]}" "$@"
 }
 
@@ -2298,12 +2446,13 @@ rd_say_refused() { # $1 = path in the release, rest = why
 }
 
 # Load the record once per process. 0 = loaded, 3 = there is none on this
-# host, 1 = there is one and it cannot be trusted (said on stderr).
+# host, 1 = there is one and it cannot be trusted, or the check that judges
+# where it sits could not run (RD_STATE=fault). Said on stderr.
 rd_manifest_load() {
   case "$RD_STATE" in
     ok) return 0 ;;
     none) return 3 ;;
-    bad) return 1 ;;
+    bad|fault) return 1 ;;
   esac
   local f="$RD_DIGESTS" meta want_uid line
   # The owner a real run needs is root. A fixture that runs unprivileged
@@ -2362,6 +2511,14 @@ rd_manifest_load() {
     walk="$(_tp_run --strict check "$f")" || wrc=$?
     if [[ $wrc -ne 0 ]]; then
       _tp_say "$walk"
+      # 2 is a finding. Anything else is a walk that never ran (no python3,
+      # #1193): nothing was judged about where the record sits, so it is not
+      # told as a finding about that.
+      if [[ $wrc -ne 2 ]]; then
+        RD_STATE=fault
+        printf 'refused: the release digests at %s could not be judged: the check of the directories above them did not run (above), so nothing is copied as root.\n' "$f" >&2
+        return 1
+      fi
       printf 'refused: the release digests at %s sit where a service account can change them (above), so nothing is copied as root until that is put right.\n' "$f" >&2
       return 1
     fi
@@ -2400,7 +2557,10 @@ rd_manifest_load() {
 
 # The digest the release records for one path, or nothing.
 rd_digest_for() { # $1 = path in the release
-  printf '%s' "$RD_BODY" | awk -v k="$1" 'substr($0, 67) == k { print substr($0, 1, 64); exit }'
+  # Reads to the end rather than exiting on the match: an early exit closes the
+  # pipe while printf is still writing a body bigger than a pipe buffer, printf
+  # dies of SIGPIPE, and pipefail turns that into exit 141 (#973).
+  printf '%s' "$RD_BODY" | awk -v k="$1" '!found && substr($0, 67) == k { print substr($0, 1, 64); found = 1 }'
 }
 
 # A path inside the release, spelled one way only: no leading slash, no
@@ -2458,6 +2618,8 @@ rd_stage() { # $1 = tree, $2 = path in the release, $3 = the file to fill
   if [[ $rc -eq 1 ]]; then
     if [[ "${RD_REFUSED_WHY:-}" == accounts ]]; then
       rd_say_refused "$rel" "was not copied: $(tp_accounts_refusal). Nothing about the file was judged."
+    elif [[ "$RD_STATE" == fault ]]; then
+      rd_say_refused "$rel" "was not copied: the check it is held to could not run (above). Nothing about the file was judged."
     else
       rd_say_refused "$rel" "was not copied, because the record it would be checked against cannot be trusted."
     fi
@@ -2710,10 +2872,24 @@ rd_stage_tree() { # $1 = tree, $2 = out
   fi
   rc=0
   RD_REFUSED_WHY=""
+  # python3, asked once and before anything is staged (#1355). Every file this
+  # copies goes through a check that runs in it, at /usr/bin or /bin and never
+  # off a PATH, so a host without it refused each file on its own and named
+  # python3 once per file (198 lines for this tree). Said once, with the
+  # reason the callers read (RD_REFUSED_WHY=python3), so none of them blames a
+  # file for it. Where the trusted-path block is not loaded the next check
+  # says so.
+  if declare -F _tp_python >/dev/null 2>&1 && ! _tp_python >/dev/null; then
+    printf 'refused: this host has no python3 at /usr/bin or /bin, and the check on every file root runs out of %s runs in it, so nothing was staged. Install it, then run this again: sudo apt-get install -y python3\n' "$tree" >&2
+    RD_REFUSED_WHY=python3
+    return 1
+  fi
   rd_manifest_load || rc=$?
   if [[ $rc -eq 1 ]]; then
     if [[ "${RD_REFUSED_WHY:-}" == accounts ]]; then
       printf 'refused: the scripts in %s were not staged: %s.\n' "$tree" "$(tp_accounts_refusal)" >&2
+    elif [[ "$RD_STATE" == fault ]]; then
+      printf 'refused: the scripts in %s were not staged: the check they are held to could not run (above), so none of them was judged.\n' "$tree" >&2
     else
       printf 'refused: the scripts in %s were not staged, because the record they would be checked against cannot be trusted.\n' "$tree" >&2
     fi
@@ -3577,10 +3753,15 @@ swap_kept_checkout() { # $1 = the new tree, unpacked beside $DIR
 # `version` and win the slot, and the build a line further down would fail
 # on syntax this project's own module already requires, on a host that may
 # have a perfectly good Go one candidate further down the list.
+#
+# Asked through advisor_ask, so from / (#1203). Go refuses to run from a
+# directory its user cannot search, and sudo hands the operator the caller's
+# directory: started from /root (`sudo -i`, then --update), every candidate
+# read as no Go and a changed Advisor was carried stale.
 ADVISOR_GO_MIN="1.23"
 advisor_go_ok() { # $1 = go binary; prints its version, as the build itself would see it, if it meets ADVISOR_GO_MIN
   local v
-  v="$(as_operator "$1" version 2>/dev/null | sed -n 's/.*go\([0-9]*\.[0-9]*\).*/\1/p')"
+  v="$(advisor_ask "$1" version | sed -n 's/.*go\([0-9]*\.[0-9]*\).*/\1/p')"
   [[ -n "$v" ]] || return 1
   [[ "$(printf '%s\n%s\n' "$ADVISOR_GO_MIN" "$v" | sort -V | head -1)" == "$ADVISOR_GO_MIN" ]] && echo "$v"
 }
@@ -3620,7 +3801,8 @@ advisor_sources_changed() { # $1 = previous tree root, $2 = new tree root
   ! diff -q <(advisor_source_manifest "$1/advisor") <(advisor_source_manifest "$2/advisor") >/dev/null 2>&1
 }
 
-# Ask an Advisor binary something, as the operator and from /. advisor/bin is
+# Ask an Advisor binary something, as the operator and from /. Go's version
+# is asked the same way (advisor_go_ok above, #1203). advisor/bin is
 # the operator's directory (the Advisor's account owns what it writes there),
 # so the program in it is one the login can replace, and the page update runs
 # this whole bootstrap as root (#1201, ADR 0024: root never runs what the login
@@ -3628,7 +3810,7 @@ advisor_sources_changed() { # $1 = previous tree root, $2 = new tree root
 # nothing. From /, the way install-advisord.sh probes Go (#1162): sudo keeps
 # the caller's directory, and a root shell in /root hands the login one it
 # cannot search.
-advisor_ask() { # $1 = a binary under advisor/bin, rest = its arguments; prints what it said
+advisor_ask() { # $1 = a binary under advisor/bin, or a Go to probe; rest = its arguments; prints what it said
   ( cd / && as_operator "$@" ) 2>/dev/null
 }
 
@@ -6478,13 +6660,16 @@ _node_wrapper_run() { # prints the lib's own lines; returns its code. release_he
   # What the staging said besides the path (an "unchecked" line on a host
   # with no release digests), kept with the rest of this step's lines.
   [[ "$said" == "$lib" ]] || printf '%s\n' "$(sed '$d' <<<"$said")"
-  # shellcheck disable=SC2016  # $1 to $3 are the inner shell's own arguments
+  # The state helper is the release's staged copy (RUN_TREE), the one the
+  # converge makes the Advisor's fleet corpus with (#1345).
+  # shellcheck disable=SC2016  # $1 to $4 are the inner shell's own arguments
   run_root env APERIRE_SBIN_DIR="$SBIN_DIR" APERIRE_LIB_DIR="$IMAGE_RECIPE_DEST" APERIRE_MOVE_MARKERS=1 \
     APERIRE_SUDOERS_DIR="$SUDOERS_DIR_GET" APERIRE_UNIT_DIR="${APERIRE_GET_UNIT_DIR:-/etc/systemd/system}" \
     APERIRE_PROC_DIR="${APERIRE_GET_PROC_DIR:-/proc}" APERIRE_RUN_DIR="${APERIRE_GET_RUN_DIR:-/run/aperire}" \
     bash -c "$(rd_lib_text)"'
     . "$3"
-    trusted_update_node_wrapper "$1" "$2"' _ "$DIR" "$NODE_WRAPPER_CONF" "$lib" 2>&1
+    TP_STATE_TOOL="$4"
+    trusted_update_node_wrapper "$1" "$2"' _ "$DIR" "$NODE_WRAPPER_CONF" "$lib" "${RUN_TREE:+$RUN_TREE/scripts/state-file.py}" 2>&1
 }
 refresh_node_wrapper() {
   [[ -r "$DIR/scripts/trusted-path-lib.sh" && -f "$DIR/scripts/aperire-node-wrapper.sh" ]] || return 0
@@ -7071,6 +7256,8 @@ check_only_run() {
   source_is_tarball || ensure_git
   fetch_release
   run_preflight || rc=$?
+  # Said up front by guard_python3, and the install would refuse on it.
+  [[ $PYTHON3_MISSING -eq 0 || $rc -ne 0 ]] || rc=1
   exit $rc
 }
 
@@ -7478,7 +7665,9 @@ br_path_ok() { # $1 = a path argument
   done
   return 0
 }
-br_instance_ok() { local LC_ALL=C; [[ "$1" =~ ^[a-z0-9][a-z0-9-]{0,30}$ ]]; }
+# Never credcheck: aperire-advisord-credcheck is the recovery unit's own name,
+# the rule advisor-owner-lib.sh holds an instance to (#1206 review).
+br_instance_ok() { local LC_ALL=C; [[ "$1" =~ ^[a-z0-9][a-z0-9-]{0,30}$ && "$1" != credcheck && "$1" != credcheck-* ]]; }
 
 validate_backup_restore_flags() {
   local verb="$BR_VERB" arg name val inline i=0 key
@@ -7511,7 +7700,7 @@ validate_backup_restore_flags() {
           [[ $i -lt ${#a[@]} ]] || die "$name needs a value after it."
           val="${a[$i]}"; i=$((i + 1))
         fi ;;
-      --yes|-y|--overwrite|--dry-run)
+      --yes|-y|--overwrite|--dry-run|--replace-trust-pin)
         [[ $inline -eq 0 ]] || die "$name takes no value."
         ;;
       *) die "unknown argument after --$verb: $arg. $(br_flags_for "$verb")" ;;
@@ -7519,7 +7708,7 @@ validate_backup_restore_flags() {
     key="$name"; [[ "$key" == -y ]] && key=--yes
     case "$verb:$key" in
       backup:--to|backup:--instance|backup:--yes|backup:--dry-run) ;;
-      restore:--from|restore:--instance|restore:--yes|restore:--overwrite|restore:--dry-run|restore:--db-path) ;;
+      restore:--from|restore:--instance|restore:--yes|restore:--overwrite|restore:--dry-run|restore:--db-path|restore:--replace-trust-pin) ;;
       *:--dir) ;;
       *) die "$name is not an argument of --$verb. $(br_flags_for "$verb")" ;;
     esac
@@ -7535,7 +7724,7 @@ validate_backup_restore_flags() {
     esac
     case "$key" in
       --dir) DIR="$val" ;;
-      --yes|--overwrite|--dry-run) BR_PASS+=( "$key" ) ;;
+      --yes|--overwrite|--dry-run|--replace-trust-pin) BR_PASS+=( "$key" ) ;;
       *) BR_PASS+=( "$key" "$val" ) ;;
     esac
   done
@@ -7553,7 +7742,7 @@ br_flags_for() { # $1 = backup or restore
   if [[ "$1" == backup ]]; then
     printf 'It takes --to <dir>, --instance <name>, --yes and --dry-run.'
   else
-    printf 'It takes --from <set>, --instance <name>, --yes, --overwrite, --dry-run and --db-path <file>.'
+    printf 'It takes --from <set>, --instance <name>, --yes, --overwrite, --dry-run, --db-path <file> and --replace-trust-pin.'
   fi
 }
 
@@ -7648,11 +7837,12 @@ root_step_spec() { # $1 = a step
     rotation-timer)       echo 'install-can-delete-timer.sh|1|--service:name>APERIRE_NODE_SERVICE --admin-rpc:rpcurl>APERIRE_NODE_ADMIN_RPC --config:path>APERIRE_NODE_CONFIG --kind:nodekind>APERIRE_NODE_KIND' ;;
     tunnel)               echo 'setup-aperire-tunnel.sh|0|' ;;
     relay-colocated)      echo 'enable-relay-colocated.sh|0|--unit:dashunit@ --port:port@ --binary:path@' ;;
+    peer-token)           echo 'place-peer-token.sh|1|--label:peerlabel' ;;
     *) return 1 ;;
   esac
 }
 root_step_names() {
-  printf '%s' 'fleet-broker-grant, model-key-sealer, advisor-account, trust-sync-grant, fleet-trust-split, update-grant, advisor-stack, dashboard-service, relay, prepare-host, node, harden-advisord, reseal-model-key, node-config-exposure, migrate-node, advisory-delete, rotation-timer, tunnel, relay-colocated'
+  printf '%s' 'fleet-broker-grant, model-key-sealer, advisor-account, trust-sync-grant, fleet-trust-split, update-grant, advisor-stack, dashboard-service, relay, prepare-host, node, harden-advisord, reseal-model-key, node-config-exposure, migrate-node, advisory-delete, rotation-timer, tunnel, relay-colocated, peer-token'
 }
 
 # One value against its type. LC_ALL=C, because a range like [a-z] follows the
@@ -7674,12 +7864,13 @@ root_step_value_ok() { # $1 = type, $2 = value
     imagetag) [[ "$v" =~ ^[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}([-+][A-Za-z0-9.]{1,32})?$ ]] ;;
     rpcurl)   [[ "$v" =~ ^http://127\.0\.0\.1:([0-9]{1,5})$ ]] && (( 10#${BASH_REMATCH[1]} >= 1 && 10#${BASH_REMATCH[1]} <= 65535 )) ;;
     nodekind) [[ "$v" =~ ^(container|native)$ ]] ;;
+    peerlabel) [[ "$v" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] ;;
     *) return 1 ;;
   esac
 }
 root_step_type_says() { # $1 = type
   case "$1" in
-    instance) printf 'an instance name matching [a-z0-9][a-z0-9-]{0,30}' ;;
+    instance) printf 'an instance name matching [a-z0-9][a-z0-9-]{0,30}, not credcheck' ;;
     account)  printf 'an account name matching [a-z_][a-z0-9_-]{0,31}' ;;
     unit)     printf 'a systemd unit name: letters, digits, dot, dash, underscore and @' ;;
     dashunit) printf 'a dashboard unit: aperire-server or aperire-read, with an instance suffix or none' ;;
@@ -7693,6 +7884,7 @@ root_step_type_says() { # $1 = type
     imagetag) printf 'a release version like 3.3.0, with an optional -suffix' ;;
     rpcurl)   printf 'a loopback URL like http://127.0.0.1:5005' ;;
     nodekind) printf 'container or native' ;;
+    peerlabel) printf 'a node label: up to 32 of a-z, 0-9 and -, starting with a letter or digit' ;;
   esac
 }
 
@@ -7783,6 +7975,10 @@ validate_root_step_flags() {
   if [[ "$step" == relay-colocated && ${#want[@]} -gt 0 ]]; then
     die "--run relay-colocated needs ${want[*]}: the dashboard unit, its port and the relay program. Nothing is guessed."
   fi
+  if [[ "$step" == peer-token ]]; then
+    [[ -n "${seen[--label]:-}" ]] || die "--run peer-token needs --label, the node whose token this is."
+    [[ ! -t 0 ]] || die "--run peer-token reads the peer's token on its standard input, and this is a terminal. aperire-fleet-add.sh --place-token hands it over."
+  fi
   br_path_ok "$DIR" \
     || die "the install's directory ($DIR) is not an absolute path of letters, digits and _ . @ + , : = - with no . or .. part. Pass --dir with one that is."
 }
@@ -7801,6 +7997,13 @@ run_root_step() {
   local spec prog tree rc=0
   spec="$(root_step_spec "$RS_STEP")"
   prog="${spec%%|*}"; tree="${spec#*|}"; tree="${tree%%|*}"
+  # peer-token is the one step that is handed something on standard input: the
+  # peer's token, opened by the caller, never an argument (#1144). Set it aside
+  # on descriptor 3 now, so nothing between here and the root call can read
+  # it, and give it back to the program alone.
+  if [[ "$RS_STEP" == peer-token ]]; then
+    exec 3<&0 0< /dev/null
+  fi
   step "running the release's checked copy of $prog"
   # The steps that are pieces of an install run on a host that has none yet,
   # the way the menu's install entries always did: host preparation (step
@@ -7857,7 +8060,9 @@ run_root_step() {
   # Its questions are asked on this terminal when there is one. With none,
   # stdin is closed so the program says what it needs rather than waiting on
   # a pipe this run's own script may still be arriving on.
-  if [[ -t 0 ]]; then
+  if [[ "$RS_STEP" == peer-token ]]; then
+    run_root env "${renv[@]}" bash "$RUN_TREE/scripts/$prog" ${RS_PASS[@]+"${RS_PASS[@]}"} <&3 || rc=$?
+  elif [[ -t 0 ]]; then
     run_root env "${renv[@]}" bash "$RUN_TREE/scripts/$prog" ${RS_PASS[@]+"${RS_PASS[@]}"} ${pos[@]+"${pos[@]}"} || rc=$?
   else
     run_root env "${renv[@]}" bash "$RUN_TREE/scripts/$prog" ${RS_PASS[@]+"${RS_PASS[@]}"} ${pos[@]+"${pos[@]}"} < /dev/null || rc=$?
@@ -7958,6 +8163,11 @@ main() {
     esac
   done
 
+  # After the flags, so --help still answers. The default checkout and the
+  # operator commands both live under this home, so a run that cannot name it
+  # has nowhere to put either (#616).
+  [[ "$OP_HOME" == /* ]] \
+    || die "the home directory of ${OP_USER:-this account} could not be found: getent passwd has no entry for it${SUDO_USER:+, and under sudo \$HOME belongs to root}. There is nowhere to put the checkout, so nothing was fetched. Run this from an account with a home directory."
   [[ -n "$DIR" ]] || DIR="${OP_HOME}/aperire-one"
 
   if [[ -n "$ROLE" ]] && ! valid_role "$ROLE"; then
@@ -8051,7 +8261,18 @@ main() {
   if [[ $REFRESH_NODE_KEY_ASKED -eq 1 || $NODE_KEY_GIVEN -eq 1 ]]; then
     validate_refresh_node_key_flags
   fi
-  if [[ $WRAPPER_ASKED -eq 1 || $WRAPPER_NATIVE_ASKED -eq 1 || $WRAPPER_RPC_GIVEN -eq 1 ]] \
+  # --instance beside a pair (--fleet-aggregator and --code, on an installed
+  # host) names the instance to pair, not a wrapper to configure (#1278).
+  # Every other use of it is still the wrapper's.
+  if pair_names_instance; then
+    :
+  elif pair_instance_needs_code; then
+    # The name is held to its rule before it is printed into a command to copy,
+    # and the aggregator is not printed at all: neither has been checked yet.
+    wrapper_instance_ok "$WRAPPER_INSTANCE" \
+      || die "--instance must match [a-z0-9][a-z0-9-]{0,30}, the rule the Advisor's instance names follow."
+    die "--instance names the dashboard to pair, and this pair has no --code. Add --code - and it asks for the code on this terminal: curl -fsSL https://get.aperire.one | bash -s -- --fleet-aggregator <url> --code -${WRAPPER_INSTANCE:+ --instance $WRAPPER_INSTANCE}"
+  elif [[ $WRAPPER_ASKED -eq 1 || $WRAPPER_NATIVE_ASKED -eq 1 || $WRAPPER_RPC_GIVEN -eq 1 ]] \
      || [[ $WRAPPER_INSTANCE_GIVEN -eq 1 && $REFRESH_NODE_KEY_ASKED -eq 0 ]]; then
     validate_node_wrapper_flags
   fi
@@ -8063,6 +8284,8 @@ main() {
   # and the operator menu reaches its root entries through it, so it is not
   # gated on the distribution (#955).
   [[ $RS_ASKED -eq 1 ]] || guard_os
+  # Every branch below stages something for root, which runs in python3.
+  guard_python3
 
   # The wrapper pass-through never returns: it configures the wrapper on an
   # installed host and exits with the installer's own status.
